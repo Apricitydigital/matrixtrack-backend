@@ -6,6 +6,8 @@ const SUPPORTED_GROUPINGS = new Set([
   "city",
   "supervisor",
   "location",
+  "ward_summary",
+  "supervisor_summary",
 ]);
 
 const csvEscapeValue = (value) => {
@@ -221,6 +223,58 @@ const buildAttendanceFilters = (query, { locationExpression }) => {
   };
 };
 
+const buildSupervisorSummaryFilters = (query) => {
+  const filters = [];
+  const params = [];
+  const metadata = {};
+
+  const addNumericFilter = (rawValue, builder, metaKey) => {
+    const value = parseIntegerParam(rawValue);
+    if (value === null) {
+      return;
+    }
+    params.push(value);
+    const placeholder = `$${params.length}`;
+    filters.push(builder(placeholder));
+    if (metaKey) {
+      metadata[metaKey] = value;
+    }
+  };
+
+  const addTextFilter = (rawValue, builder, metaKey) => {
+    const value = (rawValue ?? "").toString().trim();
+    if (!value) {
+      return;
+    }
+    params.push(value);
+    const placeholder = `$${params.length}`;
+    filters.push(builder(placeholder));
+    if (metaKey) {
+      metadata[metaKey] = value;
+    }
+  };
+
+  addNumericFilter(query.city_id, (ph) => `c.city_id = ${ph}`, "city_id");
+  addNumericFilter(query.zone_id, (ph) => `z.zone_id = ${ph}`, "zone_id");
+  addNumericFilter(query.ward_id, (ph) => `w.ward_id = ${ph}`, "ward_id");
+  addNumericFilter(
+    query.supervisor_id,
+    (ph) => `supervisor.user_id = ${ph}`,
+    "supervisor_id"
+  );
+  addTextFilter(
+    query.supervisor_name,
+    (ph) => `COALESCE(supervisor.name, '') ILIKE ${ph}`,
+    "supervisor_name"
+  );
+
+  return {
+    whereClause: filters.length ? `WHERE ${filters.join(" AND ")}` : "",
+    params,
+    metadata,
+  };
+};
+
 const groupingConfigs = {
   detail: {
     label: "Detailed",
@@ -238,8 +292,6 @@ const groupingConfigs = {
       a.duration,
       a.in_address,
       a.out_address,
-      a.punch_in_image,
-      a.punch_out_image,
       a.latitude_in,
       a.longitude_in,
       a.latitude_out,
@@ -274,8 +326,7 @@ const groupingConfigs = {
       { key: "supervisor_name", label: "Supervisor" },
       { key: "punched_in_by", label: "Punched In By" },
       { key: "punched_out_by", label: "Punched Out By" },
-      { key: "punch_in_image", label: "Punch In Image" },
-      { key: "punch_out_image", label: "Punch Out Image" },
+      // images removed from export per request
     ],
   },
   zone: {
@@ -412,6 +463,55 @@ const groupingConfigs = {
       { key: "last_attendance_date", label: "Latest Date" },
     ],
   },
+  supervisor_summary: {
+    label: "Supervisor Summary",
+    filenameSuffix: "supervisor-summary",
+    select: () => `
+      COALESCE(supervisor.user_id, 0) AS supervisor_id,
+      COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+      COALESCE(supervisor.emp_code, 'N/A') AS supervisor_emp_code,
+      COALESCE(supervisor.phone, 'N/A') AS supervisor_contact,
+      COUNT(DISTINCT emp_all.emp_id) AS total_employees,
+      COUNT(DISTINCT CASE WHEN a_yesterday.punch_in_time IS NOT NULL THEN a_yesterday.emp_id END) AS present_yesterday,
+      COUNT(DISTINCT emp_all.emp_id) - COUNT(DISTINCT CASE WHEN a_yesterday.punch_in_time IS NOT NULL THEN a_yesterday.emp_id END) AS absentees_yesterday
+    `,
+    groupBy: `
+      COALESCE(supervisor.user_id, 0),
+      COALESCE(supervisor.name, 'Unassigned'),
+      COALESCE(supervisor.emp_code, 'N/A'),
+      COALESCE(supervisor.phone, 'N/A')
+    `,
+    orderBy: "supervisor_name",
+    fromOverride: `
+      FROM wards w
+      JOIN zones z ON w.zone_id = z.zone_id
+      JOIN cities c ON z.city_id = c.city_id
+    `,
+    joinOverride: `
+      LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
+      LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
+      LEFT JOIN LATERAL (
+        SELECT DISTINCT emp.emp_id
+        FROM employee emp
+        WHERE emp.ward_id = w.ward_id
+      ) emp_all ON true
+      LEFT JOIN attendance a_yesterday ON a_yesterday.emp_id = emp_all.emp_id
+        AND a_yesterday.date = (CURRENT_DATE - INTERVAL '1 day')
+    `,
+    havingClauseBuilder: ({ query }) =>
+      parseBooleanFlag(query.absentees_only)
+        ? "HAVING COUNT(DISTINCT emp_all.emp_id) - COUNT(DISTINCT CASE WHEN a_yesterday.punch_in_time IS NOT NULL THEN a_yesterday.emp_id END) > 0"
+        : "",
+    csvHeaders: [
+      { key: "supervisor_id", label: "Supervisor ID" },
+      { key: "supervisor_emp_code", label: "Supervisor Code" },
+      { key: "supervisor_name", label: "Supervisor Name" },
+      { key: "supervisor_contact", label: "Supervisor Contact" },
+      { key: "total_employees", label: "Total Employees" },
+      { key: "present_yesterday", label: "Present Yesterday" },
+      { key: "absentees_yesterday", label: "Absent Yesterday" },
+    ],
+  },
   location: {
     label: "Location",
     filenameSuffix: "location",
@@ -440,6 +540,28 @@ const groupingConfigs = {
       { key: "punch_out_count", label: "Punch Out Count" },
       { key: "first_attendance_date", label: "Earliest Date" },
       { key: "last_attendance_date", label: "Latest Date" },
+    ],
+  },
+  ward_summary: {
+    label: "Ward Summary",
+    filenameSuffix: "ward-summary",
+    select: () => `
+      c.city_name AS city_name,
+      z.zone_name AS zone_name,
+      w.ward_name AS kothi_name,
+      COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+      (SELECT COUNT(*) FROM employee reg WHERE reg.ward_id = w.ward_id) AS total_registered,
+      COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN a.emp_id END) AS total_present
+    `,
+    groupBy: `c.city_name, z.zone_name, w.ward_name, COALESCE(supervisor.name, 'Unassigned')`,
+    orderBy: "c.city_name, z.zone_name, w.ward_name",
+    csvHeaders: [
+      { key: "city_name", label: "City" },
+      { key: "zone_name", label: "Zone" },
+      { key: "kothi_name", label: "Kothi Name" },
+      { key: "supervisor_name", label: "Supervisor Name" },
+      { key: "total_registered", label: "Total Registered" },
+      { key: "total_present", label: "Total Present" },
     ],
   },
 };
@@ -479,16 +601,22 @@ const createAttendanceDownloadHandler =
         : "both";
       const locationExpression = getLocationExpression(locationType);
 
-      const { whereClause, params, metadata } = buildAttendanceFilters(
-        req.query,
-        {
-          locationExpression,
-        }
-      );
+      const filterResult =
+        requestedGrouping === "supervisor_summary"
+          ? buildSupervisorSummaryFilters(req.query)
+          : buildAttendanceFilters(req.query, {
+              locationExpression,
+            });
+
+      const { whereClause, params, metadata } = filterResult;
 
       metadata.group_by = requestedGrouping;
       metadata.location_type = locationType;
       metadata.format = format;
+      const absOnlyFlag = parseBooleanFlag(req.query.absentees_only);
+      if (requestedGrouping === "supervisor_summary" && absOnlyFlag !== null) {
+        metadata.absentees_only = absOnlyFlag;
+      }
 
       const selectClause =
         typeof groupConfig.select === "function"
@@ -510,22 +638,50 @@ const createAttendanceDownloadHandler =
         ? `ORDER BY ${orderByClauseRaw}`
         : "";
 
-      const downloadQuery = `
-        SELECT
-          ${selectClause}
+      const defaultFromClause = `
         FROM attendance a
         JOIN employee e ON a.emp_id = e.emp_id
         JOIN wards w ON a.ward_id = w.ward_id
         JOIN zones z ON w.zone_id = z.zone_id
         JOIN cities c ON z.city_id = c.city_id
+      `;
+
+      const defaultJoinClause = `
         LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
         LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
         LEFT JOIN users u ON a.punched_in_by = u.user_id
         LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
-        ${whereClause}
-        ${groupByClause}
-        ${orderByClause}
       `;
+
+      const fromClause =
+        typeof groupConfig.fromOverride === "string"
+          ? groupConfig.fromOverride
+          : defaultFromClause;
+
+      const joinClause =
+        typeof groupConfig.joinOverride === "string"
+          ? groupConfig.joinOverride
+          : groupConfig.fromOverride
+          ? ""
+          : defaultJoinClause;
+
+      const havingClause =
+        typeof groupConfig.havingClauseBuilder === "function"
+          ? groupConfig.havingClauseBuilder({
+              query: req.query,
+            })
+          : "";
+
+      const downloadQuery = `
+      SELECT
+        ${selectClause}
+        ${fromClause}
+      ${joinClause}
+      ${whereClause}
+      ${groupByClause}
+      ${havingClause}
+      ${orderByClause}
+    `;
 
       const { rows } = await pool.query(downloadQuery, params);
 
