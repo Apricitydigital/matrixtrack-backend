@@ -1,13 +1,19 @@
 const express = require("express");
 const pool = require("../config/db");
 const authenticateUser = require("../middleware/authMiddleware");
+const {
+  createAttendanceDownloadHandler,
+} = require("../utils/attendanceReportDownload");
 
 const router = express.Router();
 
 // Middleware to check admin role
 const requireAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: "Access denied. Admin role required." });
+  const userRole = req.user?.role;
+  if (!userRole || userRole.toLowerCase() !== "admin") {
+    return res
+      .status(403)
+      .json({ error: "Access denied. Admin role required." });
   }
   next();
 };
@@ -495,66 +501,12 @@ router.get("/activity-logs", async (req, res) => {
 });
 
 // Export data endpoints
-router.get("/export/attendance", async (req, res) => {
-  try {
-    const { date_from, date_to, format = 'json' } = req.query;
-
-    let whereClause = 'WHERE 1=1';
-    let params = [];
-    let paramCount = 0;
-
-    if (date_from) {
-      paramCount++;
-      whereClause += ` AND DATE(a.created_at) >= $${paramCount}`;
-      params.push(date_from);
-    }
-
-    if (date_to) {
-      paramCount++;
-      whereClause += ` AND DATE(a.created_at) <= $${paramCount}`;
-      params.push(date_to);
-    }
-
-    const data = await pool.query(`
-      SELECT
-        e.name as employee_name,
-        e.emp_code,
-        a.status,
-        DATE(a.created_at) as date,
-        TIME(a.created_at) as time,
-        w.ward_name,
-        z.zone_name,
-        u.name as supervisor_name
-      FROM attendance a
-      JOIN employee e ON a.emp_id = e.emp_id
-      LEFT JOIN wards w ON e.ward_id = w.ward_id
-      LEFT JOIN zones z ON w.zone_id = z.zone_id
-      LEFT JOIN supervisor_ward aw ON w.ward_id = aw.ward_id
-      LEFT JOIN users u ON aw.supervisor_id = u.user_id
-      ${whereClause}
-      ORDER BY a.created_at DESC
-    `, params);
-
-    if (format === 'csv') {
-      // Convert to CSV format
-      const csv = [
-        'Employee Name,Employee Code,Status,Date,Time,Ward,Zone,Supervisor',
-        ...data.rows.map(row =>
-          `"${row.employee_name}","${row.emp_code}","${row.status}","${row.date}","${row.time}","${row.ward_name}","${row.zone_name}","${row.supervisor_name}"`
-        )
-      ].join('\n');
-
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename=attendance_export.csv');
-      res.send(csv);
-    } else {
-      res.json(data.rows);
-    }
-  } catch (error) {
-    console.error("Export attendance error:", error);
-    res.status(500).json({ error: error.message });
-  }
+const handleAdminAttendanceDownload = createAttendanceDownloadHandler({
+  pool,
+  defaultFormat: "csv",
 });
+
+router.get("/export/attendance", handleAdminAttendanceDownload);
 
 // ===== SYSTEM SETTINGS =====
 

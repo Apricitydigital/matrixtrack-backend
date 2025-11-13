@@ -1,6 +1,9 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
+const {
+  createAttendanceDownloadHandler,
+} = require("../utils/attendanceReportDownload");
 
 // 🛠 IST Date Formatter
 const formatDateIST = (date = new Date()) => {
@@ -18,6 +21,7 @@ router.post("/", async (req, res) => {
     const result = await pool.query(
       `SELECT 
         ROW_NUMBER() OVER (ORDER BY a.date DESC, a.attendance_id) AS sr_no,
+        e.emp_id,
         attendance_id,
         e.name, 
         e.emp_code, 
@@ -53,5 +57,10 @@ router.post("/", async (req, res) => {
     res.status(500).json({ error: "Database error" });
   }
 });
+
+const handleAttendanceDownload = createAttendanceDownloadHandler({ pool });
+
+// Download attendance reports with flexible grouping & filters
+router.get("/download", handleAttendanceDownload);
 
 module.exports = router;
