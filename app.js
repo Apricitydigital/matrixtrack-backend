@@ -24,8 +24,13 @@ app.use(express.json());
 const defaultOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
+  "http://localhost:3001",
   "http://192.168.29.213:3000",
   "http://192.168.29.213:61960",
+  "http://matrixtrack.duckdns.org:5000",
+  "https://matrixtrack.duckdns.org:5000",
+  "http://matrixtrack.duckdns.org",
+  "https://matrixtrack.duckdns.org",
   "https://d30v7d7vnspm71.cloudfront.net", // CloudFront
   "http://attendease-frontend.s3-website.ap-south-1.amazonaws.com", // S3 frontend
   "http://matrixtrackfrontend.s3-website.ap-south-1.amazonaws.com", // MatrixTrack S3 frontend
