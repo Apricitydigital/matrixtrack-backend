@@ -147,6 +147,34 @@ const runSchemaSetup = async () => {
     `);
 
     await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'roles_name_key'
+        ) THEN
+          ALTER TABLE roles
+          ADD CONSTRAINT roles_name_key UNIQUE (name);
+        END IF;
+      END $$;
+    `);
+
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'permissions_unique'
+        ) THEN
+          ALTER TABLE permissions
+          ADD CONSTRAINT permissions_unique UNIQUE (module, action);
+        END IF;
+      END $$;
+    `);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS role_permissions (
         role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
         permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
@@ -157,6 +185,11 @@ const runSchemaSetup = async () => {
     `);
 
     await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS role_permissions_role_id_permission_id_key
+      ON role_permissions (role_id, permission_id)
+    `);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS user_roles (
         user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
         role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
@@ -164,6 +197,11 @@ const runSchemaSetup = async () => {
         assigned_by INTEGER,
         PRIMARY KEY (user_id, role_id)
       )
+    `);
+
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS user_roles_user_id_role_id_key
+      ON user_roles (user_id, role_id)
     `);
 
     await client.query(`
