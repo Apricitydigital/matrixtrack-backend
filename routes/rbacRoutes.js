@@ -103,9 +103,9 @@ const syncUserPermissions = async (userId, permissions, actorId) => {
 
       const cityId =
         entry.cityId === null ||
-        entry.cityId === undefined ||
-        entry.cityId === "*" ||
-        entry.cityId === ""
+          entry.cityId === undefined ||
+          entry.cityId === "*" ||
+          entry.cityId === ""
           ? null
           : Number(entry.cityId);
 
@@ -296,11 +296,11 @@ router.post("/roles", authenticate, assertAdminOrPermission, async (req, res) =>
           typeof perm === "number"
             ? perm
             : upsertPermission({
-                module: perm.module,
-                action: perm.action,
-                label: perm.label,
-                description: perm.description,
-              })
+              module: perm.module,
+              action: perm.action,
+              label: perm.label,
+              description: perm.description,
+            })
         )
       );
       permissionIds = ids;
@@ -343,11 +343,11 @@ router.put("/roles/:roleId", authenticate, assertAdminOrPermission, async (req, 
           typeof perm === "number"
             ? perm
             : upsertPermission({
-                module: perm.module,
-                action: perm.action,
-                label: perm.label,
-                description: perm.description,
-              })
+              module: perm.module,
+              action: perm.action,
+              label: perm.label,
+              description: perm.description,
+            })
         )
       );
       permissionIds = ids;
