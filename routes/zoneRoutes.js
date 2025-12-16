@@ -2,13 +2,12 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 const authenticate = require("../middleware/authMiddleware");
-const { authorize } = require("../middleware/permissionMiddleware");
+const { authorize, getPermissionCityFilter } = require("../middleware/permissionMiddleware");
 
 // 🟢 Fetch all zones with city names
 router.get(
   "/",
   authenticate,
-  authorize("master", "view"),
   async (req, res) => {
   try {
     const result = await pool.query(`
@@ -17,7 +16,15 @@ router.get(
       JOIN cities c ON z.city_id = c.city_id
       ORDER BY z.zone_id ASC
     `);
-    res.json(result.rows);
+    const allowedCities = getPermissionCityFilter(req, "city", "view");
+    let rows = result.rows;
+    if (Array.isArray(allowedCities) && allowedCities.length > 0) {
+      const allowedSet = new Set(
+        allowedCities.map((cityId) => Number(cityId))
+      );
+      rows = rows.filter((row) => allowedSet.has(Number(row.city_id)));
+    }
+    res.json(rows);
   } catch (error) {
     console.error("Error fetching zones:", error);
     res.status(500).json({ error: "Database error" });

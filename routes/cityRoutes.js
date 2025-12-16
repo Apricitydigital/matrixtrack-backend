@@ -11,7 +11,6 @@ const {
 router.get(
   "/",
   authenticate,
-  authorize("city", "view"),
   async (req, res) => {
   try {
     const result = await pool.query(
