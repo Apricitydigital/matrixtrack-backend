@@ -75,6 +75,27 @@ const computeAllowedCities = (userRow, access) => {
   return list.length ? list : [];
 };
 
+const buildUiPermissions = (access) => {
+  const permissions = access?.permissions || [];
+  const hasDashboardCityFilter = permissions.some(
+    (perm) =>
+      perm?.module?.toLowerCase() === "dashboard" &&
+      perm?.action?.toLowerCase() === "city_filter:view"
+  );
+
+  return {
+    dashboard: {
+      view:
+        permissions.some(
+          (perm) =>
+            perm?.module?.toLowerCase() === "dashboard" &&
+            perm?.action?.toLowerCase() === "view"
+        ) || false,
+      cityFilter: hasDashboardCityFilter,
+    },
+  };
+};
+
 // ✅ Get Logged-in User
 router.get("/me", authenticateToken, async (req, res) => {
   try {
@@ -90,11 +111,13 @@ router.get("/me", authenticateToken, async (req, res) => {
     const access = await getUserAccessProfile(req.user.user_id);
 
     const allowedCities = computeAllowedCities(user.rows[0], access);
+    const uiPermissions = buildUiPermissions(access);
 
     res.json({
       ...user.rows[0],
       access,
       allowedCities,
+      uiPermissions,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -253,6 +276,7 @@ router.post("/login", async (req, res) => {
 
     res.cookie("token", token, { httpOnly: true });
     const allowedCities = computeAllowedCities(user.rows[0], access);
+    const uiPermissions = buildUiPermissions(access);
 
     res.json({
       message: "Login successful",
@@ -267,6 +291,7 @@ router.post("/login", async (req, res) => {
         emp_code: user.rows[0].emp_code,
         phone: user.rows[0].phone,
         allowedCities,
+        uiPermissions,
       },
     });
   } catch (error) {
@@ -310,6 +335,7 @@ router.post("/supervisor-login", async (req, res) => {
     const access = await getUserAccessProfile(user.rows[0].user_id);
 
     const allowedCities = computeAllowedCities(user.rows[0], access);
+    const uiPermissions = buildUiPermissions(access);
 
     res.json({
       success: true,
@@ -325,6 +351,7 @@ router.post("/supervisor-login", async (req, res) => {
         emp_code: user.rows[0].emp_code,
         phone: user.rows[0].phone,
         allowedCities,
+        uiPermissions,
       },
     });
   } catch (error) {
