@@ -214,7 +214,14 @@ const mapRowsToWards = (rows) => {
   return Object.values(wardMap);
 };
 
-const fetchSupervisorSummary = async (userId, cityId, startDate, endDate) => {
+const fetchSupervisorSummary = async (
+  userId,
+  cityId,
+  startDate,
+  endDate,
+  options = {}
+) => {
+  const { allowCityFallback = false } = options;
   const summaryQuery = `
     WITH assigned_employees AS (
       SELECT DISTINCT e.emp_id
@@ -266,6 +273,13 @@ const fetchSupervisorSummary = async (userId, cityId, startDate, endDate) => {
       ? Number((((inProgress + marked) / totalEmployees) * 100).toFixed(1))
       : 0;
 
+  if (allowCityFallback && userId !== null && totalEmployees === 0) {
+    // Supervisor has access but no ward assignment; fall back to city-wide view
+    return fetchSupervisorSummary(null, cityId, startDate, endDate, {
+      allowCityFallback: false,
+    });
+  }
+
   return {
     totalEmployees,
     inProgress,
@@ -275,7 +289,14 @@ const fetchSupervisorSummary = async (userId, cityId, startDate, endDate) => {
   };
 };
 
-const fetchSupervisorEmployees = async (userId, cityId, startDate, endDate) => {
+const fetchSupervisorEmployees = async (
+  userId,
+  cityId,
+  startDate,
+  endDate,
+  options = {}
+) => {
+  const { allowCityFallback = false } = options;
   const query = `
     SELECT
       e.emp_id,
@@ -370,7 +391,16 @@ const fetchSupervisorEmployees = async (userId, cityId, startDate, endDate) => {
     endDate,
     cityId ?? null,
   ]);
-  return mapRowsToWards(result.rows);
+  const rows = result.rows;
+
+  if (allowCityFallback && userId !== null && rows.length === 0) {
+    // Supervisor has access but no ward assignment; fall back to city-wide view
+    return fetchSupervisorEmployees(null, cityId, startDate, endDate, {
+      allowCityFallback: false,
+    });
+  }
+
+  return mapRowsToWards(rows);
 };
 
 const fetchCitySummary = async (userId, cityId, startDate, endDate) => {
@@ -464,7 +494,8 @@ router.get("/summary", async (req, res) => {
       effectiveUserId,
       scopedCityId,
       startDate,
-      endDate
+      endDate,
+      { allowCityFallback: !isAdmin }
     );
 
     res.json({ success: true, data: summary });
@@ -506,7 +537,8 @@ router.get("/", async (req, res) => {
       effectiveUserId,
       scopedCityId,
       startDate,
-      endDate
+      endDate,
+      { allowCityFallback: !isAdmin }
     );
 
     res.json({ success: true, data: response });
@@ -601,7 +633,8 @@ router.post("/summary", async (req, res) => {
       effectiveUserId,
       scopedCityId,
       startDate,
-      endDate
+      endDate,
+      { allowCityFallback: !isAdmin }
     );
 
     res.json({ success: true, data: summary });
@@ -649,7 +682,8 @@ router.post("/", async (req, res) => {
       effectiveUserId,
       scopedCityId,
       startDate,
-      endDate
+      endDate,
+      { allowCityFallback: !isAdmin }
     );
 
     res.json({ success: true, data: response });
