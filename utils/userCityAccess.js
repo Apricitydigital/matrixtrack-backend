@@ -91,7 +91,11 @@ const fetchUserCityAccess = async (user, options = {}) => {
 
   const cacheKey = buildCacheKey(userId);
   if (!includeCityMetadata && allowAssignmentsFallback && cityAccessCache.has(cacheKey)) {
-    return cityAccessCache.get(cacheKey);
+    const cached = cityAccessCache.get(cacheKey);
+    if (cached?.all || (Array.isArray(cached?.ids) && cached.ids.length > 0)) {
+      return cached;
+    }
+    // fall through to recompute so we can derive from assignments
   }
 
   const queryText = includeCityMetadata
