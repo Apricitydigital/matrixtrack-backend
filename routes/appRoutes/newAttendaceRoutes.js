@@ -1625,16 +1625,29 @@ router.post("/self/onboard", authenticate, async (req, res) => {
       userRecord = created.rows[0];
     }
 
-    const employeeRoleId = await ensureEmployeeRole();
-    if (employeeRoleId && userRecord?.user_id) {
+    try {
+      await pool.query(
+        `
+          INSERT INTO roles (name, description, is_system)
+          VALUES ('employee', 'Employee self-attendance role', TRUE)
+          ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description
+        `
+      );
+    } catch (roleError) {
+      console.warn("ensureEmployeeRole inline failed:", roleError?.message || roleError);
+    }
+
+    try {
       await pool.query(
         `
           INSERT INTO user_roles (user_id, role_id, assigned_at, assigned_by)
-          VALUES ($1, $2, NOW(), $3)
+          SELECT $1, id, NOW(), $2 FROM roles WHERE name = 'employee'
           ON CONFLICT DO NOTHING
         `,
-        [userRecord.user_id, employeeRoleId, req.user?.user_id ?? null]
+        [userRecord.user_id, req.user?.user_id ?? null]
       );
+    } catch (userRoleError) {
+      console.warn("assign employee role failed:", userRoleError?.message || userRoleError);
     }
 
     await pool.query(
@@ -1654,6 +1667,7 @@ router.post("/self/onboard", authenticate, async (req, res) => {
         emp_id: employee.emp_id,
         emp_code: employee.emp_code,
         name: employee.name,
+        self_attendance_enabled: true,
       },
     });
   } catch (error) {
