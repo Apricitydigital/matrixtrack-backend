@@ -81,7 +81,8 @@ app.use("/api", allRoutes);
 app.use("/api/app", appRoutes);
 
 // Start Server
-const PORT = process.env.PORT || 5002;
+// Default to 5000 to match deployed environment; override with PORT if needed.
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });
