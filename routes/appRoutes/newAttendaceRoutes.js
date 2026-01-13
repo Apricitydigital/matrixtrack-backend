@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const router = express.Router();
 const pool = require("../../config/db");
+const bcrypt = require("bcryptjs");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
@@ -32,6 +33,19 @@ const {
   SearchFacesByImageCommand,
   DetectFacesCommand,
 } = require("../../config/awsConfig");
+const authenticate = require("../../middleware/authMiddleware");
+const {
+  ensureSelfAttendanceSupport,
+  fetchEmployeeByCode,
+  fetchEmployeeById,
+} = require("../../utils/selfAttendance");
+
+ensureSelfAttendanceSupport().catch((error) => {
+  console.warn(
+    "Self attendance bootstrap skipped:",
+    error?.message || error
+  );
+});
 
 // Constants
 const PUNCH_TYPES = {
@@ -120,6 +134,49 @@ const normalizeId = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
+
+const ensureEmployeeRole = async () => {
+  const { rows } = await pool.query(
+    `
+      INSERT INTO roles (name, description, is_system)
+      VALUES ('employee', 'Employee self-attendance role', TRUE)
+      ON CONFLICT (name)
+      DO UPDATE SET description = EXCLUDED.description
+      RETURNING id
+    `
+  );
+
+  return rows[0]?.id || null;
+};
+
+async function resolveEmployeeForUser(userPayload) {
+  const userId = normalizeId(userPayload?.user_id ?? userPayload?.id);
+  if (!userId) {
+    return null;
+  }
+
+  const { rows } = await pool.query(
+    `
+      SELECT user_id, emp_code, role, email, name, phone
+        FROM users
+       WHERE user_id = $1
+       LIMIT 1
+    `,
+    [userId]
+  );
+
+  if (!rows.length) {
+    return null;
+  }
+
+  const user = rows[0];
+  const employee = await fetchEmployeeByCode(user.emp_code);
+  if (!employee) {
+    return null;
+  }
+
+  return { user, employee };
+}
 
 const GROUP_MODE_KEYWORDS = new Set([
   "group",
@@ -1430,6 +1487,311 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
 
     const { status, payload } = mapRekognitionError(error);
     res.status(status).json(payload);
+  }
+});
+
+router.get("/self/status", authenticate, async (req, res) => {
+  try {
+    await ensureSelfAttendanceSupport();
+    const resolved = await resolveEmployeeForUser(req.user);
+
+    if (!resolved) {
+      return res
+        .status(404)
+        .json({ error: "Employee profile not found for this user" });
+    }
+
+    const attendanceDate = resolveAttendanceDate(req.query);
+    const attendance = await getOrCreateAttendanceRecord(
+      resolved.employee.emp_id,
+      attendanceDate
+    );
+
+    const attendancePayload = attendance
+      ? {
+          attendance_id: attendance.attendance_id,
+          date: attendance.date,
+          punch_in_time: attendance.punch_in_time,
+          punch_out_time: attendance.punch_out_time,
+          punch_in_image: attendance.punch_in_image,
+          punch_out_image: attendance.punch_out_image,
+          ward_id: attendance.ward_id,
+        }
+      : null;
+
+    return res.json({
+      success: true,
+      employee: {
+        emp_id: resolved.employee.emp_id,
+        emp_code: resolved.employee.emp_code,
+        name: resolved.employee.name,
+        phone: resolved.employee.phone,
+        ward_id: resolved.employee.ward_id,
+        face_enrolled: Boolean(resolved.employee.face_embedding),
+        self_attendance_enabled: Boolean(
+          resolved.employee.self_attendance_enabled
+        ),
+      },
+      attendance: attendancePayload,
+    });
+  } catch (error) {
+    console.error("Self attendance status error:", error);
+    res.status(500).json({ error: "Unable to fetch self attendance status" });
+  }
+});
+
+router.post("/self/onboard", authenticate, async (req, res) => {
+  try {
+    const actorRole = (req.user?.role || "").toLowerCase();
+    if (actorRole !== "supervisor" && actorRole !== "admin") {
+      return res
+        .status(403)
+        .json({ error: "Only supervisors or admins can enable self punch" });
+    }
+
+    const { employeeId, email, password, phone } = req.body || {};
+    const normalizedEmpId = normalizeId(employeeId);
+    if (!normalizedEmpId || !email || !password) {
+      return res.status(400).json({
+        error: "employeeId, email, and password are required",
+      });
+    }
+
+    await ensureSelfAttendanceSupport();
+    const employee = await fetchEmployeeById(normalizedEmpId);
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    if (!employee.face_embedding) {
+      return res.status(412).json({
+        error: "Store the employee face before enabling self punch",
+      });
+    }
+
+    const normalizedEmail = email.toString().trim().toLowerCase();
+    const hashedPassword = await bcrypt.hash(password.toString(), 10);
+
+    const existingUser = await pool.query(
+      `
+        SELECT user_id, role
+          FROM users
+         WHERE email = $1
+            OR emp_code = $2
+         LIMIT 1
+      `,
+      [normalizedEmail, employee.emp_code]
+    );
+
+    let userRecord = null;
+    if (existingUser.rows.length) {
+      const updated = await pool.query(
+        `
+          UPDATE users
+             SET name = $2,
+                 emp_code = $3,
+                 email = $4,
+                 phone = COALESCE($5, phone),
+                 role = 'employee',
+                 password_hash = $6
+           WHERE user_id = $1
+       RETURNING user_id, email, emp_code, role, name, phone
+        `,
+        [
+          existingUser.rows[0].user_id,
+          employee.name,
+          employee.emp_code,
+          normalizedEmail,
+          phone || employee.phone || null,
+          hashedPassword,
+        ]
+      );
+      userRecord = updated.rows[0];
+    } else {
+      const created = await pool.query(
+        `
+          INSERT INTO users (name, emp_code, email, phone, role, password_hash)
+          VALUES ($1, $2, $3, $4, 'employee', $5)
+          RETURNING user_id, email, emp_code, role, name, phone
+        `,
+        [
+          employee.name,
+          employee.emp_code,
+          normalizedEmail,
+          phone || employee.phone || null,
+          hashedPassword,
+        ]
+      );
+      userRecord = created.rows[0];
+    }
+
+    const employeeRoleId = await ensureEmployeeRole();
+    if (employeeRoleId && userRecord?.user_id) {
+      await pool.query(
+        `
+          INSERT INTO user_roles (user_id, role_id, assigned_at, assigned_by)
+          VALUES ($1, $2, NOW(), $3)
+          ON CONFLICT DO NOTHING
+        `,
+        [userRecord.user_id, employeeRoleId, req.user?.user_id ?? null]
+      );
+    }
+
+    await pool.query(
+      `
+        UPDATE employee
+           SET self_attendance_enabled = TRUE
+         WHERE emp_id = $1
+      `,
+      [employee.emp_id]
+    );
+
+    res.json({
+      success: true,
+      message: "Employee self punch enabled",
+      user: userRecord,
+      employee: {
+        emp_id: employee.emp_id,
+        emp_code: employee.emp_code,
+        name: employee.name,
+      },
+    });
+  } catch (error) {
+    console.error("Self onboard error:", error);
+    res.status(500).json({ error: "Unable to enable self punch" });
+  }
+});
+
+router.post("/self/disable", authenticate, async (req, res) => {
+  try {
+    const actorRole = (req.user?.role || "").toLowerCase();
+    if (actorRole !== "supervisor" && actorRole !== "admin") {
+      return res
+        .status(403)
+        .json({ error: "Only supervisors or admins can disable self punch" });
+    }
+
+    const { employeeId } = req.body || {};
+    const normalizedEmpId = normalizeId(employeeId);
+    if (!normalizedEmpId) {
+      return res.status(400).json({ error: "employeeId is required" });
+    }
+
+    await ensureSelfAttendanceSupport();
+    const employee = await fetchEmployeeById(normalizedEmpId);
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    await pool.query(
+      `
+        UPDATE employee
+           SET self_attendance_enabled = FALSE
+         WHERE emp_id = $1
+      `,
+      [employee.emp_id]
+    );
+
+    res.json({
+      success: true,
+      message: "Self punch disabled for employee",
+      employee: {
+        emp_id: employee.emp_id,
+        emp_code: employee.emp_code,
+        name: employee.name,
+        self_attendance_enabled: false,
+      },
+    });
+  } catch (error) {
+    console.error("Self disable error:", error);
+    res.status(500).json({ error: "Unable to disable self punch" });
+  }
+});
+
+router.post("/self/punch", authenticate, upload.single("image"), async (req, res) => {
+  try {
+    await ensureSelfAttendanceSupport();
+    const resolved = await resolveEmployeeForUser(req.user);
+    if (!resolved) {
+      return res
+        .status(404)
+        .json({ error: "Employee profile not found for this user" });
+    }
+
+    if (!resolved.employee.self_attendance_enabled) {
+      return res
+        .status(403)
+        .json({ error: "Self punch is not enabled for this employee" });
+    }
+
+    if (!resolved.employee.face_embedding) {
+      return res.status(412).json({
+        error: "Store the employee face before marking self attendance",
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: "Face image is required" });
+    }
+
+    await ensureNormalizedCaptureFile(req.file);
+
+    const normalizedPunchType = (req.body?.punch_type || "")
+      .toString()
+      .trim()
+      .toUpperCase();
+    const punchType =
+      normalizedPunchType === PUNCH_TYPES.OUT
+        ? PUNCH_TYPES.OUT
+        : PUNCH_TYPES.IN;
+
+    const attendanceDate = resolveAttendanceDate(req.body, req.query);
+    const attendance = await getOrCreateAttendanceRecord(
+      resolved.employee.emp_id,
+      attendanceDate,
+      { punchType }
+    );
+
+    const validation = validatePunchAttempt(attendance, punchType);
+    if (validation) {
+      return res.status(validation.status).json({ error: validation.error });
+    }
+
+    const updated = await processPunch(
+      attendance.attendance_id,
+      punchType,
+      req.file,
+      req.user?.user_id,
+      {
+        latitude: req.body.latitude ?? "0",
+        longitude: req.body.longitude ?? "0",
+        address: req.body.address ?? "",
+      },
+      {
+        employeeId: resolved.employee.emp_id,
+        requireFaceMatch: true,
+      }
+    );
+
+    res.json({
+      success: true,
+      attendance_id: attendance.attendance_id,
+      punch_type: punchType,
+      face_similarity: updated.face_similarity ?? null,
+      face_match_threshold: updated.face_match_threshold ?? null,
+      time:
+        punchType === PUNCH_TYPES.IN
+          ? updated.punch_in_time
+          : updated.punch_out_time,
+    });
+  } catch (error) {
+    console.error("Self punch error:", error);
+    if (error.statusCode) {
+      return res
+        .status(error.statusCode)
+        .json({ error: error.message, details: error.details });
+    }
+    res.status(500).json({ error: "Unable to process self punch" });
   }
 });
 

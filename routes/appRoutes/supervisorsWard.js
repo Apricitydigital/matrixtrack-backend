@@ -7,6 +7,14 @@ const { attachCityScope, requireCityScope } = require("../../middleware/cityScop
 const { attachZoneScope } = require("../../middleware/zoneScope");
 const { buildPublicFaceUrl } = require("../../utils/faceImage");
 const { isBackblazeUrl } = require("../../utils/backblaze");
+const { ensureSelfAttendanceSupport } = require("../../utils/selfAttendance");
+
+ensureSelfAttendanceSupport().catch((error) => {
+  console.warn(
+    "Self attendance bootstrap skipped (supervisor wards):",
+    error?.message || error
+  );
+});
 
 const normalizeUserIdInput = (value) => {
   if (value === undefined || value === null) {
@@ -207,6 +215,8 @@ const mapRowsToWards = (rows) => {
       faceEnrolled: faceEnrolled,
       face_registered: faceEnrolled,
       faceRegistered: faceEnrolled,
+      self_attendance_enabled: Boolean(row.self_attendance_enabled),
+      selfAttendanceEnabled: Boolean(row.self_attendance_enabled),
       punch_in_time: row.punch_in_time,
       punch_out_time: row.punch_out_time,
       last_punch_time: row.last_punch_time,
@@ -317,6 +327,7 @@ const fetchSupervisorEmployees = async (
 ) => {
   const { allowCityFallback = false, zoneIds = [] } = options;
   const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
+  await ensureSelfAttendanceSupport();
   const query = `
     SELECT
       e.emp_id,
@@ -334,6 +345,7 @@ const fetchSupervisorEmployees = async (
       e.face_embedding,
       e.face_confidence,
       e.face_id,
+      e.self_attendance_enabled,
       CASE
           WHEN COALESCE(summary.has_punch_in, 0) = 0 THEN 'Not Marked'
           WHEN COALESCE(summary.has_punch_out, 0) = 1 THEN 'Marked'

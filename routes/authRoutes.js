@@ -4,6 +4,10 @@ const jwt = require("jsonwebtoken");
 const pool = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware"); // ✅ Import middleware
 const { fetchUserCityAccess } = require("../utils/userCityAccess");
+const {
+  ensureSelfAttendanceSupport,
+  fetchEmployeeByCode,
+} = require("../utils/selfAttendance");
 
 const router = express.Router();
 
@@ -83,6 +87,32 @@ const buildUiPermissions = (access) => {
   };
 };
 
+const fetchEmployeeProfile = async (empCode) => {
+  if (!empCode) {
+    return null;
+  }
+
+  try {
+    await ensureSelfAttendanceSupport();
+    const employee = await fetchEmployeeByCode(empCode);
+    if (!employee) {
+      return null;
+    }
+
+    return {
+      emp_id: employee.emp_id,
+      emp_code: employee.emp_code,
+      name: employee.name,
+      ward_id: employee.ward_id,
+      face_enrolled: Boolean(employee.face_embedding),
+      self_attendance_enabled: Boolean(employee.self_attendance_enabled),
+    };
+  } catch (error) {
+    console.error("Employee profile fetch error:", error);
+    return null;
+  }
+};
+
 // ✅ Get Logged-in User
 router.get("/me", authenticateToken, async (req, res) => {
   try {
@@ -99,12 +129,14 @@ router.get("/me", authenticateToken, async (req, res) => {
 
     const allowedCities = await computeAllowedCities(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
+    const employeeProfile = await fetchEmployeeProfile(user.rows[0].emp_code);
 
     res.json({
       ...user.rows[0],
       access,
       allowedCities,
       uiPermissions,
+      employee: employeeProfile,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -264,6 +296,7 @@ router.post("/login", async (req, res) => {
     res.cookie("token", token, { httpOnly: true });
     const allowedCities = await computeAllowedCities(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
+    const employeeProfile = await fetchEmployeeProfile(user.rows[0].emp_code);
 
     res.json({
       message: "Login successful",
@@ -279,6 +312,7 @@ router.post("/login", async (req, res) => {
         phone: user.rows[0].phone,
         allowedCities,
         uiPermissions,
+        employee: employeeProfile,
       },
     });
   } catch (error) {
@@ -323,6 +357,7 @@ router.post("/supervisor-login", async (req, res) => {
 
     const allowedCities = await computeAllowedCities(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
+    const employeeProfile = await fetchEmployeeProfile(user.rows[0].emp_code);
 
     res.json({
       success: true,
@@ -339,6 +374,7 @@ router.post("/supervisor-login", async (req, res) => {
         phone: user.rows[0].phone,
         allowedCities,
         uiPermissions,
+        employee: employeeProfile,
       },
     });
   } catch (error) {
