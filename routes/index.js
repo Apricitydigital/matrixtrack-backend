@@ -18,6 +18,7 @@ const adminRoutes = require("./adminRoutes");
 const rbacRoutes = require("./rbacRoutes");
 const whatsappRoutes = require("./whatsappRoutes");
 const userRoutes = require("./userRoutes");
+const appRoutes = require("./appRoutes/index");
 
 // Protected Route
 router.get("/protected", authenticateUser, (req, res) => {
@@ -38,5 +39,7 @@ router.use("/admin", adminRoutes);
 router.use("/rbac", rbacRoutes);
 router.use("/whatsapp", whatsappRoutes);
 router.use("/user", userRoutes);
+// Compatibility mount so /api/app/* works even if appRoutes isn't mounted in app.js.
+router.use("/app", appRoutes);
 
 module.exports = router;
