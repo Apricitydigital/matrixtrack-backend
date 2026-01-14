@@ -16,6 +16,7 @@ process.on("uncaughtException", (error) => {
 const authRoutes = require("./routes/authRoutes");
 const allRoutes = require("./routes/index");
 const appRoutes = require("./routes/appRoutes/index");
+const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
 
 const app = express();
 
@@ -79,6 +80,8 @@ app.use("/api", allRoutes);
 
 // app Routes
 app.use("/api/app", appRoutes);
+// Explicit mount to ensure self-attendance routes are always available under /api/app/attendance/employee
+app.use("/api/app/attendance/employee", selfAttendanceRoutes);
 
 // Start Server
 // Default to 5000 to match deployed environment; override with PORT if needed.
