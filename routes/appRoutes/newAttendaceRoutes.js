@@ -1598,7 +1598,7 @@ router.post("/self/onboard", authenticate, async (req, res) => {
                  emp_code = $3,
                  email = $4,
                  phone = COALESCE($5, phone),
-                 role = 'employee',
+                 role = 'user',
                  password_hash = $6
            WHERE user_id = $1
        RETURNING user_id, email, emp_code, role, name, phone
@@ -1617,7 +1617,7 @@ router.post("/self/onboard", authenticate, async (req, res) => {
       const created = await pool.query(
         `
           INSERT INTO users (name, emp_code, email, phone, role, password_hash)
-          VALUES ($1, $2, $3, $4, 'employee', $5)
+          VALUES ($1, $2, $3, $4, 'user', $5)
           RETURNING user_id, email, emp_code, role, name, phone
         `,
         [
