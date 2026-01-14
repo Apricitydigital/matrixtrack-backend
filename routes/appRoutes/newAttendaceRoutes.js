@@ -135,6 +135,39 @@ const normalizeId = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const resolveMonthRange = (rawMonth) => {
+  const now = new Date();
+  const fallbackYear = now.getFullYear();
+  const fallbackMonth = now.getMonth() + 1;
+
+  const normalized = (rawMonth || "").toString().trim();
+  let year = fallbackYear;
+  let month = fallbackMonth;
+
+  const monthMatch = /^(\d{4})-(\d{2})$/.exec(normalized);
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
+
+  if (monthMatch) {
+    year = Number(monthMatch[1]);
+    month = Number(monthMatch[2]);
+  } else if (dateMatch) {
+    year = Number(dateMatch[1]);
+    month = Number(dateMatch[2]);
+  }
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    year = fallbackYear;
+    month = fallbackMonth;
+  }
+
+  const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const endDate = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+  const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+
+  return { startDate, endDate, month: monthKey };
+};
+
 const ensureEmployeeRole = async () => {
   const { rows } = await pool.query(
     `
@@ -1537,6 +1570,94 @@ router.get("/self/status", authenticate, async (req, res) => {
   } catch (error) {
     console.error("Self attendance status error:", error);
     res.status(500).json({ error: "Unable to fetch self attendance status" });
+  }
+});
+
+router.get("/self/calendar", authenticate, async (req, res) => {
+  try {
+    await ensureSelfAttendanceSupport();
+    const resolved = await resolveEmployeeForUser(req.user);
+
+    if (!resolved) {
+      return res
+        .status(404)
+        .json({ error: "Employee profile not found for this user" });
+    }
+
+    const { startDate, endDate, month } = resolveMonthRange(req.query.month);
+
+    const recordsQuery = `
+      WITH date_series AS (
+        SELECT generate_series($2::date, $3::date, interval '1 day')::date AS day
+      )
+      SELECT
+        ds.day AS attendance_date,
+        TO_CHAR(ds.day, 'YYYY-MM-DD') AS attendance_date_iso,
+        TO_CHAR(ds.day, 'DD Mon') AS attendance_date_label,
+        a.attendance_id,
+        a.punch_in_time,
+        a.punch_out_time,
+        TO_CHAR((a.punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_in_display,
+        TO_CHAR((a.punch_out_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_out_display,
+        CASE
+          WHEN a.punch_in_time IS NOT NULL AND a.punch_out_time IS NOT NULL THEN 'Marked'
+          WHEN a.punch_in_time IS NOT NULL THEN 'In Progress'
+          ELSE 'Not Marked'
+        END AS attendance_status
+      FROM date_series ds
+      LEFT JOIN attendance a
+        ON a.emp_id = $1
+       AND a.date::date = ds.day
+      ORDER BY ds.day ASC;
+    `;
+
+    const { rows } = await pool.query(recordsQuery, [
+      resolved.employee.emp_id,
+      startDate,
+      endDate,
+    ]);
+
+    const records = rows.map((row) => ({
+      date: row.attendance_date_iso,
+      dateLabel: row.attendance_date_label,
+      attendanceId: row.attendance_id ?? null,
+      punchInDisplay: row.punch_in_display || null,
+      punchOutDisplay: row.punch_out_display || null,
+      status: row.attendance_status || "Not Marked",
+      hasPunchIn: Boolean(row.punch_in_time),
+      hasPunchOut: Boolean(row.punch_out_time),
+    }));
+
+    const stats = records.reduce(
+      (acc, record) => {
+        acc.totalDays += 1;
+        if (record.status === "Marked") {
+          acc.markedDays += 1;
+        } else if (record.status === "In Progress") {
+          acc.inProgressDays += 1;
+        } else {
+          acc.notMarkedDays += 1;
+        }
+        return acc;
+      },
+      { totalDays: 0, markedDays: 0, inProgressDays: 0, notMarkedDays: 0 }
+    );
+
+    res.json({
+      success: true,
+      month,
+      range: { startDate, endDate },
+      employee: {
+        emp_id: resolved.employee.emp_id,
+        emp_code: resolved.employee.emp_code,
+        name: resolved.employee.name,
+      },
+      stats,
+      records,
+    });
+  } catch (error) {
+    console.error("Self attendance calendar error:", error);
+    res.status(500).json({ error: "Unable to fetch self attendance calendar" });
   }
 });
 
