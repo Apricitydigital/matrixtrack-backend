@@ -1563,6 +1563,12 @@ router.post("/self/onboard", authenticate, async (req, res) => {
       return res.status(404).json({ error: "Employee not found" });
     }
 
+    if (!employee.emp_code) {
+      return res.status(412).json({
+        error: "Employee code is required to enable self punch",
+      });
+    }
+
     if (!employee.face_embedding) {
       return res.status(412).json({
         error: "Store the employee face before enabling self punch",
@@ -1672,6 +1678,16 @@ router.post("/self/onboard", authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error("Self onboard error:", error);
+    if (error?.code === "23505") {
+      return res.status(409).json({
+        error: "Email or employee code already exists",
+      });
+    }
+    if (error?.code === "23502") {
+      return res.status(400).json({
+        error: "Missing required user fields",
+      });
+    }
     res.status(500).json({ error: "Unable to enable self punch" });
   }
 });
