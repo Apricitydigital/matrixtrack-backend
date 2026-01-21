@@ -367,6 +367,21 @@ router.get("/image/:employeeId", async (req, res) => {
     const faceEmbedding = rows[0].face_embedding;
     const defaultName = `employee_${employeeId}_face.jpg`;
 
+    const tryProxyHttp = async (url, name = defaultName) => {
+      if (!url) return false;
+      const imageResponse = await axios.get(url, {
+        responseType: "stream",
+      });
+
+      res.set({
+        "Content-Type": imageResponse.headers["content-type"] || "image/jpeg",
+        "Content-Disposition": `inline; filename="${path.basename(name) || defaultName}"`,
+      });
+
+      imageResponse.data.pipe(res);
+      return true;
+    };
+
     if (isBackblazeUrl(faceEmbedding)) {
       const reference = parseBackblazeUrl(faceEmbedding);
       if (!reference?.bucket || !reference?.key) {
@@ -415,10 +430,17 @@ router.get("/image/:employeeId", async (req, res) => {
         return imageResponse.data.pipe(res);
       } catch (error) {
         console.error("Error proxying Backblaze face image:", error);
-        return res.status(502).json({
-          error: "Unable to fetch face image from Backblaze",
-          details: error?.message || "Backblaze request failed",
-        });
+        const publicFallback =
+          buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
+        try {
+          const proxied = await tryProxyHttp(publicFallback, reference.key);
+          if (proxied) return;
+        } catch (proxyError) {
+          console.error("Backblaze public proxy fallback failed:", proxyError);
+        }
+        return res
+          .status(502)
+          .json({ error: "Unable to fetch face image from Backblaze" });
       }
     }
 
@@ -434,31 +456,31 @@ router.get("/image/:employeeId", async (req, res) => {
 
         return stream.pipe(res);
       } catch (error) {
-        if (error?.$metadata?.httpStatusCode === 404) {
-          return res.status(404).json({ error: "Face image not found" });
+        console.error("Error streaming S3 face image:", error);
+        const publicFallback =
+          buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
+        try {
+          const proxied = await tryProxyHttp(publicFallback, objectKey);
+          if (proxied) return;
+        } catch (proxyError) {
+          console.error("S3 proxy fallback failed:", proxyError);
         }
 
-        console.error("Error streaming S3 face image:", error);
-        return res.status(500).json({
-          error: "Unable to fetch face image from S3",
-          details: error?.message || "S3 request failed",
-        });
+        const statusCode = error?.$metadata?.httpStatusCode;
+        const code = statusCode && Number.isFinite(Number(statusCode))
+          ? Number(statusCode)
+          : 500;
+        if (code === 404 || code === 403) {
+          return res.status(404).json({ error: "Face image not found" });
+        }
+        return res.status(500).json({ error: "Unable to fetch face image" });
       }
     }
 
     if (typeof faceEmbedding === "string" && faceEmbedding.startsWith("http")) {
       try {
-        const imageResponse = await axios.get(faceEmbedding, {
-          responseType: "stream",
-        });
-
-        res.set({
-          "Content-Type":
-            imageResponse.headers["content-type"] || "image/jpeg",
-          "Content-Disposition": `inline; filename="${defaultName}"`,
-        });
-
-        return imageResponse.data.pipe(res);
+        const proxied = await tryProxyHttp(faceEmbedding);
+        if (proxied) return;
       } catch (error) {
         console.error("Error proxying face image URL:", error);
         return res.status(500).json({
