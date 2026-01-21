@@ -1,6 +1,42 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
+const { buildPublicFaceUrl } = require("../utils/faceImage");
+const { isBackblazeUrl } = require("../utils/backblaze");
+
+const resolveFaceImageUrl = (faceEmbedding, empId) => {
+  if (!faceEmbedding) {
+    return null;
+  }
+
+  const publicUrl = buildPublicFaceUrl(faceEmbedding);
+  if (publicUrl) {
+    return publicUrl;
+  }
+
+  if (isBackblazeUrl(faceEmbedding) && empId !== undefined && empId !== null) {
+    return `app/attendance/employee/faceRoutes/image/${empId}`;
+  }
+
+  if (typeof faceEmbedding === "string") {
+    return faceEmbedding;
+  }
+
+  return null;
+};
+
+const formatEmployeeRow = (row = {}) => {
+  const faceImageUrl = resolveFaceImageUrl(row.face_embedding, row.emp_id);
+  const faceRegistered = Boolean(row.face_embedding);
+
+  return {
+    ...row,
+    face_registered: faceRegistered,
+    faceRegistered,
+    face_image_url: faceImageUrl,
+    faceImageUrl,
+  };
+};
 
 // 🟢 Fetch all employees with city, zone, ward, department, and designation
 router.get("/", async (req, res) => {
@@ -15,7 +51,8 @@ router.get("/", async (req, res) => {
         z.zone_name AS zone, 
         w.ward_name AS ward, 
         d.department_name AS department, 
-        ds.designation_name AS designation
+        ds.designation_name AS designation,
+        e.face_embedding
       FROM employee e
       LEFT JOIN wards w ON e.ward_id = w.ward_id
       LEFT JOIN zones z ON w.zone_id = z.zone_id
@@ -23,7 +60,7 @@ router.get("/", async (req, res) => {
       LEFT JOIN designation ds ON e.designation_id = ds.designation_id
       LEFT JOIN department d ON ds.department_id = d.department_id;`
     );
-    res.json(result.rows);
+    res.json(result.rows.map(formatEmployeeRow));
   } catch (error) {
     console.error("Error fetching employees:", error);
     res.status(500).json({ error: "Database error" });
@@ -99,7 +136,8 @@ router.put("/:id", async (req, res) => {
           z.zone_name AS zone, 
           w.ward_name AS ward, 
           d.department_name AS department, 
-          ds.designation_name AS designation
+          ds.designation_name AS designation,
+          e.face_embedding
        FROM employee e
        LEFT JOIN wards w ON e.ward_id = w.ward_id
        LEFT JOIN zones z ON w.zone_id = z.zone_id
@@ -110,7 +148,7 @@ router.put("/:id", async (req, res) => {
       [id]
     );
 
-    res.json(updatedEmployee.rows[0]);
+    res.json(formatEmployeeRow(updatedEmployee.rows[0]));
   } catch (error) {
     console.error("Error updating employee:", error);
     if (error.code === "23505") {
