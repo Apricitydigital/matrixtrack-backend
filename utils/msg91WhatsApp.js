@@ -1,22 +1,37 @@
 const axios = require("axios");
+const jwt = require("jsonwebtoken");
 
 const BASE_URL =
   (process.env.MSG91_WHATSAPP_BASE_URL ||
-    "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message").replace(
+    "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk").replace(
     /\/+$/,
     ""
   );
-const AUTH_KEY = process.env.MSG91_WHATSAPP_AUTH_KEY || process.env.MSG91_AUTH_KEY;
+const AUTH_KEY =
+  process.env.MSG91_WHATSAPP_AUTH_KEY || process.env.MSG91_AUTH_KEY;
 const TEMPLATE_NAMESPACE = process.env.MSG91_WHATSAPP_TEMPLATE_NAMESPACE;
 const TEMPLATE_NAME = process.env.MSG91_WHATSAPP_TEMPLATE_NAME;
-const TEMPLATE_LANGUAGE = process.env.MSG91_WHATSAPP_TEMPLATE_LANGUAGE || "en";
+const TEMPLATE_LANGUAGE =
+  process.env.MSG91_WHATSAPP_TEMPLATE_LANGUAGE || "en";
 const INTEGRATED_NUMBER = process.env.MSG91_WHATSAPP_INTEGRATED_NUMBER;
-const CAMPAIGN_NAME =
-  process.env.MSG91_WHATSAPP_CAMPAIGN || "matrixtrack_attendance";
-const REQUEST_TIMEOUT = Number(process.env.MSG91_WHATSAPP_TIMEOUT_MS || 12000);
-const MAX_BODY_LENGTH = Number(
-  process.env.MSG91_WHATSAPP_MAX_BODY_LENGTH || 1900
+const REQUEST_TIMEOUT = Number(
+  process.env.MSG91_WHATSAPP_TIMEOUT_MS || 15000
 );
+
+const REPORT_CITY = "Pune";
+const REPORT_TIMEZONE = "Asia/Kolkata";
+const INTERNAL_BASE_URL = (
+  process.env.INTERNAL_API_BASE_URL ||
+  `http://127.0.0.1:${process.env.PORT || 5000}/api`
+).replace(/\/+$/, "");
+const INTERNAL_API_TIMEOUT = Number(
+  process.env.INTERNAL_API_TIMEOUT_MS || 60000
+);
+const SERVICE_USER_ID = Number(process.env.WHATSAPP_REPORT_USER_ID || -1);
+const SERVICE_USER_ROLE =
+  process.env.WHATSAPP_REPORT_USER_ROLE || "admin";
+
+const EXCLUDED_DEPARTMENTS = ["janwani workers", "unassigned"];
 
 const ensureConfig = () => {
   const missing = [];
@@ -24,153 +39,373 @@ const ensureConfig = () => {
   if (!INTEGRATED_NUMBER) missing.push("MSG91_WHATSAPP_INTEGRATED_NUMBER");
   if (!TEMPLATE_NAMESPACE) missing.push("MSG91_WHATSAPP_TEMPLATE_NAMESPACE");
   if (!TEMPLATE_NAME) missing.push("MSG91_WHATSAPP_TEMPLATE_NAME");
-
+  if (!process.env.JWT_SECRET) missing.push("JWT_SECRET");
   if (missing.length) {
-    const error = new Error(
-      `Missing MSG91 configuration: ${missing.join(", ")}`
-    );
-    error.statusCode = 500;
-    throw error;
+    throw new Error(`Missing configuration: ${missing.join(", ")}`);
   }
 };
 
-const normalizePhoneNumber = (phoneNumber) => {
-  if (!phoneNumber) return "";
+const normalizePhoneNumber = (phoneNumber = "") => {
   const digits = String(phoneNumber).replace(/[^\d]/g, "");
   if (!digits) return "";
-  if (digits.length === 10) {
-    return `91${digits}`;
-  }
+  if (digits.length === 10) return `91${digits}`;
   return digits;
 };
 
-const buildTemplatePayload = ({ phoneNumber, parameters, meta = {} }) => ({
+const getYesterdayIST = () => {
+  const nowUtc = new Date();
+  const istNow = new Date(
+    nowUtc.toLocaleString("en-US", { timeZone: REPORT_TIMEZONE })
+  );
+  istNow.setDate(istNow.getDate() - 1);
+  const isoDate = istNow.toISOString().slice(0, 10);
+  const displayDate = new Date(`${isoDate}T00:00:00+05:30`).toLocaleDateString(
+    "en-IN",
+    {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      timeZone: REPORT_TIMEZONE,
+    }
+  );
+  return { isoDate, displayDate };
+};
+
+const buildServiceHeaders = () => {
+  const token = jwt.sign(
+    {
+      user_id: SERVICE_USER_ID,
+      role: SERVICE_USER_ROLE,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "10m" }
+  );
+  return {
+    Authorization: `Bearer ${token}`,
+  };
+};
+
+const callInternalApi = async (path, params, headers) => {
+  const url = `${INTERNAL_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+  const response = await axios.get(url, {
+    params,
+    headers,
+    timeout: INTERNAL_API_TIMEOUT,
+  });
+  return response.data;
+};
+
+const fetchCityAndZones = async (headers) => {
+  const [citiesPayload, zonesPayload] = await Promise.all([
+    callInternalApi("/cities", {}, headers),
+    callInternalApi("/zones", {}, headers),
+  ]);
+
+  const cityList = Array.isArray(citiesPayload?.cities)
+    ? citiesPayload.cities
+    : Array.isArray(citiesPayload)
+    ? citiesPayload
+    : [];
+
+  const targetCity = cityList.find(
+    (city) =>
+      String(city.city_name).trim().toLowerCase() ===
+      REPORT_CITY.toLowerCase()
+  );
+  if (!targetCity) {
+    throw new Error(`City "${REPORT_CITY}" not available for reporting.`);
+  }
+
+  const zoneList = Array.isArray(zonesPayload) ? zonesPayload : [];
+  const cityZones = zoneList.filter(
+    (zone) => String(zone.city_id) === String(targetCity.city_id)
+  );
+  if (!cityZones.length) {
+    throw new Error(`No zones configured for city "${REPORT_CITY}".`);
+  }
+
+  return { city: targetCity, cityZones };
+};
+
+const extractDepartments = (rawValue = "") => {
+  if (Array.isArray(rawValue)) {
+    return rawValue
+      .map((value) => String(value ?? ""))
+      .flatMap((value) =>
+        value
+          .split(",")
+          .map((dept) => dept.trim())
+          .filter(Boolean)
+      );
+  }
+  return String(rawValue ?? "")
+    .split(",")
+    .map((dept) => dept.trim())
+    .filter(Boolean);
+};
+
+const normalizeDepartmentName = (name = "") =>
+  String(name ?? "").trim().toLowerCase();
+
+const shouldIncludeRow = (row) => {
+  const departments = extractDepartments(row.departments || row.department);
+  if (!departments.length) {
+    return true;
+  }
+  return departments.some(
+    (dept) =>
+      !EXCLUDED_DEPARTMENTS.includes(normalizeDepartmentName(dept))
+  );
+};
+
+const getAllowedDepartments = (row) => {
+  const departments = extractDepartments(row.departments || row.department);
+  return departments.filter(
+    (dept) =>
+      !EXCLUDED_DEPARTMENTS.includes(normalizeDepartmentName(dept))
+  );
+};
+
+const filterExcludedRows = (rows = []) =>
+  rows.filter((row) => shouldIncludeRow(row));
+
+const allocateCountsToMap = (targetMap, departments, present, absent) => {
+  const targets = departments.length ? departments : ["Unassigned"];
+  const count = targets.length;
+  const basePresent = Math.floor(present / count);
+  const presentRemainder = present - basePresent * count;
+  const baseAbsent = Math.floor(absent / count);
+  const absentRemainder = absent - baseAbsent * count;
+
+  targets.forEach((dept, index) => {
+    if (!targetMap.has(dept)) {
+      targetMap.set(dept, { present: 0, absent: 0 });
+    }
+    const entry = targetMap.get(dept);
+    entry.present += basePresent + (index < presentRemainder ? 1 : 0);
+    entry.absent += baseAbsent + (index < absentRemainder ? 1 : 0);
+  });
+};
+
+const getDepartmentCounts = (map, targetName) => {
+  const normalizedTarget = normalizeDepartmentName(targetName);
+  for (const [dept, counts] of map.entries()) {
+    if (normalizeDepartmentName(dept) === normalizedTarget) {
+      return {
+        present: counts.present || 0,
+        absent: counts.absent || 0,
+      };
+    }
+  }
+  return { present: 0, absent: 0 };
+};
+
+const fetchShortReportRows = async ({
+  headers,
+  cityName,
+  zoneName,
+  date,
+}) => {
+  const rows = await callInternalApi(
+    "/attendance/short-report",
+    { cityName, zoneName, date },
+    headers
+  );
+  if (Array.isArray(rows)) {
+    return rows;
+  }
+  return [];
+};
+
+const buildReportData = async () => {
+  const { isoDate, displayDate } = getYesterdayIST();
+  const headers = buildServiceHeaders();
+  const { city, cityZones } = await fetchCityAndZones(headers);
+
+  const allRows = [];
+  const zoneSummaries = [];
+
+  for (const zone of cityZones) {
+    const response = await fetchShortReportRows({
+      headers,
+      cityName: city.city_name,
+      zoneName: zone.zone_name,
+      date: isoDate,
+    });
+    const rows = filterExcludedRows(response);
+    rows.forEach((row) => allRows.push(row));
+    const departmentCounts = new Map();
+    const departmentSet = new Set();
+
+    rows.forEach((row) => {
+      const allowedDepartments = getAllowedDepartments(row);
+      const totalPresent = Number(row.total_present_employees) || 0;
+      const totalRegistered = Number(row.total_registered_employees) || 0;
+      const absent = Math.max(totalRegistered - totalPresent, 0);
+
+      allowedDepartments.forEach((dept) => departmentSet.add(dept));
+      if (allowedDepartments.length) {
+        allocateCountsToMap(
+          departmentCounts,
+          allowedDepartments,
+          totalPresent,
+          absent
+        );
+      }
+    });
+
+    const zonePresent = rows.reduce(
+      (sum, row) => sum + (Number(row.total_present_employees) || 0),
+      0
+    );
+    const zoneRegistered = rows.reduce(
+      (sum, row) => sum + (Number(row.total_registered_employees) || 0),
+      0
+    );
+    const zoneAbsent = Math.max(zoneRegistered - zonePresent, 0);
+
+    zoneSummaries.push({
+      zoneName: zone.zone_name,
+      present: zonePresent,
+      absent: zoneAbsent,
+      departmentCounts,
+      departments: Array.from(departmentSet),
+    });
+  }
+
+  const totalPresentAcrossZones = zoneSummaries.reduce(
+    (sum, zone) => sum + zone.present,
+    0
+  );
+  const totalRegisteredAcrossZones = zoneSummaries.reduce(
+    (sum, zone) => sum + zone.present + zone.absent,
+    0
+  );
+  const totalAbsentAcrossZones = Math.max(
+    totalRegisteredAcrossZones - totalPresentAcrossZones,
+    0
+  );
+
+  const departmentCounts = new Map();
+  allRows.forEach((row) => {
+    const allowedDepartments = getAllowedDepartments(row);
+    const totalPresent = Number(row.total_present_employees) || 0;
+    const totalRegistered = Number(row.total_registered_employees) || 0;
+    const absent = Math.max(totalRegistered - totalPresent, 0);
+
+    if (allowedDepartments.length) {
+      allocateCountsToMap(
+        departmentCounts,
+        allowedDepartments,
+        totalPresent,
+        absent
+      );
+    }
+  });
+
+  const ramp = getDepartmentCounts(departmentCounts, "Ramp");
+  const pmc = getDepartmentCounts(
+    departmentCounts,
+    "Road Sweeping Staff- PMC"
+  );
+  const outsource = getDepartmentCounts(
+    departmentCounts,
+    "Road Sweeping Staff-Outsource"
+  );
+  const swach = getDepartmentCounts(departmentCounts, "Swach Employees");
+
+  return {
+    city: city.city_name,
+    date: displayDate,
+    registered: totalRegisteredAcrossZones,
+    present: totalPresentAcrossZones,
+    absent: totalAbsentAcrossZones,
+    rampPresent: ramp.present,
+    rampAbsent: ramp.absent,
+    pmcPresent: pmc.present,
+    pmcAbsent: pmc.absent,
+    outsourcePresent: outsource.present,
+    outsourceAbsent: outsource.absent,
+    swachPresent: swach.present,
+    swachAbsent: swach.absent,
+  };
+};
+
+const buildPayload = (phoneNumber, reportData) => ({
   integrated_number: INTEGRATED_NUMBER,
-  campaign: CAMPAIGN_NAME,
   content_type: "template",
   payload: {
-    to: [{ phone: phoneNumber, type: "whatsapp" }],
+    messaging_product: "whatsapp",
     type: "template",
     template: {
-      namespace: TEMPLATE_NAMESPACE,
       name: TEMPLATE_NAME,
+      namespace: TEMPLATE_NAMESPACE,
       language: {
         policy: "deterministic",
         code: TEMPLATE_LANGUAGE,
       },
-      components: [
+      to_and_components: [
         {
-          type: "body",
-          parameters: parameters.map((text) => ({
-            type: "text",
-            text,
-          })),
+          to: [phoneNumber],
+          components: {
+            body_1: { type: "text", value: String(reportData.city) },
+            body_2: { type: "text", value: String(reportData.date) },
+            body_3: { type: "text", value: String(reportData.registered) },
+            body_4: { type: "text", value: String(reportData.present) },
+            body_5: { type: "text", value: String(reportData.absent) },
+            body_6: { type: "text", value: String(reportData.rampPresent) },
+            body_7: { type: "text", value: String(reportData.rampAbsent) },
+            body_8: { type: "text", value: String(reportData.pmcPresent) },
+            body_9: { type: "text", value: String(reportData.pmcAbsent) },
+            body_10: {
+              type: "text",
+              value: String(reportData.outsourcePresent),
+            },
+            body_11: {
+              type: "text",
+              value: String(reportData.outsourceAbsent),
+            },
+            body_12: {
+              type: "text",
+              value: `Present ${reportData.swachPresent}, Absent ${reportData.swachAbsent}`,
+            },
+          },
         },
       ],
     },
   },
-  meta,
 });
 
-const parseProviderResponse = (data = {}, httpStatus = 200) => {
-  const providerStatus =
-    data?.data?.status ||
-    data?.type ||
-    (httpStatus >= 200 && httpStatus < 300 ? "queued" : "error");
+const sendDailyWhatsAppReport = async ({ phoneNumber }) => {
+  if (!phoneNumber) {
+    throw new Error("phoneNumber is required.");
+  }
 
-  const messageId =
-    data?.data?.messageId || data?.data?.id || data?.messageId || "";
-
-  return {
-    success: !["error", "failed"].includes(String(providerStatus).toLowerCase()),
-    status: providerStatus,
-    message:
-      data?.message ||
-      data?.data?.message ||
-      "Request accepted by MSG91. Waiting for delivery.",
-    messageId,
-    providerResponse: data,
-  };
-};
-
-const sendWhatsAppReport = async ({
-  phoneNumber,
-  reportText,
-  cityName,
-  date,
-  zoneName,
-}) => {
   ensureConfig();
 
   const normalizedPhone = normalizePhoneNumber(phoneNumber);
   if (!normalizedPhone) {
-    const error = new Error(
-      "A valid phone number is required to send WhatsApp reports."
-    );
-    error.statusCode = 400;
-    throw error;
+    throw new Error("Valid phone number is required.");
   }
 
-  const safeReport = (reportText || "").trim();
-  if (!safeReport) {
-    const error = new Error("Report text is required.");
-    error.statusCode = 400;
-    throw error;
-  }
+  const reportData = await buildReportData();
+  const payload = buildPayload(normalizedPhone, reportData);
 
-  const trimmedReport = MAX_BODY_LENGTH
-    ? safeReport.slice(0, MAX_BODY_LENGTH)
-    : safeReport;
-
-  // Template placeholders: city, date, zone, full report text
-  const bodyParameters = [
-    cityName || "N/A",
-    date || "",
-    zoneName || "All Zones",
-    trimmedReport,
-  ];
-
-  const payload = buildTemplatePayload({
-    phoneNumber: normalizedPhone,
-    parameters: bodyParameters,
-    meta: {
-      city: cityName,
-      date,
-      zone: zoneName,
+  const response = await axios.post(`${BASE_URL}/`, payload, {
+    headers: {
+      "Content-Type": "application/json",
+      authkey: AUTH_KEY,
     },
+    timeout: REQUEST_TIMEOUT,
   });
 
-  const url = `${BASE_URL}/`;
-
-  try {
-    const response = await axios.post(url, payload, {
-      headers: {
-        "Content-Type": "application/json",
-        authkey: AUTH_KEY,
-      },
-      timeout: REQUEST_TIMEOUT,
-    });
-
-    return {
-      ...parseProviderResponse(response.data, response.status),
-      phoneNumber: normalizedPhone,
-    };
-  } catch (error) {
-    const provider = error.response?.data;
-    const err = new Error(
-      provider?.message ||
-        provider?.error ||
-        error.message ||
-        "Unable to send WhatsApp report via MSG91."
-    );
-    err.statusCode = error.response?.status || 502;
-    err.providerStatus = provider?.type || provider?.status;
-    err.provider = provider;
-    throw err;
-  }
+  return {
+    providerResponse: response.data,
+    reportData,
+  };
 };
 
 module.exports = {
-  sendWhatsAppReport,
+  sendDailyWhatsAppReport,
   normalizePhoneNumber,
 };

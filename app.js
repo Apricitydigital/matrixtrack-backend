@@ -3,6 +3,9 @@ const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const path = require("path");
+const cron = require("node-cron");
+const { sendDailyWhatsAppReport } = require("./utils/msg91WhatsApp");
+
 
 process.on("unhandledRejection", (reason) => {
   console.error("UNHANDLED REJECTION:", reason);
@@ -11,6 +14,11 @@ process.on("unhandledRejection", (reason) => {
 process.on("uncaughtException", (error) => {
   console.error("UNCAUGHT EXCEPTION:", error);
 });
+
+// =======================
+// 🧪 TEST MODE CONFIG
+// =======================
+const TEST_RECIPIENTS = ["8319776925", "8982622996","9111899909","9371222202","9229499999","9340553792"];
 
 // Import Routes
 const authRoutes = require("./routes/authRoutes");
@@ -32,22 +40,19 @@ const defaultOrigins = [
   "https://matrixtrack.duckdns.org:5000",
   "http://matrixtrack.duckdns.org",
   "https://matrixtrack.duckdns.org",
-  "https://d30v7d7vnspm71.cloudfront.net", // CloudFront
-  "http://attendease-frontend.s3-website.ap-south-1.amazonaws.com", // S3 frontend
-  "http://matrixtrackfrontend.s3-website.ap-south-1.amazonaws.com", // MatrixTrack S3 frontend
+  "https://d30v7d7vnspm71.cloudfront.net",
+  "http://attendease-frontend.s3-website.ap-south-1.amazonaws.com",
+  "http://matrixtrackfrontend.s3-website.ap-south-1.amazonaws.com",
   "https://c68e-2405-201-300b-8910-9562-50d3-77c0-e73d.ngrok-free.app",
-  "http://192.168.29.88:8081", // React Native Metro bundler
-  "http://192.168.29.88:19000", // Expo development server
+  "http://192.168.29.88:8081",
+  "http://192.168.29.88:19000",
   "http://10.205.83.56:8081",
   "http://10.205.83.56:8082",
   "http://10.205.83.56:19000",
 ];
 
 const parseOrigins = (value) =>
-  value
-    ?.split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+  value?.split(",").map((o) => o.trim()).filter(Boolean);
 
 const envOrigins = parseOrigins(process.env.FRONTEND_ORIGINS) || [];
 const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
@@ -64,8 +69,34 @@ app.use(
     credentials: true,
   })
 );
+
 app.use(cookieParser());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// =======================
+// 🔔 REPORT / WHATSAPP CRON
+// ⏰ 2:18 PM IST
+// =======================
+cron.schedule(
+  "23 23 * * *",
+  async () => {
+    console.log('[WhatsApp Cron] Daily attendance report triggered');
+
+    for (const mobile of TEST_RECIPIENTS) {
+      try {
+        const { reportData } = await sendDailyWhatsAppReport({
+          phoneNumber: mobile,
+        });
+        console.log('[WhatsApp Cron] Sent to:', mobile, reportData.date);
+      } catch (error) {
+        console.error('[WhatsApp Cron] Failed for:', mobile, error.message);
+      }
+    }
+  },
+  {
+    timezone: "Asia/Kolkata",
+  }
+);
 
 // General API Route
 app.get("/", (req, res) => {
@@ -78,14 +109,13 @@ app.use("/api/auth", authRoutes);
 // Other Routes
 app.use("/api", allRoutes);
 
-// app Routes
+// App Routes
 app.use("/api/app", appRoutes);
-// Explicit mount to ensure self-attendance routes are always available under /api/app/attendance/employee
 app.use("/api/app/attendance/employee", selfAttendanceRoutes);
 
 // Start Server
-// Default to 5000 to match deployed environment; override with PORT if needed.
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });
+
