@@ -18,7 +18,7 @@ process.on("uncaughtException", (error) => {
 // =======================
 // 🧪 TEST MODE CONFIG
 // =======================
-const TEST_RECIPIENTS = ["8319776925", "8982622996","9111899909","9371222202","9229499999","9340553792"];
+const TEST_RECIPIENTS = ["8319776925", "8982622996","9111899909","9371222202","9229499999","9340553792","8007773301","83088541510","9730779278","9689931759","7620661125","7722004567","9013990014"];
 
 // Import Routes
 const authRoutes = require("./routes/authRoutes");
@@ -78,7 +78,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // ⏰ 2:18 PM IST
 // =======================
 cron.schedule(
-  "23 23 * * *",
+  "00 09 * * *",
   async () => {
     console.log('[WhatsApp Cron] Daily attendance report triggered');
 
