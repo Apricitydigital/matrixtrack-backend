@@ -58,13 +58,13 @@ const DEFAULT_ATTENDANCE_TIMEZONE =
 const parsedRolloverHour =
   Number(
     process.env.NIGHT_SHIFT_ROLLOVER_HOUR ??
-      process.env.ATTENDANCE_ROLLOVER_HOUR ??
-      4
+    process.env.ATTENDANCE_ROLLOVER_HOUR ??
+    4
   ) || 4;
 const NIGHT_SHIFT_ROLLOVER_HOUR =
   Number.isFinite(parsedRolloverHour) &&
-  parsedRolloverHour >= 0 &&
-  parsedRolloverHour <= 23
+    parsedRolloverHour >= 0 &&
+    parsedRolloverHour <= 23
     ? parsedRolloverHour
     : 4;
 
@@ -426,10 +426,10 @@ const mapRekognitionError = (error) => {
 };
 
 const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
-const parsedFaceThreshold = Number(process.env.FACE_MATCH_THRESHOLD ?? "90");
+const parsedFaceThreshold = Number(process.env.FACE_MATCH_THRESHOLD ?? "97");
 const DEFAULT_FACE_MATCH_THRESHOLD = Number.isFinite(parsedFaceThreshold)
   ? parsedFaceThreshold
-  : 90;
+  : 97;
 
 // Utility functions
 const pad2 = (value) => String(value).padStart(2, "0");
@@ -1225,8 +1225,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           : "0",
       longitude:
         rawLongitude !== undefined &&
-        rawLongitude !== null &&
-        rawLongitude !== ""
+          rawLongitude !== null &&
+          rawLongitude !== ""
           ? rawLongitude
           : "0",
       address: address ?? "",
@@ -1251,6 +1251,14 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         return res.status(422).json({
           error: "No faces detected in the image",
           suggestion: "Ensure group members are clearly visible and retry.",
+        });
+      }
+
+      if (faceDetails.length > 10) {
+        return res.status(422).json({
+          error: "Please reduce the people count to 10",
+          details: `Detected ${faceDetails.length} faces. Maximum allowed is 10.`,
+          suggestion: "Capture the photo with 10 or fewer people and retry.",
         });
       }
 
@@ -1542,14 +1550,14 @@ router.get("/self/status", authenticate, async (req, res) => {
 
     const attendancePayload = attendance
       ? {
-          attendance_id: attendance.attendance_id,
-          date: attendance.date,
-          punch_in_time: attendance.punch_in_time,
-          punch_out_time: attendance.punch_out_time,
-          punch_in_image: attendance.punch_in_image,
-          punch_out_image: attendance.punch_out_image,
-          ward_id: attendance.ward_id,
-        }
+        attendance_id: attendance.attendance_id,
+        date: attendance.date,
+        punch_in_time: attendance.punch_in_time,
+        punch_out_time: attendance.punch_out_time,
+        punch_in_image: attendance.punch_in_image,
+        punch_out_image: attendance.punch_out_image,
+        ward_id: attendance.ward_id,
+      }
       : null;
 
     return res.json({
