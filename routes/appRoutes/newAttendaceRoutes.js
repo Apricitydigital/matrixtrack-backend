@@ -1238,6 +1238,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       rawMode
     );
 
+    console.log("[face-attendance] groupMode:", groupMode, "| mode:", rawMode, "| groupModeRequested:", groupModeRequested);
+
     if (groupModeRequested) {
       const detectCommand = new DetectFacesCommand({
         Image: { Bytes: normalizedCaptureBuffer },
@@ -1247,6 +1249,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       const detectResult = await rekognition.send(detectCommand);
       const faceDetails = detectResult?.FaceDetails ?? [];
 
+      console.log("[face-attendance] Detected faces:", faceDetails.length);
+
       if (!faceDetails.length) {
         return res.status(422).json({
           error: "No faces detected in the image",
@@ -1255,6 +1259,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       }
 
       if (faceDetails.length > 10) {
+        console.log("[face-attendance] BLOCKING: too many faces:", faceDetails.length);
         return res.status(422).json({
           error: "Please reduce the people count to 10",
           details: `Detected ${faceDetails.length} faces. Maximum allowed is 10.`,
