@@ -18,6 +18,7 @@ const adminRoutes = require("./adminRoutes");
 const rbacRoutes = require("./rbacRoutes");
 const whatsappRoutes = require("./whatsappRoutes");
 const userRoutes = require("./userRoutes");
+const sectorRoutes = require("./sectorRoutes");
 const appRoutes = require("./appRoutes/index");
 
 // Protected Route
@@ -30,6 +31,7 @@ router.use("/employees", employeeRoutes);
 router.use("/cities", cityRoutes);
 router.use("/zones", zoneRoutes);
 router.use("/wards", wardRoutes);
+router.use("/sectors", sectorRoutes);
 router.use("/departments", departmentRoutes);
 router.use("/designations", designationRoutes);
 router.use("/attendance", attendanceRoutes);
