@@ -24,9 +24,8 @@ const {
 } = require("../../config/awsConfig");
 
 const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD ?? "97") || 97;
-const GROUP_LIMIT = 10;
-
-const isGroupModeRequest = (...values) =>
+co
+ st isGroupModeRequest = (...values) =>
   values.some((v) => {
     if (v === null || v === undefined) return false;
     if (typeof v === "boolean") return v;
