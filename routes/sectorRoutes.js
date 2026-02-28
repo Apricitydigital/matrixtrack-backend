@@ -3,63 +3,80 @@ const router = express.Router();
 const pool = require("../config/db");
 const authenticate = require("../middleware/authMiddleware");
 const { authorize } = require("../middleware/permissionMiddleware");
+const {
+    attachCityScope,
+    requireCityScope,
+    buildCityFilterClause,
+} = require("../middleware/cityScope");
 
-// Get all sectors (Wards) with associated wards (Kothis)
-router.get("/", authenticate, authorize("master", "view"), async (req, res) => {
-    try {
-        const result = await pool.query(
-            `SELECT 
-                s.sector_id, s.sector_name, 
-                z.zone_id, z.zone_name, 
-                c.city_id, c.city_name,
-                w.ward_id, w.ward_name
-             FROM sectors s
-             JOIN zones z ON s.zone_id = z.zone_id
-             JOIN cities c ON z.city_id = c.city_id
-             LEFT JOIN wards w ON w.sector_id = s.sector_id
-             ORDER BY c.city_name, z.zone_name, s.sector_name, w.ward_name;`
-        );
+// Get all sectors (Wards) with associated Kothis, filtered by city scope
+router.get(
+    "/",
+    authenticate,
+    attachCityScope,
+    requireCityScope(),
+    authorize("master", "view"),
+    async (req, res) => {
+        try {
+            const scope = req.cityScope || { all: false, ids: [] };
+            const cityFilter = buildCityFilterClause(scope, "c", []);
 
-        const groupedData = {};
-        result.rows.forEach((row) => {
-            const { city_id, city_name, zone_id, zone_name, sector_id, sector_name, ward_id, ward_name } = row;
+            const result = await pool.query(
+                `SELECT 
+            s.sector_id, s.sector_name,
+            z.zone_id, z.zone_name,
+            c.city_id, c.city_name,
+            w.ward_id, w.ward_name
+         FROM sectors s
+         JOIN zones z ON s.zone_id = z.zone_id
+         JOIN cities c ON z.city_id = c.city_id
+         LEFT JOIN wards w ON w.sector_id = s.sector_id
+         ${cityFilter.clause}
+         ORDER BY c.city_name, z.zone_name, s.sector_name, w.ward_name`,
+                cityFilter.params
+            );
 
-            if (!groupedData[city_id]) {
-                groupedData[city_id] = { cityId: city_id, city: city_name, zones: {} };
-            }
-            if (!groupedData[city_id].zones[zone_id]) {
-                groupedData[city_id].zones[zone_id] = { zoneId: zone_id, zone: zone_name, sectors: {} };
-            }
-            if (!groupedData[city_id].zones[zone_id].sectors[sector_id]) {
-                groupedData[city_id].zones[zone_id].sectors[sector_id] = {
-                    sectorId: sector_id,
-                    sectorName: sector_name,
-                    kothis: []
-                };
-            }
+            const groupedData = {};
+            result.rows.forEach((row) => {
+                const { city_id, city_name, zone_id, zone_name, sector_id, sector_name, ward_id, ward_name } = row;
 
-            if (ward_id) {
-                groupedData[city_id].zones[zone_id].sectors[sector_id].kothis.push({
-                    wardId: ward_id,
-                    wardName: ward_name,
-                });
-            }
-        });
+                if (!groupedData[city_id]) {
+                    groupedData[city_id] = { cityId: city_id, city: city_name, zones: {} };
+                }
+                if (!groupedData[city_id].zones[zone_id]) {
+                    groupedData[city_id].zones[zone_id] = { zoneId: zone_id, zone: zone_name, sectors: {} };
+                }
+                if (!groupedData[city_id].zones[zone_id].sectors[sector_id]) {
+                    groupedData[city_id].zones[zone_id].sectors[sector_id] = {
+                        sectorId: sector_id,
+                        sectorName: sector_name,
+                        kothis: [],
+                    };
+                }
 
-        const response = Object.values(groupedData).map(city => ({
-            ...city,
-            zones: Object.values(city.zones).map(zone => ({
-                ...zone,
-                sectors: Object.values(zone.sectors)
-            }))
-        }));
+                if (ward_id) {
+                    groupedData[city_id].zones[zone_id].sectors[sector_id].kothis.push({
+                        wardId: ward_id,
+                        wardName: ward_name,
+                    });
+                }
+            });
 
-        res.json(response);
-    } catch (error) {
-        console.error("Error fetching sectors:", error);
-        res.status(500).json({ error: "Internal Server Error" });
+            const response = Object.values(groupedData).map((city) => ({
+                ...city,
+                zones: Object.values(city.zones).map((zone) => ({
+                    ...zone,
+                    sectors: Object.values(zone.sectors),
+                })),
+            }));
+
+            res.json(response);
+        } catch (error) {
+            console.error("Error fetching sectors:", error);
+            res.status(500).json({ error: "Internal Server Error" });
+        }
     }
-});
+);
 
 // Create a new sector (Ward) and assign multiple wards (Kothis)
 router.post("/", authenticate, authorize("master", "manage"), async (req, res) => {
