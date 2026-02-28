@@ -17,6 +17,23 @@ const {
   buildAttendanceImagePath,
   getAttendanceUploadContext,
 } = require("../../utils/attendanceKeyBuilder");
+const {
+  rekognition,
+  DetectFacesCommand,
+  SearchFacesByImageCommand,
+} = require("../../config/awsConfig");
+
+const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD ?? "97") || 97;
+co
+ st isGroupModeRequest = (...values) =>
+  values.some((v) => {
+    if (v === null || v === undefined) return false;
+    if (typeof v === "boolean") return v;
+    const s = v.toString().trim().toLowerCase();
+    if (s === "1" || s === "true" || s === "yes") return true;
+    const c = s.replace(/[^a-z]/g, "");
+    return ["group", "groupmode", "groupattendance", "bulk", "multi"].includes(c);
+  });
 
 // Set up Multer for file uploads
 const storage = multer.memoryStorage();
@@ -190,8 +207,8 @@ router.put("/", upload.single("image"), async (req, res) => {
             punch_type === "IN"
               ? "punch-in"
               : punch_type === "OUT"
-              ? "punch-out"
-              : punch_type,
+                ? "punch-out"
+                : punch_type,
           empCode: uploadContext?.emp_code,
           empId: uploadContext?.emp_id,
           employeeName: uploadContext?.employee_name,
@@ -344,36 +361,139 @@ router.get("/image", async (req, res) => {
   }
 });
 
-// Mark attendance with only photo
+// Mark attendance with only photo — supports group mode with 10-person limit
 router.post(
   "/face-attendance",
-  upload.single("image"), // Single image upload
+  upload.single("image"),
   async (req, res) => {
     try {
-      const { punch_type } = req.body; // "IN" or "OUT"
+      const {
+        punch_type,
+        groupMode,
+        group_mode: groupModeAlias,
+        mode: rawMode,
+      } = req.body;
 
-      // 1. Face Detection
-      const searchParams = {
-        CollectionId: process.env.REKOGNITION_COLLECTION,
-        Image: { Bytes: req.file.buffer },
-        MaxFaces: 1,
-        FaceMatchThreshold: 90,
-      };
+      if (!req.file) {
+        return res.status(400).json({ error: "Face image is required" });
+      }
 
-      const command = new SearchFacesByImageCommand(searchParams);
-      const result = await rekognition.send(command);
+      const imageBuffer = req.file.buffer;
+      const collectionId =
+        (process.env.REKOGNITION_COLLECTION || "").trim() ||
+        (process.env.REKOGNITION_COLLECTION_ID || "").trim() ||
+        null;
 
-      // 2. Verify Match
-      if (!result.FaceMatches?.length) {
+      if (!collectionId) {
+        return res.status(500).json({ error: "Rekognition collection is not configured" });
+      }
+
+      const groupModeRequested = isGroupModeRequest(groupMode, groupModeAlias, rawMode);
+      console.log("[face-attendance-old] groupMode:", groupMode, "| mode:", rawMode, "| groupModeRequested:", groupModeRequested);
+
+      // ─── GROUP MODE: detect all faces, enforce 10-person limit ───────────────
+      if (groupModeRequested) {
+        const detectResult = await rekognition.send(
+          new DetectFacesCommand({
+            Image: { Bytes: imageBuffer },
+            Attributes: ["DEFAULT"],
+          })
+        );
+        const faceDetails = detectResult?.FaceDetails ?? [];
+        console.log("[face-attendance-old] Detected faces:", faceDetails.length);
+
+        if (!faceDetails.length) {
+          return res.status(422).json({
+            error: "No faces detected in the image",
+            suggestion: "Ensure group members are clearly visible and retry.",
+          });
+        }
+
+        if (faceDetails.length > GROUP_LIMIT) {
+          console.log("[face-attendance-old] BLOCKING: too many faces:", faceDetails.length);
+          return res.status(422).json({
+            error: "Please reduce the people count to 10",
+            details: `Detected ${faceDetails.length} faces. Maximum allowed is ${GROUP_LIMIT}.`,
+            suggestion: `Capture the photo with ${GROUP_LIMIT} or fewer people and retry.`,
+          });
+        }
+
+        // Process each face individually
+        const results = [];
+        const processedEmpIds = new Set();
+
+        for (let i = 0; i < faceDetails.length; i++) {
+          try {
+            const searchResult = await rekognition.send(
+              new SearchFacesByImageCommand({
+                CollectionId: collectionId,
+                Image: { Bytes: imageBuffer },
+                MaxFaces: 1,
+                FaceMatchThreshold: FACE_MATCH_THRESHOLD,
+              })
+            );
+
+            const bestMatch = searchResult.FaceMatches?.[0];
+            if (!bestMatch?.Face) {
+              results.push({ faceIndex: i + 1, status: "unmatched", message: "No matching employee found." });
+              continue;
+            }
+
+            const faceId = bestMatch.Face.FaceId;
+            const similarity = bestMatch.Similarity ?? null;
+            const { rows } = await pool.query(
+              "SELECT emp_id, name FROM employee WHERE face_id = $1",
+              [faceId]
+            );
+
+            if (!rows.length) {
+              results.push({ faceIndex: i + 1, status: "unmatched", similarity, message: "Face not linked to any employee." });
+              continue;
+            }
+
+            const emp = rows[0];
+            if (processedEmpIds.has(emp.emp_id)) {
+              results.push({ faceIndex: i + 1, status: "duplicate", employeeId: emp.emp_id, employeeName: emp.name, similarity });
+              continue;
+            }
+
+            processedEmpIds.add(emp.emp_id);
+            results.push({ faceIndex: i + 1, status: "punched", employeeId: emp.emp_id, employeeName: emp.name, similarity });
+          } catch (searchErr) {
+            console.error("Group face search error:", searchErr);
+            results.push({ faceIndex: i + 1, status: "error", message: "Face recognition failed" });
+          }
+        }
+
+        const punchedCount = results.filter((r) => r.status === "punched").length;
+        return res.json({
+          success: punchedCount > 0,
+          mode: "group",
+          punch_type,
+          total_faces: faceDetails.length,
+          punched_count: punchedCount,
+          results,
+        });
+      }
+
+      // ─── SINGLE FACE MODE ────────────────────────────────────────────────────
+      const searchResult = await rekognition.send(
+        new SearchFacesByImageCommand({
+          CollectionId: collectionId,
+          Image: { Bytes: imageBuffer },
+          MaxFaces: 1,
+          FaceMatchThreshold: FACE_MATCH_THRESHOLD,
+        })
+      );
+
+      if (!searchResult.FaceMatches?.length) {
         return res.status(401).json({
           error: "No matching employee found",
           suggestion: "Use manual attendance if face recognition fails",
         });
       }
 
-      const faceId = result.FaceMatches[0].Face.FaceId;
-
-      // 3. Find Employee
+      const faceId = searchResult.FaceMatches[0].Face.FaceId;
       const { rows } = await pool.query(
         "SELECT emp_id FROM employee WHERE face_id = $1",
         [faceId]
@@ -386,38 +506,10 @@ router.post(
         });
       }
 
-      const emp_id = rows[0].emp_id;
-      const today = new Date().toISOString().split("T")[0];
-
-      // 4. Check/Create Attendance Record (similar to your existing logic)
-      let attendance = await getOrCreateAttendanceRecord(emp_id, today);
-
-      // 5. Process Punch (IN/OUT)
-      if (punch_type === "IN" && attendance.punch_in_time) {
-        return res.status(400).json({ error: "Already punched in today" });
-      }
-      if (punch_type === "OUT" && punch_out_time) {
-        return res.status(400).json({ error: "Already punched out for today" });
-      }
-      if (punch_type === "OUT" && !punch_in_time) {
-        return res
-          .status(400)
-          .json({ error: "Punch in first before Punching out" });
-      }
-
-      // 6. Update attendance (reuse your existing update logic)
-      const updated = await processPunch(
-        attendance.attendance_id,
-        punch_type,
-        req.file.buffer // For image storage
-      );
-
       res.json({
         success: true,
-        employee: rows[0].name,
         punch_type,
-        time:
-          punch_type === "IN" ? updated.punch_in_time : updated.punch_out_time,
+        emp_id: rows[0].emp_id,
       });
     } catch (error) {
       console.error("Face attendance error:", error);
