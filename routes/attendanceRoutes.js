@@ -93,40 +93,40 @@ router.get("/short-report", async (req, res) => {
       .json({ error: "cityName and zoneName query params are required." });
   }
 
-  const targetDate = date || formatDateIST();
+  const targetDate = date || new Date().toISOString().split("T")[0];
   const scope = req.cityScope || { all: false, ids: [] };
-  if (!scope.all && (!scope.ids || scope.ids.length === 0)) {
-    return res
-      .status(403)
-      .json({ error: "No city access assigned. Please contact admin." });
-  }
 
   try {
-    const cityLookup = await pool.query(
-      `SELECT city_id FROM public.cities WHERE city_name = $1 LIMIT 1`,
+    const cityCheck = await pool.query(
+      "SELECT city_id FROM cities WHERE city_name = $1",
       [cityName]
     );
 
-    if (cityLookup.rows.length === 0) {
-      return res.status(404).json({ error: "City not found." });
+    if (cityCheck.rows.length === 0) {
+      return res.status(404).json({ error: "City not found" });
     }
+    const reqCityId = cityCheck.rows[0].city_id;
 
-    const requestedCityId = Number(cityLookup.rows[0].city_id);
-    if (
-      !scope.all &&
-      (!scope.ids || !scope.ids.map(Number).includes(requestedCityId))
-    ) {
+    if (!scope.all && !scope.ids.includes(reqCityId)) {
       return res
         .status(403)
         .json({ error: "Forbidden: city not assigned to this user." });
     }
 
-    // Build dynamic WHERE clauses for optional wardId (sector) filter
+    // Build dynamic WHERE clauses
     const params = [cityName, zoneName, targetDate];
     let extraClause = "";
     if (wardId && wardId !== "all") {
       params.push(Number(wardId));
       extraClause += ` AND w.sector_id = $${params.length}`;
+    }
+    if (kothiId && kothiId !== "all") {
+      // Split by comma if it's a string from query params, otherwise handle as single/array
+      const kothiIds = String(kothiId).split(",").map(id => Number(id.trim())).filter(id => !isNaN(id));
+      if (kothiIds.length > 0) {
+        params.push(kothiIds);
+        extraClause += ` AND w.ward_id = ANY($${params.length})`;
+      }
     }
     if (!scope.all) {
       params.push(scope.ids);
