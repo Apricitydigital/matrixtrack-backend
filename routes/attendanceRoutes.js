@@ -84,9 +84,9 @@ const handleAttendanceDownload = createAttendanceDownloadHandler({
 // Download attendance reports with flexible grouping & filters
 router.get("/download", handleAttendanceDownload);
 
-// Short Attendance summarized report by ward
+// Short Attendance summarized report - supports optional wardId (sector) filter
 router.get("/short-report", async (req, res) => {
-  const { cityName, zoneName, date } = req.query;
+  const { cityName, zoneName, wardId, date } = req.query;
   if (!cityName || !zoneName) {
     return res
       .status(400)
@@ -121,11 +121,24 @@ router.get("/short-report", async (req, res) => {
         .json({ error: "Forbidden: city not assigned to this user." });
     }
 
+    // Build dynamic WHERE clauses for optional wardId (sector) filter
+    const params = [cityName, zoneName, targetDate];
+    let extraClause = "";
+    if (wardId && wardId !== "all") {
+      params.push(Number(wardId));
+      extraClause += ` AND w.sector_id = $${params.length}`;
+    }
+    if (!scope.all) {
+      params.push(scope.ids);
+      extraClause += ` AND c.city_id = ANY($${params.length})`;
+    }
+
     const { rows } = await pool.query(
       `SELECT 
         c.city_name,
         z.zone_name,
-        w.ward_name,
+        s.sector_name AS ward_name,
+        w.ward_name AS kothi_name,
         COALESCE(STRING_AGG(DISTINCT u.name, ', ' ORDER BY u.name), '') AS supervisor_names,
         COALESCE(STRING_AGG(DISTINCT dept.department_name, ', ' ORDER BY dept.department_name), '') AS departments,
         COALESCE(
@@ -147,6 +160,7 @@ router.get("/short-report", async (req, res) => {
       FROM public.wards w
       JOIN public.zones z ON w.zone_id = z.zone_id
       JOIN public.cities c ON z.city_id = c.city_id
+      LEFT JOIN public.sectors s ON w.sector_id = s.sector_id
       LEFT JOIN public.employee e ON w.ward_id = e.ward_id
       LEFT JOIN public.designation ds ON e.designation_id = ds.designation_id
       LEFT JOIN public.department dept ON ds.department_id = dept.department_id
@@ -171,12 +185,10 @@ router.get("/short-report", async (req, res) => {
       ) AS dept_stats ON true
       WHERE c.city_name = $1
         AND z.zone_name = $2
-        ${scope.all ? "" : "AND c.city_id = ANY($4)"}
-      GROUP BY c.city_name, z.zone_name, w.ward_name
-      ORDER BY w.ward_name ASC`,
-      scope.all
-        ? [cityName, zoneName, targetDate]
-        : [cityName, zoneName, targetDate, scope.ids]
+        ${extraClause}
+      GROUP BY c.city_name, z.zone_name, s.sector_name, w.ward_name
+      ORDER BY s.sector_name ASC NULLS LAST, w.ward_name ASC`,
+      params
     );
 
     res.json(rows);
