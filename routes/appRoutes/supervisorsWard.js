@@ -120,8 +120,8 @@ const resolveZoneScope = (req) => {
 
   const allowedZoneIds = Array.isArray(scope.ids)
     ? scope.ids
-        .map((zoneId) => Number(zoneId))
-        .filter((zoneId) => Number.isFinite(zoneId))
+      .map((zoneId) => Number(zoneId))
+      .filter((zoneId) => Number.isFinite(zoneId))
     : [];
 
   return allowedZoneIds.length > 0 ? allowedZoneIds : [];
@@ -502,6 +502,59 @@ const fetchCitySummary = async (
   }));
 };
 
+const fetchZoneSummary = async (userId, cityId, startDate, endDate) => {
+  const query = `
+    WITH employee_zone AS (
+      SELECT DISTINCT
+        e.emp_id,
+        z.zone_id,
+        z.zone_name
+      FROM employee e
+      JOIN wards w ON e.ward_id = w.ward_id
+      JOIN zones z ON w.zone_id = z.zone_id
+      JOIN cities c ON z.city_id = c.city_id
+      LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
+      WHERE ($1::int IS NULL OR sw.supervisor_id = $1::int)
+        AND ($4::int IS NULL OR c.city_id = $4::int)
+    ),
+    attendance_status AS (
+      SELECT
+        ez.zone_id,
+        ez.zone_name,
+        ez.emp_id,
+        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
+      FROM employee_zone ez
+      LEFT JOIN attendance a
+        ON a.emp_id = ez.emp_id
+       AND a.date::date BETWEEN $2::date AND $3::date
+      GROUP BY ez.zone_id, ez.zone_name, ez.emp_id
+    )
+    SELECT
+      zone_id,
+      zone_name,
+      COUNT(*) AS total_employees,
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS marked,
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS not_marked
+    FROM attendance_status
+    GROUP BY zone_id, zone_name
+    ORDER BY zone_name;
+  `;
+
+  const params = [userId ?? null, startDate, endDate, cityId ?? null];
+  const result = await pool.query(query, params);
+
+  return result.rows.map((row) => ({
+    zone_id: row.zone_id,
+    zone_name: row.zone_name || "Unassigned",
+    totalEmployees: Number(row.total_employees) || 0,
+    marked: Number(row.marked) || 0,
+    inProgress: Number(row.in_progress) || 0,
+    notMarked: Number(row.not_marked) || 0,
+  }));
+};
+
 router.use(
   authenticate,
   attachCityScope,
@@ -646,6 +699,41 @@ router.post("/city-summary", async (req, res) => {
     res.json({ success: true, data: summary });
   } catch (error) {
     console.error("Error fetching city summary: ", error);
+    res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
+// Zone drilldown: attendance breakdown by zone inside a specific city
+router.post("/zone-summary", async (req, res) => {
+  const { user_id, city_id, startDate: startDateRaw, endDate: endDateRaw } =
+    req.body;
+  const { userId, valid } = normalizeUserIdInput(user_id);
+  const { cityId, valid: cityValid } = normalizeCityIdInput(city_id);
+
+  if (!valid) return res.status(400).json({ error: "Invalid user ID" });
+  if (!cityValid) return res.status(400).json({ error: "Invalid city ID" });
+
+  const requestingUser = req.user;
+  const isAdmin = requestingUser?.role === "admin";
+  const effectiveUserId = isAdmin ? userId : requestingUser?.user_id;
+  if (!isAdmin && !effectiveUserId)
+    return res.status(400).json({ error: "User ID is required" });
+
+  const { cityId: scopedCityId, allowed } = enforceCityScope(req, cityId ?? null);
+  if (!allowed)
+    return res.status(403).json({ error: "Forbidden: city not permitted" });
+
+  try {
+    const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
+    const summary = await fetchZoneSummary(
+      effectiveUserId,
+      scopedCityId,
+      startDate,
+      endDate
+    );
+    res.json({ success: true, data: summary });
+  } catch (error) {
+    console.error("Error fetching zone summary:", error);
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });

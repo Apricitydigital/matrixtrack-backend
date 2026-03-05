@@ -84,30 +84,31 @@ const handleAttendanceDownload = createAttendanceDownloadHandler({
 // Download attendance reports with flexible grouping & filters
 router.get("/download", handleAttendanceDownload);
 
-// Short Attendance summarized report - supports optional wardId (sector) filter
+// Short Attendance summarized report - supports optional wardId (sector) and kothiId filters
 router.get("/short-report", async (req, res) => {
-  const { cityName, zoneName, wardId, date } = req.query;
+  const { cityName, zoneName, wardId, kothiId, date } = req.query;
   if (!cityName || !zoneName) {
     return res
       .status(400)
       .json({ error: "cityName and zoneName query params are required." });
   }
 
-  const targetDate = date || new Date().toISOString().split("T")[0];
+  const targetDate = date || formatDateIST();
   const scope = req.cityScope || { all: false, ids: [] };
 
   try {
+    // Verify city exists
     const cityCheck = await pool.query(
       "SELECT city_id FROM cities WHERE city_name = $1",
       [cityName]
     );
-
     if (cityCheck.rows.length === 0) {
       return res.status(404).json({ error: "City not found" });
     }
     const reqCityId = cityCheck.rows[0].city_id;
 
-    if (!scope.all && !scope.ids.includes(reqCityId)) {
+    // Scope check — compare as strings to avoid int/string mismatch
+    if (!scope.all && !scope.ids.map(String).includes(String(reqCityId))) {
       return res
         .status(403)
         .json({ error: "Forbidden: city not assigned to this user." });
@@ -116,87 +117,63 @@ router.get("/short-report", async (req, res) => {
     // Build dynamic WHERE clauses
     const params = [cityName, zoneName, targetDate];
     let extraClause = "";
+
     if (wardId && wardId !== "all") {
       params.push(Number(wardId));
       extraClause += ` AND w.sector_id = $${params.length}`;
     }
+
     if (kothiId && kothiId !== "all") {
-      // Split by comma if it's a string from query params, otherwise handle as single/array
-      const kothiIds = String(kothiId).split(",").map(id => Number(id.trim())).filter(id => !isNaN(id));
+      const kothiIds = String(kothiId)
+        .split(",")
+        .map((id) => Number(id.trim()))
+        .filter((id) => !isNaN(id) && id > 0);
       if (kothiIds.length > 0) {
         params.push(kothiIds);
         extraClause += ` AND w.ward_id = ANY($${params.length})`;
       }
     }
+
     if (!scope.all) {
-      params.push(scope.ids);
+      params.push(scope.ids.map(Number).filter((id) => !isNaN(id)));
       extraClause += ` AND c.city_id = ANY($${params.length})`;
     }
 
     const { rows } = await pool.query(
-      `SELECT 
+      `SELECT
         c.city_name,
         z.zone_name,
-        s.sector_name AS ward_name,
-        w.ward_name AS kothi_name,
-        COALESCE(STRING_AGG(DISTINCT u.name, ', ' ORDER BY u.name), '') AS supervisor_names,
-        COALESCE(STRING_AGG(DISTINCT dept.department_name, ', ' ORDER BY dept.department_name), '') AS departments,
+        s.sector_name                                    AS ward_name,
+        w.ward_name                                      AS kothi_name,
         COALESCE(
-          JSON_AGG(
-            JSONB_BUILD_OBJECT(
-              'department', dept_stats.department_name,
-              'total_registered', dept_stats.total_registered,
-              'total_present', dept_stats.total_present
-            )
-          ) FILTER (WHERE dept_stats.department_name IS NOT NULL),
-          '[]'
-        ) AS department_stats,
-        COUNT(DISTINCT e.emp_id) AS total_registered_employees,
+          STRING_AGG(DISTINCT u.name, ', ' ORDER BY u.name), ''
+        )                                                AS supervisor_names,
+        COUNT(DISTINCT e.emp_id)                         AS total_registered_employees,
         COUNT(
-          DISTINCT CASE 
-            WHEN a.date::date = $3 THEN a.attendance_id 
+          DISTINCT CASE
+            WHEN a.date::date = $3::date THEN a.attendance_id
           END
-        ) AS total_present_employees
+        )                                                AS total_present_employees
       FROM public.wards w
-      JOIN public.zones z ON w.zone_id = z.zone_id
-      JOIN public.cities c ON z.city_id = c.city_id
-      LEFT JOIN public.sectors s ON w.sector_id = s.sector_id
-      LEFT JOIN public.employee e ON w.ward_id = e.ward_id
-      LEFT JOIN public.designation ds ON e.designation_id = ds.designation_id
-      LEFT JOIN public.department dept ON ds.department_id = dept.department_id
-      LEFT JOIN public.supervisor_ward sw ON w.ward_id = sw.ward_id
-      LEFT JOIN public.users u ON sw.supervisor_id = u.user_id
-      LEFT JOIN public.attendance a ON e.emp_id = a.emp_id
-      LEFT JOIN LATERAL (
-        SELECT 
-          d.department_name,
-          COUNT(DISTINCT e2.emp_id) AS total_registered,
-          COUNT(
-            DISTINCT CASE 
-              WHEN a2.date::date = $3 THEN a2.attendance_id 
-            END
-          ) AS total_present
-        FROM public.employee e2
-        JOIN public.designation ds2 ON e2.designation_id = ds2.designation_id
-        JOIN public.department d ON ds2.department_id = d.department_id
-        LEFT JOIN public.attendance a2 ON e2.emp_id = a2.emp_id
-        WHERE e2.ward_id = w.ward_id
-        GROUP BY d.department_name
-      ) AS dept_stats ON true
+      JOIN public.zones    z  ON w.zone_id   = z.zone_id
+      JOIN public.cities   c  ON z.city_id   = c.city_id
+      LEFT JOIN public.sectors s  ON w.sector_id  = s.sector_id
+      LEFT JOIN public.employee e  ON e.ward_id    = w.ward_id
+      LEFT JOIN public.supervisor_ward sw ON sw.ward_id = w.ward_id
+      LEFT JOIN public.users       u  ON u.user_id   = sw.supervisor_id
+      LEFT JOIN public.attendance  a  ON a.emp_id    = e.emp_id
       WHERE c.city_name = $1
         AND z.zone_name = $2
         ${extraClause}
-      GROUP BY c.city_name, z.zone_name, s.sector_name, w.ward_name
+      GROUP BY c.city_name, z.zone_name, s.sector_name, w.ward_id, w.ward_name
       ORDER BY s.sector_name ASC NULLS LAST, w.ward_name ASC`,
       params
     );
 
     res.json(rows);
   } catch (error) {
-    console.error("Error fetching short attendance report:", error);
-    res
-      .status(500)
-      .json({ error: "Unable to fetch short attendance report." });
+    console.error("Error fetching short attendance report:", error.message, error.stack);
+    res.status(500).json({ error: "Unable to fetch short attendance report." });
   }
 });
 
