@@ -31,8 +31,6 @@ const SERVICE_USER_ID = Number(process.env.WHATSAPP_REPORT_USER_ID || -1);
 const SERVICE_USER_ROLE =
   process.env.WHATSAPP_REPORT_USER_ROLE || "admin";
 
-const EXCLUDED_DEPARTMENTS = ["janwani workers", "unassigned"];
-
 const ensureConfig = () => {
   const missing = [];
   if (!AUTH_KEY) missing.push("MSG91_AUTH_KEY");
@@ -52,7 +50,7 @@ const normalizePhoneNumber = (phoneNumber = "") => {
   return digits;
 };
 
-const getYesterdayIST = () => {
+const getReportDateIST = () => {
   const nowUtc = new Date();
   const istNow = new Date(
     nowUtc.toLocaleString("en-US", { timeZone: REPORT_TIMEZONE })
@@ -145,7 +143,16 @@ const extractDepartments = (rawValue = "") => {
 };
 
 const normalizeDepartmentName = (name = "") =>
-  String(name ?? "").trim().toLowerCase();
+  String(name ?? "")
+    .toLowerCase()
+    .replace(/[–—-]/g, "-") // normalize hyphen-like characters
+    .replace(/\s*-\s*/g, "-") // trim spaces around hyphens
+    .replace(/\s+/g, " ")
+    .trim();
+
+const EXCLUDED_DEPARTMENTS = ["janwani workers", "unassigned"].map(
+  normalizeDepartmentName
+);
 
 const shouldIncludeRow = (row) => {
   const departments = extractDepartments(row.departments || row.department);
@@ -153,16 +160,14 @@ const shouldIncludeRow = (row) => {
     return true;
   }
   return departments.some(
-    (dept) =>
-      !EXCLUDED_DEPARTMENTS.includes(normalizeDepartmentName(dept))
+    (dept) => !EXCLUDED_DEPARTMENTS.includes(normalizeDepartmentName(dept))
   );
 };
 
 const getAllowedDepartments = (row) => {
   const departments = extractDepartments(row.departments || row.department);
   return departments.filter(
-    (dept) =>
-      !EXCLUDED_DEPARTMENTS.includes(normalizeDepartmentName(dept))
+    (dept) => !EXCLUDED_DEPARTMENTS.includes(normalizeDepartmentName(dept))
   );
 };
 
@@ -218,12 +223,14 @@ const fetchShortReportRows = async ({
 };
 
 const buildReportData = async () => {
-  const { isoDate, displayDate } = getYesterdayIST();
+  const { isoDate, displayDate } = getReportDateIST();
   const headers = buildServiceHeaders();
   const { city, cityZones } = await fetchCityAndZones(headers);
 
   const allRows = [];
   const zoneSummaries = [];
+  const cityPresentSet = new Set();
+  const cityRegisteredSet = new Set();
 
   for (const zone of cityZones) {
     const response = await fetchShortReportRows({
@@ -234,34 +241,50 @@ const buildReportData = async () => {
     });
     const rows = filterExcludedRows(response);
     rows.forEach((row) => allRows.push(row));
+
     const departmentCounts = new Map();
     const departmentSet = new Set();
+    const zonePresentSet = new Set();
+    const zoneRegisteredSet = new Set();
 
     rows.forEach((row) => {
+      const presentIds = Array.isArray(row.present_emp_ids)
+        ? row.present_emp_ids
+        : [];
+      const registeredIds = Array.isArray(row.registered_emp_ids)
+        ? row.registered_emp_ids
+        : [];
+
+      presentIds.forEach((id) => {
+        zonePresentSet.add(String(id));
+        cityPresentSet.add(String(id));
+      });
+      registeredIds.forEach((id) => {
+        zoneRegisteredSet.add(String(id));
+        cityRegisteredSet.add(String(id));
+      });
+
       const allowedDepartments = getAllowedDepartments(row);
-      const totalPresent = Number(row.total_present_employees) || 0;
-      const totalRegistered = Number(row.total_registered_employees) || 0;
+      const deptsForAlloc =
+        allowedDepartments.length > 0
+          ? allowedDepartments
+          : ["Swach Employees"]; // fallback so unassigned counts show up
+
+      const totalPresent = presentIds.length || 0;
+      const totalRegistered = registeredIds.length || 0;
       const absent = Math.max(totalRegistered - totalPresent, 0);
 
-      allowedDepartments.forEach((dept) => departmentSet.add(dept));
-      if (allowedDepartments.length) {
-        allocateCountsToMap(
-          departmentCounts,
-          allowedDepartments,
-          totalPresent,
-          absent
-        );
-      }
+      deptsForAlloc.forEach((dept) => departmentSet.add(dept));
+      allocateCountsToMap(
+        departmentCounts,
+        deptsForAlloc,
+        totalPresent,
+        absent
+      );
     });
 
-    const zonePresent = rows.reduce(
-      (sum, row) => sum + (Number(row.total_present_employees) || 0),
-      0
-    );
-    const zoneRegistered = rows.reduce(
-      (sum, row) => sum + (Number(row.total_registered_employees) || 0),
-      0
-    );
+    const zonePresent = zonePresentSet.size;
+    const zoneRegistered = zoneRegisteredSet.size;
     const zoneAbsent = Math.max(zoneRegistered - zonePresent, 0);
 
     zoneSummaries.push({
@@ -273,34 +296,22 @@ const buildReportData = async () => {
     });
   }
 
-  const totalPresentAcrossZones = zoneSummaries.reduce(
-    (sum, zone) => sum + zone.present,
-    0
-  );
-  const totalRegisteredAcrossZones = zoneSummaries.reduce(
-    (sum, zone) => sum + zone.present + zone.absent,
-    0
-  );
-  const totalAbsentAcrossZones = Math.max(
-    totalRegisteredAcrossZones - totalPresentAcrossZones,
-    0
-  );
+  const totalRegisteredAcrossZones = cityRegisteredSet.size;
 
   const departmentCounts = new Map();
   allRows.forEach((row) => {
     const allowedDepartments = getAllowedDepartments(row);
-    const totalPresent = Number(row.total_present_employees) || 0;
-    const totalRegistered = Number(row.total_registered_employees) || 0;
+    const deptsForAlloc =
+      allowedDepartments.length > 0 ? allowedDepartments : ["Swach Employees"];
+    const totalPresent = Array.isArray(row.present_emp_ids)
+      ? row.present_emp_ids.length
+      : Number(row.total_present_employees) || 0;
+    const totalRegistered = Array.isArray(row.registered_emp_ids)
+      ? row.registered_emp_ids.length
+      : Number(row.total_registered_employees) || 0;
     const absent = Math.max(totalRegistered - totalPresent, 0);
 
-    if (allowedDepartments.length) {
-      allocateCountsToMap(
-        departmentCounts,
-        allowedDepartments,
-        totalPresent,
-        absent
-      );
-    }
+    allocateCountsToMap(departmentCounts, deptsForAlloc, totalPresent, absent);
   });
 
   const ramp = getDepartmentCounts(departmentCounts, "Ramp");
@@ -313,6 +324,18 @@ const buildReportData = async () => {
     "Road Sweeping Staff-Outsource"
   );
   const swach = getDepartmentCounts(departmentCounts, "Swach Employees");
+
+  // Force category sum to align with message total
+  const categoryPresentSum =
+    ramp.present + pmc.present + outsource.present + swach.present;
+  const categoryAbsentSum =
+    ramp.absent + pmc.absent + outsource.absent + swach.absent;
+
+  const totalPresentAcrossZones = categoryPresentSum;
+  const totalAbsentAcrossZones = Math.max(
+    totalRegisteredAcrossZones - totalPresentAcrossZones,
+    0
+  );
 
   return {
     city: city.city_name,

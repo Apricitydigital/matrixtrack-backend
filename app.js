@@ -18,7 +18,11 @@ process.on("uncaughtException", (error) => {
 // =======================
 // 🧪 TEST MODE CONFIG
 // =======================
-const TEST_RECIPIENTS = ["8319776925", "8982622996", "9111899909", "9371222202", "9229499999", "9340553792", "8007773301", "83088541510", "9730779278", "9689931759", "7620661125", "7722004567", "9013990014"];
+const parseRecipients = (value) => String(value || "").split(",").map(v => v.trim()).filter(Boolean);
+const DEFAULT_RECIPIENTS = ["9131042937","8319776925","8982622996","9111899909","9371222202","9229499999","9340553792","8007773301","83088541510","9730779278","9689931759","7620661125","7722004567","9013990014","8349733213"];
+const TEST_RECIPIENTS = parseRecipients(process.env.WHATSAPP_RECIPIENTS).length ? parseRecipients(process.env.WHATSAPP_RECIPIENTS) : DEFAULT_RECIPIENTS;
+
+
 
 // Import Routes
 const authRoutes = require("./routes/authRoutes");
@@ -76,10 +80,10 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // =======================
 // 🔔 REPORT / WHATSAPP CRON
-// ⏰ 2:18 PM IST
+// ⏰ 9:30 AM IST
 // =======================
 cron.schedule(
-  "00 09 * * *",
+  "30 09 * * *",
   async () => {
     console.log('[WhatsApp Cron] Daily attendance report triggered');
 

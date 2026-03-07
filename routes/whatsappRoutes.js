@@ -29,8 +29,10 @@ router.post("/report", async (req, res) => {
   } catch (error) {
     console.error("MSG91 WhatsApp send error:", error.provider || error);
 
-    res.status(error.statusCode || 500).json({
+    res.status(error.statusCode || error.response?.status || 500).json({
       error: error.message || "Unable to send WhatsApp report.",
+      details: error.response?.data,
+      url: error.config?.url,
     });
   }
 });
