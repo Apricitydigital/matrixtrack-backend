@@ -5,6 +5,7 @@ const cookieParser = require("cookie-parser");
 const path = require("path");
 const cron = require("node-cron");
 const { sendDailyWhatsAppReport } = require("./utils/msg91WhatsApp");
+const fs = require("fs");
 
 
 process.on("unhandledRejection", (reason) => {
@@ -22,6 +23,25 @@ const parseRecipients = (value) => String(value || "").split(",").map(v => v.tri
 const DEFAULT_RECIPIENTS = ["9131042937","8319776925","8982622996","9111899909","9371222202","9229499999","9340553792","8007773301","83088541510","9730779278","9689931759","7620661125","7722004567","9013990014","8349733213"];
 const TEST_RECIPIENTS = parseRecipients(process.env.WHATSAPP_RECIPIENTS).length ? parseRecipients(process.env.WHATSAPP_RECIPIENTS) : DEFAULT_RECIPIENTS;
 
+// ========= WHATSAPP DEDUP (one run per day) =========
+const LAST_RUN_FILE = path.join(__dirname, "whatsapp_report_last_run.txt");
+const todayKey = () =>
+  new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+const hasSentToday = (key) => {
+  try {
+    const stored = fs.readFileSync(LAST_RUN_FILE, "utf8").trim();
+    return stored === key;
+  } catch (err) {
+    return false;
+  }
+};
+const markSentToday = (key) => {
+  try {
+    fs.writeFileSync(LAST_RUN_FILE, key, "utf8");
+  } catch (err) {
+    console.error("Unable to record WhatsApp send date:", err.message);
+  }
+};
 
 
 // Import Routes
@@ -86,6 +106,11 @@ cron.schedule(
   "30 09 * * *",
   async () => {
     console.log('[WhatsApp Cron] Daily attendance report triggered');
+    const runKey = todayKey();
+    if (hasSentToday(runKey)) {
+      console.log("[WhatsApp Cron] Already sent today, skipping.");
+      return;
+    }
 
     for (const mobile of TEST_RECIPIENTS) {
       try {
@@ -97,6 +122,8 @@ cron.schedule(
         console.error('[WhatsApp Cron] Failed for:', mobile, error.message);
       }
     }
+
+    markSentToday(runKey);
   },
   {
     timezone: "Asia/Kolkata",
