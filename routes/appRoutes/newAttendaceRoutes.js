@@ -39,6 +39,7 @@ const {
   fetchEmployeeByCode,
   fetchEmployeeById,
 } = require("../../utils/selfAttendance");
+const { validateGeofencing } = require("../../utils/geofencing");
 
 ensureSelfAttendanceSupport().catch((error) => {
   console.warn(
@@ -1493,6 +1494,25 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     if (validation) {
       return res.status(validation.status).json({
         error: validation.error,
+      });
+    }
+
+    // 📍 Geofencing Validation
+    const geoCheck = await validateGeofencing(empId, locationPayload.latitude, locationPayload.longitude);
+    if (!geoCheck.allowed) {
+      if (geoCheck.notConfigured) {
+        // Geofencing rules not set up for this zone/ward yet
+        return res.status(403).json({
+          error: "Your geofencing location is not mapped yet",
+          notConfigured: true,
+          details: geoCheck.message || "Please contact admin to configure your zone boundaries."
+        });
+      }
+      // Out of zone
+      return res.status(403).json({
+        error: "Out of Zone",
+        notConfigured: false,
+        details: geoCheck.message || "You are outside the allowed geo-fence zone."
       });
     }
 
