@@ -563,4 +563,168 @@ router.put("/settings/system", async (req, res) => {
   }
 });
 
+// ===== ANNOUNCEMENT MANAGEMENT =====
+
+// Get all announcements
+router.get("/announcements", async (req, res) => {
+  try {
+    const announcements = await pool.query(`
+      SELECT * FROM announcements 
+      ORDER BY created_at DESC
+    `);
+    res.json(announcements.rows);
+  } catch (error) {
+    console.error("Get announcements error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create new announcement
+router.post("/announcements", async (req, res) => {
+  try {
+    const { title, content, target_role = 'supervisor', is_active = true } = req.body;
+    const result = await pool.query(
+      `INSERT INTO announcements (title, content, target_role, is_active) 
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [title, content, target_role, is_active]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Create announcement error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update announcement
+router.put("/announcements/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, content, target_role, is_active } = req.body;
+    const result = await pool.query(
+      `UPDATE announcements 
+       SET title = $1, content = $2, target_role = $3, is_active = $4, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $5 RETURNING *`,
+      [title, content, target_role, is_active, id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Announcement not found" });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Update announcement error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete announcement
+router.delete("/announcements/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query("DELETE FROM announcements WHERE id = $1", [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Announcement not found" });
+    }
+    res.json({ message: "Announcement deleted successfully" });
+  } catch (error) {
+    console.error("Delete announcement error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== FEEDBACK MANAGEMENT =====
+
+// Get all feedback responses with supervisor details
+router.get("/feedback/responses", async (req, res) => {
+  try {
+    const responses = await pool.query(`
+      SELECT 
+        fr.id, 
+        fr.user_id, 
+        fr.rating, 
+        fr.comment, 
+        fr.config_id, 
+        fr.created_at,
+        u.name as user_name, 
+        u.phone as user_phone,
+        fc.question,
+        (
+          SELECT STRING_AGG(DISTINCT z.zone_name, ', ')
+          FROM supervisor_ward sw
+          JOIN wards w ON sw.ward_id = w.ward_id
+          JOIN zones z ON w.zone_id = z.zone_id
+          WHERE sw.supervisor_id = fr.user_id
+        ) as zone_name,
+        (
+          SELECT STRING_AGG(DISTINCT w.ward_name, ', ')
+          FROM supervisor_ward sw
+          JOIN wards w ON sw.ward_id = w.ward_id
+          WHERE sw.supervisor_id = fr.user_id
+        ) as ward_names
+      FROM feedback_responses fr
+      JOIN users u ON fr.user_id = u.user_id
+      JOIN feedback_config fc ON fr.config_id = fc.id
+      ORDER BY fr.created_at DESC
+    `);
+    res.json(responses.rows);
+  } catch (error) {
+    console.error("Get feedback responses error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get feedback configurations
+router.get("/feedback/config", async (req, res) => {
+  try {
+    const config = await pool.query("SELECT * FROM feedback_config ORDER BY created_at DESC");
+    res.json(config.rows);
+  } catch (error) {
+    console.error("Get feedback config error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add new feedback question
+router.post("/feedback/config", async (req, res) => {
+  try {
+    const { question, is_active = true } = req.body;
+    const result = await pool.query(
+      "INSERT INTO feedback_config (question, is_active) VALUES ($1, $2) RETURNING *",
+      [question, is_active]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Create feedback config error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update feedback question status or text
+router.put("/feedback/config/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { question, is_active } = req.body;
+    const result = await pool.query(
+      "UPDATE feedback_config SET question = COALESCE($1, question), is_active = COALESCE($2, is_active) WHERE id = $3 RETURNING *",
+      [question, is_active, id]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Update feedback config error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete feedback question
+router.delete("/feedback/config/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query("DELETE FROM feedback_responses WHERE config_id = $1", [id]);
+    await pool.query("DELETE FROM feedback_config WHERE id = $1", [id]);
+    res.json({ message: "Feedback question and responses deleted" });
+  } catch (error) {
+    console.error("Delete feedback config error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
