@@ -670,31 +670,150 @@ const createAttendanceDownloadHandler =
         metadata.location_type = locationType;
         metadata.format = format;
         const absOnlyFlag = parseBooleanFlag(req.query.absentees_only);
-        if (requestedGrouping === "supervisor_summary" && absOnlyFlag !== null) {
+        if (absOnlyFlag !== null) {
           metadata.absentees_only = absOnlyFlag;
         }
 
-        const selectClause =
-          typeof groupConfig.select === "function"
-            ? groupConfig.select({ locationExpression })
-            : groupConfig.select;
-        const groupByClauseRaw =
-          typeof groupConfig.groupBy === "function"
-            ? groupConfig.groupBy({ locationExpression })
-            : groupConfig.groupBy;
-        const orderByClauseRaw =
-          typeof groupConfig.orderBy === "function"
-            ? groupConfig.orderBy({ locationExpression })
-            : groupConfig.orderBy;
+        let allRows;
 
-        const groupByClause = groupByClauseRaw
-          ? `GROUP BY ${groupByClauseRaw}`
-          : "";
-        const orderByClause = orderByClauseRaw
-          ? `ORDER BY ${orderByClauseRaw}`
-          : "";
+        if (requestedGrouping === "detail") {
+          // Single unified query: start from employee and left-join attendance for the target date.
+          const targetDate =
+            req.query.date ||
+            req.query.start_date ||
+            req.query.date_from ||
+            new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
-        const defaultFromClause = `
+          const detailParams = [targetDate];
+          const filters = [];
+          const hasPunchInFlag = parseBooleanFlag(req.query.has_punch_in);
+          const hasPunchOutFlag = parseBooleanFlag(req.query.has_punch_out);
+          const absOnlyFlag = parseBooleanFlag(req.query.absentees_only);
+
+          // City scope
+          if (!cityScope.all) {
+            detailParams.push(cityScope.ids);
+            filters.push(`c.city_id = ANY($${detailParams.length}::int[])`);
+          } else if (requestedCityId !== null) {
+            detailParams.push(requestedCityId);
+            filters.push(`c.city_id = $${detailParams.length}`);
+          }
+
+          // Optional filters
+          const zoneId = parseIntegerParam(req.query.zone_id);
+          if (zoneId !== null) {
+            detailParams.push(zoneId);
+            filters.push(`z.zone_id = $${detailParams.length}`);
+          }
+          const wardId = parseIntegerParam(req.query.ward_id);
+          if (wardId !== null) {
+            detailParams.push(wardId);
+            filters.push(`w.ward_id = $${detailParams.length}`);
+          }
+          const supervisorId = parseIntegerParam(req.query.supervisor_id);
+          if (supervisorId !== null) {
+            detailParams.push(supervisorId);
+            filters.push(
+              `EXISTS (SELECT 1 FROM supervisor_ward sw2 WHERE sw2.ward_id = w.ward_id AND sw2.supervisor_id = $${detailParams.length})`
+            );
+          }
+          const employeeId = parseIntegerParam(req.query.employee_id);
+          if (employeeId !== null) {
+            detailParams.push(employeeId);
+            filters.push(`e.emp_id = $${detailParams.length}`);
+          }
+          const empCode = (req.query.emp_code || "").toString().trim();
+          if (empCode) {
+            detailParams.push(empCode);
+            filters.push(`e.emp_code = $${detailParams.length}`);
+          }
+
+          if (absOnlyFlag === true) {
+            filters.push("a.punch_in_time IS NULL");
+          }
+          if (hasPunchInFlag !== null) {
+            filters.push(
+              hasPunchInFlag
+                ? "a.punch_in_time IS NOT NULL"
+                : "a.punch_in_time IS NULL"
+            );
+          }
+          if (hasPunchOutFlag !== null) {
+            filters.push(
+              hasPunchOutFlag
+                ? "a.punch_out_time IS NOT NULL"
+                : "a.punch_out_time IS NULL"
+            );
+          }
+
+          const whereCombined = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+
+          const unifiedQuery = `
+            SELECT
+              ROW_NUMBER() OVER (ORDER BY e.emp_id) AS sr_no,
+              a.attendance_id,
+              e.emp_id AS emp_id,
+              e.name AS employee_name,
+              e.emp_code,
+              e.phone AS contact_no,
+              TO_CHAR($1::date, 'DD-MM-YYYY') AS attendance_date,
+              TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
+              TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
+              a.duration,
+              a.in_address,
+              a.out_address,
+              w.ward_id,
+              w.ward_name,
+              z.zone_id,
+              z.zone_name,
+              c.city_id,
+              c.city_name,
+              COALESCE(supervisor.user_id, 0) AS supervisor_id,
+              COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+              COALESCE(u.name, 'Self') AS punched_in_by,
+              COALESCE(u1.name, 'Self') AS punched_out_by
+            FROM employee e
+            JOIN wards w ON e.ward_id = w.ward_id
+            JOIN zones z ON w.zone_id = z.zone_id
+            JOIN cities c ON z.city_id = c.city_id
+            LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
+            LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
+            LEFT JOIN LATERAL (
+              SELECT * FROM attendance a
+              WHERE a.emp_id = e.emp_id AND a.date = $1::date
+              ORDER BY a.attendance_id DESC
+              LIMIT 1
+            ) a ON TRUE
+            LEFT JOIN users u ON a.punched_in_by = u.user_id
+            LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
+            ${whereCombined}
+            ORDER BY e.emp_id;
+          `;
+
+          const unifiedResult = await pool.query(unifiedQuery, detailParams);
+          allRows = unifiedResult.rows;
+        } else {
+          const selectClause =
+            typeof groupConfig.select === "function"
+              ? groupConfig.select({ locationExpression })
+              : groupConfig.select;
+          const groupByClauseRaw =
+            typeof groupConfig.groupBy === "function"
+              ? groupConfig.groupBy({ locationExpression })
+              : groupConfig.groupBy;
+          const orderByClauseRaw =
+            typeof groupConfig.orderBy === "function"
+              ? groupConfig.orderBy({ locationExpression })
+              : groupConfig.orderBy;
+
+          const groupByClause = groupByClauseRaw
+            ? `GROUP BY ${groupByClauseRaw}`
+            : "";
+          const orderByClause = orderByClauseRaw
+            ? `ORDER BY ${orderByClauseRaw}`
+            : "";
+
+          const defaultFromClause = `
         FROM attendance a
         JOIN employee e ON a.emp_id = e.emp_id
         JOIN wards w ON a.ward_id = w.ward_id
@@ -702,33 +821,33 @@ const createAttendanceDownloadHandler =
         JOIN cities c ON z.city_id = c.city_id
       `;
 
-        const defaultJoinClause = `
+          const defaultJoinClause = `
         LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
         LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
         LEFT JOIN users u ON a.punched_in_by = u.user_id
         LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
       `;
 
-        const fromClause =
-          typeof groupConfig.fromOverride === "string"
-            ? groupConfig.fromOverride
-            : defaultFromClause;
+          const fromClause =
+            typeof groupConfig.fromOverride === "string"
+              ? groupConfig.fromOverride
+              : defaultFromClause;
 
-        const joinClause =
-          typeof groupConfig.joinOverride === "string"
-            ? groupConfig.joinOverride
-            : groupConfig.fromOverride
-              ? ""
-              : defaultJoinClause;
+          const joinClause =
+            typeof groupConfig.joinOverride === "string"
+              ? groupConfig.joinOverride
+              : groupConfig.fromOverride
+                ? ""
+                : defaultJoinClause;
 
-        const havingClause =
-          typeof groupConfig.havingClauseBuilder === "function"
-            ? groupConfig.havingClauseBuilder({
-              query: req.query,
-            })
-            : "";
+          const havingClause =
+            typeof groupConfig.havingClauseBuilder === "function"
+              ? groupConfig.havingClauseBuilder({
+                query: req.query,
+              })
+              : "";
 
-        const downloadQuery = `
+          const downloadQuery = `
       SELECT
         ${selectClause}
         ${fromClause}
@@ -739,15 +858,17 @@ const createAttendanceDownloadHandler =
       ${orderByClause}
     `;
 
-        const { rows } = await pool.query(downloadQuery, params);
+          const { rows } = await pool.query(downloadQuery, params);
+          allRows = rows;
+        }
 
         if (format === "json") {
           return res.json({
             group_by: requestedGrouping,
             location_type: locationType,
             filters: metadata,
-            count: rows.length,
-            data: rows,
+            count: allRows.length,
+            data: allRows,
           });
         }
 
@@ -755,7 +876,7 @@ const createAttendanceDownloadHandler =
           typeof groupConfig.csvHeaders === "function"
             ? groupConfig.csvHeaders({ locationExpression })
             : groupConfig.csvHeaders;
-        const csvPayload = buildCsvDocument(rows, headers);
+        const csvPayload = buildCsvDocument(allRows, headers);
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
         const filename = `attendance-${groupConfig.filenameSuffix}-report-${timestamp}.csv`;
 
