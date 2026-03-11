@@ -20,7 +20,7 @@ process.on("uncaughtException", (error) => {
 // 🧪 TEST MODE CONFIG
 // =======================
 const parseRecipients = (value) => String(value || "").split(",").map(v => v.trim()).filter(Boolean);
-const DEFAULT_RECIPIENTS = ["9131042937","8319776925","8982622996","9111899909","9371222202","9229499999","9340553792","8007773301","83088541510","9730779278","9689931759","7620661125","7722004567","9013990014","8349733213"];
+const DEFAULT_RECIPIENTS = ["9131042937", "8319776925", "8982622996", "9111899909", "9371222202", "9229499999", "9340553792", "8007773301", "83088541510", "9730779278", "9689931759", "7620661125", "7722004567", "9013990014", "8349733213"];
 const TEST_RECIPIENTS = parseRecipients(process.env.WHATSAPP_RECIPIENTS).length ? parseRecipients(process.env.WHATSAPP_RECIPIENTS) : DEFAULT_RECIPIENTS;
 
 // ========= WHATSAPP DEDUP (one run per day) =========
@@ -53,6 +53,10 @@ const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
 const app = express();
 
 // Middleware
+app.use((req, res, next) => {
+  console.log(`[HTTP] ${req.method} ${req.url}`);
+  next();
+});
 app.use(express.json());
 const defaultOrigins = [
   "http://localhost:3000",
