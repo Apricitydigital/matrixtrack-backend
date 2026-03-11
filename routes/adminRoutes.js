@@ -633,11 +633,33 @@ router.delete("/announcements/:id", async (req, res) => {
 
 // ===== FEEDBACK MANAGEMENT =====
 
-// Get all feedback responses for admin view
+// Get all feedback responses with supervisor details
 router.get("/feedback/responses", async (req, res) => {
   try {
     const responses = await pool.query(`
-      SELECT fr.*, u.name as user_name, fc.question 
+      SELECT 
+        fr.id, 
+        fr.user_id, 
+        fr.rating, 
+        fr.comment, 
+        fr.config_id, 
+        fr.created_at,
+        u.name as user_name, 
+        u.phone as user_phone,
+        fc.question,
+        (
+          SELECT STRING_AGG(DISTINCT z.zone_name, ', ')
+          FROM supervisor_ward sw
+          JOIN wards w ON sw.ward_id = w.ward_id
+          JOIN zones z ON w.zone_id = z.zone_id
+          WHERE sw.supervisor_id = fr.user_id
+        ) as zone_name,
+        (
+          SELECT STRING_AGG(DISTINCT w.ward_name, ', ')
+          FROM supervisor_ward sw
+          JOIN wards w ON sw.ward_id = w.ward_id
+          WHERE sw.supervisor_id = fr.user_id
+        ) as ward_names
       FROM feedback_responses fr
       JOIN users u ON fr.user_id = u.user_id
       JOIN feedback_config fc ON fr.config_id = fc.id
