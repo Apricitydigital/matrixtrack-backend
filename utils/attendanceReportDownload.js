@@ -216,6 +216,18 @@ const buildAttendanceFilters = (query, { locationExpression, cityScope }) => {
     metadata.has_punch_out = hasPunchOut;
   }
 
+  const shift = (query.shift || "").toString().toLowerCase().trim();
+  if (shift && shift !== "all") {
+    if (shift === "morning") {
+      filters.push("a.punch_in_time::time >= '06:00:00' AND a.punch_in_time::time < '13:59:59'");
+    } else if (shift === "afternoon") {
+      filters.push("a.punch_in_time::time >= '14:00:00' AND a.punch_in_time::time < '21:59:59'");
+    } else if (shift === "night") {
+      filters.push("(a.punch_in_time::time >= '22:00:00' OR a.punch_in_time::time < '05:59:59')");
+    }
+    metadata.shift = shift;
+  }
+
   if (cityScope && !cityScope.all) {
     if (!cityScope.ids || cityScope.ids.length === 0) {
       filters.push("1 = 0");
@@ -590,99 +602,99 @@ const groupingConfigs = {
 
 const createAttendanceDownloadHandler =
   ({ pool, defaultFormat = "csv", resolveCityScope } = {}) =>
-  async (req, res) => {
-    try {
-      const format = (req.query.format || defaultFormat).toString().toLowerCase();
+    async (req, res) => {
+      try {
+        const format = (req.query.format || defaultFormat).toString().toLowerCase();
 
-      if (!SUPPORTED_FORMATS.has(format)) {
-        return res.status(400).json({
-          error: `Unsupported format "${format}". Use one of: ${[
-            ...SUPPORTED_FORMATS,
-          ].join(", ")}`,
-        });
-      }
-
-      const requestedGrouping = (req.query.group_by || "detail")
-        .toString()
-        .toLowerCase();
-      if (!SUPPORTED_GROUPINGS.has(requestedGrouping)) {
-        return res.status(400).json({
-          error: `Invalid group_by "${req.query.group_by}". Supported values: ${[
-            ...SUPPORTED_GROUPINGS,
-          ].join(", ")}`,
-        });
-      }
-
-      const groupConfig = groupingConfigs[requestedGrouping];
-      const rawLocationType = (req.query.location_type || "both")
-        .toString()
-        .trim()
-        .toLowerCase();
-      const locationType = ["in", "out", "both"].includes(rawLocationType)
-        ? rawLocationType
-        : "both";
-      const locationExpression = getLocationExpression(locationType);
-      const cityScope = resolveCityScope?.(req) || { all: false, ids: [] };
-      const requestedCityId = parseIntegerParam(req.query.city_id);
-
-      if (!cityScope.all) {
-        const allowedIds = (cityScope.ids || []).map((id) => Number(id));
-        if (!allowedIds.length) {
-          return res
-            .status(403)
-            .json({ error: "No city access assigned. Please contact admin." });
-        }
-        if (
-          requestedCityId !== null &&
-          !allowedIds.includes(Number(requestedCityId))
-        ) {
-          return res.status(403).json({
-            error: "Forbidden: city not assigned to the current user.",
+        if (!SUPPORTED_FORMATS.has(format)) {
+          return res.status(400).json({
+            error: `Unsupported format "${format}". Use one of: ${[
+              ...SUPPORTED_FORMATS,
+            ].join(", ")}`,
           });
         }
-      }
 
-      const filterResult =
-        requestedGrouping === "supervisor_summary"
-          ? buildSupervisorSummaryFilters(req.query, {
+        const requestedGrouping = (req.query.group_by || "detail")
+          .toString()
+          .toLowerCase();
+        if (!SUPPORTED_GROUPINGS.has(requestedGrouping)) {
+          return res.status(400).json({
+            error: `Invalid group_by "${req.query.group_by}". Supported values: ${[
+              ...SUPPORTED_GROUPINGS,
+            ].join(", ")}`,
+          });
+        }
+
+        const groupConfig = groupingConfigs[requestedGrouping];
+        const rawLocationType = (req.query.location_type || "both")
+          .toString()
+          .trim()
+          .toLowerCase();
+        const locationType = ["in", "out", "both"].includes(rawLocationType)
+          ? rawLocationType
+          : "both";
+        const locationExpression = getLocationExpression(locationType);
+        const cityScope = resolveCityScope?.(req) || { all: false, ids: [] };
+        const requestedCityId = parseIntegerParam(req.query.city_id);
+
+        if (!cityScope.all) {
+          const allowedIds = (cityScope.ids || []).map((id) => Number(id));
+          if (!allowedIds.length) {
+            return res
+              .status(403)
+              .json({ error: "No city access assigned. Please contact admin." });
+          }
+          if (
+            requestedCityId !== null &&
+            !allowedIds.includes(Number(requestedCityId))
+          ) {
+            return res.status(403).json({
+              error: "Forbidden: city not assigned to the current user.",
+            });
+          }
+        }
+
+        const filterResult =
+          requestedGrouping === "supervisor_summary"
+            ? buildSupervisorSummaryFilters(req.query, {
               cityScope,
             })
-          : buildAttendanceFilters(req.query, {
+            : buildAttendanceFilters(req.query, {
               locationExpression,
               cityScope,
             });
 
-      const { whereClause, params, metadata } = filterResult;
+        const { whereClause, params, metadata } = filterResult;
 
-      metadata.group_by = requestedGrouping;
-      metadata.location_type = locationType;
-      metadata.format = format;
-      const absOnlyFlag = parseBooleanFlag(req.query.absentees_only);
-      if (requestedGrouping === "supervisor_summary" && absOnlyFlag !== null) {
-        metadata.absentees_only = absOnlyFlag;
-      }
+        metadata.group_by = requestedGrouping;
+        metadata.location_type = locationType;
+        metadata.format = format;
+        const absOnlyFlag = parseBooleanFlag(req.query.absentees_only);
+        if (requestedGrouping === "supervisor_summary" && absOnlyFlag !== null) {
+          metadata.absentees_only = absOnlyFlag;
+        }
 
-      const selectClause =
-        typeof groupConfig.select === "function"
-          ? groupConfig.select({ locationExpression })
-          : groupConfig.select;
-      const groupByClauseRaw =
-        typeof groupConfig.groupBy === "function"
-          ? groupConfig.groupBy({ locationExpression })
-          : groupConfig.groupBy;
-      const orderByClauseRaw =
-        typeof groupConfig.orderBy === "function"
-          ? groupConfig.orderBy({ locationExpression })
-          : groupConfig.orderBy;
+        const selectClause =
+          typeof groupConfig.select === "function"
+            ? groupConfig.select({ locationExpression })
+            : groupConfig.select;
+        const groupByClauseRaw =
+          typeof groupConfig.groupBy === "function"
+            ? groupConfig.groupBy({ locationExpression })
+            : groupConfig.groupBy;
+        const orderByClauseRaw =
+          typeof groupConfig.orderBy === "function"
+            ? groupConfig.orderBy({ locationExpression })
+            : groupConfig.orderBy;
 
-      const groupByClause = groupByClauseRaw
-        ? `GROUP BY ${groupByClauseRaw}`
-        : "";
-      const orderByClause = orderByClauseRaw
-        ? `ORDER BY ${orderByClauseRaw}`
-        : "";
+        const groupByClause = groupByClauseRaw
+          ? `GROUP BY ${groupByClauseRaw}`
+          : "";
+        const orderByClause = orderByClauseRaw
+          ? `ORDER BY ${orderByClauseRaw}`
+          : "";
 
-      const defaultFromClause = `
+        const defaultFromClause = `
         FROM attendance a
         JOIN employee e ON a.emp_id = e.emp_id
         JOIN wards w ON a.ward_id = w.ward_id
@@ -690,33 +702,33 @@ const createAttendanceDownloadHandler =
         JOIN cities c ON z.city_id = c.city_id
       `;
 
-      const defaultJoinClause = `
+        const defaultJoinClause = `
         LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
         LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
         LEFT JOIN users u ON a.punched_in_by = u.user_id
         LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
       `;
 
-      const fromClause =
-        typeof groupConfig.fromOverride === "string"
-          ? groupConfig.fromOverride
-          : defaultFromClause;
+        const fromClause =
+          typeof groupConfig.fromOverride === "string"
+            ? groupConfig.fromOverride
+            : defaultFromClause;
 
-      const joinClause =
-        typeof groupConfig.joinOverride === "string"
-          ? groupConfig.joinOverride
-          : groupConfig.fromOverride
-          ? ""
-          : defaultJoinClause;
+        const joinClause =
+          typeof groupConfig.joinOverride === "string"
+            ? groupConfig.joinOverride
+            : groupConfig.fromOverride
+              ? ""
+              : defaultJoinClause;
 
-      const havingClause =
-        typeof groupConfig.havingClauseBuilder === "function"
-          ? groupConfig.havingClauseBuilder({
+        const havingClause =
+          typeof groupConfig.havingClauseBuilder === "function"
+            ? groupConfig.havingClauseBuilder({
               query: req.query,
             })
-          : "";
+            : "";
 
-      const downloadQuery = `
+        const downloadQuery = `
       SELECT
         ${selectClause}
         ${fromClause}
@@ -727,37 +739,37 @@ const createAttendanceDownloadHandler =
       ${orderByClause}
     `;
 
-      const { rows } = await pool.query(downloadQuery, params);
+        const { rows } = await pool.query(downloadQuery, params);
 
-      if (format === "json") {
-        return res.json({
-          group_by: requestedGrouping,
-          location_type: locationType,
-          filters: metadata,
-          count: rows.length,
-          data: rows,
+        if (format === "json") {
+          return res.json({
+            group_by: requestedGrouping,
+            location_type: locationType,
+            filters: metadata,
+            count: rows.length,
+            data: rows,
+          });
+        }
+
+        const headers =
+          typeof groupConfig.csvHeaders === "function"
+            ? groupConfig.csvHeaders({ locationExpression })
+            : groupConfig.csvHeaders;
+        const csvPayload = buildCsvDocument(rows, headers);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const filename = `attendance-${groupConfig.filenameSuffix}-report-${timestamp}.csv`;
+
+        res.setHeader("Content-Type", "text/csv");
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        return res.send(csvPayload);
+      } catch (error) {
+        console.error("Error generating attendance download:", error);
+        return res.status(500).json({
+          error: "Unable to generate filtered attendance report",
+          details: error?.message || "Unknown error",
         });
       }
-
-      const headers =
-        typeof groupConfig.csvHeaders === "function"
-          ? groupConfig.csvHeaders({ locationExpression })
-          : groupConfig.csvHeaders;
-      const csvPayload = buildCsvDocument(rows, headers);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filename = `attendance-${groupConfig.filenameSuffix}-report-${timestamp}.csv`;
-
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-      return res.send(csvPayload);
-    } catch (error) {
-      console.error("Error generating attendance download:", error);
-      return res.status(500).json({
-        error: "Unable to generate filtered attendance report",
-        details: error?.message || "Unknown error",
-      });
-    }
-  };
+    };
 
 module.exports = {
   createAttendanceDownloadHandler,

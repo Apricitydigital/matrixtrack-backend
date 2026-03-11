@@ -1,0 +1,33 @@
+name: Backend Deploy (EC2)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            # Navigate to the project directory on your server
+            # CHANGE THIS to your actual server path
+            cd /home/ubuntu/matrixtrack-backend
+            
+            # Pull latest changes
+            git pull origin main
+            
+            # Install dependencies
+            npm install
+            
+            # Restart the service (Assuming PM2 is used and process name is 'matrixtrack-api')
+            # CHANGE 'matrixtrack-api' to your actual PM2 process name
+            pm2 restart matrixtrack-api || pm2 start app.js --name matrixtrack-api

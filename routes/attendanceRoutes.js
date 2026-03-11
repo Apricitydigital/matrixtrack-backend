@@ -54,6 +54,7 @@ router.post("/", async (req, res) => {
         a.out_address, 
         a.punch_out_image, 
         a.duration,
+        a.leave_type,
         u.name AS punched_in_by,
         u1.name AS punched_out_by
       FROM attendance a
@@ -157,13 +158,24 @@ router.get("/short-report", async (req, res) => {
             WHEN a.date::date = $3::date AND a.punch_in_time IS NOT NULL THEN e.emp_id
           END
         )                                                AS total_present_employees,
+        COUNT(
+          DISTINCT CASE
+            WHEN a.leave_type IS NOT NULL THEN e.emp_id
+          END
+        )                                                AS total_leave_employees,
         ARRAY_REMOVE(ARRAY_AGG(DISTINCT e.emp_id), NULL) AS registered_emp_ids,
         ARRAY_REMOVE(
           ARRAY_AGG(DISTINCT CASE
             WHEN a.date::date = $3::date AND a.punch_in_time IS NOT NULL THEN e.emp_id
           END),
           NULL
-        )                                                AS present_emp_ids
+        )                                                AS present_emp_ids,
+        ARRAY_REMOVE(
+          ARRAY_AGG(DISTINCT CASE
+            WHEN a.leave_type IS NOT NULL THEN e.emp_id
+          END),
+          NULL
+        )                                                AS leave_emp_ids
       FROM public.wards w
       JOIN public.zones          z    ON w.zone_id   = z.zone_id
       JOIN public.cities         c    ON z.city_id   = c.city_id

@@ -231,6 +231,7 @@ const buildReportData = async () => {
   const zoneSummaries = [];
   const cityPresentSet = new Set();
   const cityRegisteredSet = new Set();
+   const cityLeaveSet = new Set();
 
   for (const zone of cityZones) {
     const response = await fetchShortReportRows({
@@ -246,6 +247,7 @@ const buildReportData = async () => {
     const departmentSet = new Set();
     const zonePresentSet = new Set();
     const zoneRegisteredSet = new Set();
+    const zoneLeaveSet = new Set();
 
     rows.forEach((row) => {
       const presentIds = Array.isArray(row.present_emp_ids)
@@ -253,6 +255,9 @@ const buildReportData = async () => {
         : [];
       const registeredIds = Array.isArray(row.registered_emp_ids)
         ? row.registered_emp_ids
+        : [];
+      const leaveIds = Array.isArray(row.leave_emp_ids)
+        ? row.leave_emp_ids
         : [];
 
       presentIds.forEach((id) => {
@@ -263,6 +268,10 @@ const buildReportData = async () => {
         zoneRegisteredSet.add(String(id));
         cityRegisteredSet.add(String(id));
       });
+      leaveIds.forEach((id) => {
+        zoneLeaveSet.add(String(id));
+        cityLeaveSet.add(String(id));
+      });
 
       const allowedDepartments = getAllowedDepartments(row);
       const deptsForAlloc =
@@ -271,8 +280,9 @@ const buildReportData = async () => {
           : ["Swach Employees"]; // fallback so unassigned counts show up
 
       const totalPresent = presentIds.length || 0;
+      const totalLeave = leaveIds.length || 0;
       const totalRegistered = registeredIds.length || 0;
-      const absent = Math.max(totalRegistered - totalPresent, 0);
+      const absent = Math.max(totalRegistered - totalPresent - totalLeave, 0);
 
       deptsForAlloc.forEach((dept) => departmentSet.add(dept));
       allocateCountsToMap(
@@ -284,12 +294,14 @@ const buildReportData = async () => {
     });
 
     const zonePresent = zonePresentSet.size;
+    const zoneLeave = zoneLeaveSet.size;
     const zoneRegistered = zoneRegisteredSet.size;
-    const zoneAbsent = Math.max(zoneRegistered - zonePresent, 0);
+    const zoneAbsent = Math.max(zoneRegistered - zonePresent - zoneLeave, 0);
 
     zoneSummaries.push({
       zoneName: zone.zone_name,
       present: zonePresent,
+      leave: zoneLeave,
       absent: zoneAbsent,
       departmentCounts,
       departments: Array.from(departmentSet),
@@ -306,10 +318,13 @@ const buildReportData = async () => {
     const totalPresent = Array.isArray(row.present_emp_ids)
       ? row.present_emp_ids.length
       : Number(row.total_present_employees) || 0;
+    const totalLeave = Array.isArray(row.leave_emp_ids)
+      ? row.leave_emp_ids.length
+      : Number(row.total_leave_employees) || 0;
     const totalRegistered = Array.isArray(row.registered_emp_ids)
       ? row.registered_emp_ids.length
       : Number(row.total_registered_employees) || 0;
-    const absent = Math.max(totalRegistered - totalPresent, 0);
+    const absent = Math.max(totalRegistered - totalPresent - totalLeave, 0);
 
     allocateCountsToMap(departmentCounts, deptsForAlloc, totalPresent, absent);
   });
@@ -332,8 +347,9 @@ const buildReportData = async () => {
     ramp.absent + pmc.absent + outsource.absent + swach.absent;
 
   const totalPresentAcrossZones = categoryPresentSum;
+  const totalLeaveAcrossZones = cityLeaveSet.size;
   const totalAbsentAcrossZones = Math.max(
-    totalRegisteredAcrossZones - totalPresentAcrossZones,
+    totalRegisteredAcrossZones - totalPresentAcrossZones - totalLeaveAcrossZones,
     0
   );
 

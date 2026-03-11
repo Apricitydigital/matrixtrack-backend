@@ -39,6 +39,7 @@ const {
   fetchEmployeeByCode,
   fetchEmployeeById,
 } = require("../../utils/selfAttendance");
+const { validateGeofencing } = require("../../utils/geofencing");
 
 ensureSelfAttendanceSupport().catch((error) => {
   console.warn(
@@ -75,6 +76,48 @@ const TIMESTAMP_INPUT_KEYS = [
   "clientTime",
   "captured_at",
 ];
+
+const ALLOWED_LEAVE_TYPES = new Set([
+  "ABSENT",
+  "LOP",
+  "EL",
+  "SLML",
+  "CL",
+  "COMP_OFF",
+  "OUT_DUTY",
+  "WEEKLY_OFF",
+  "CASUAL",
+  "MEDICAL",
+]);
+
+const normalizeLeaveInput = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/[\/\s-]+/g, "_")
+    .toUpperCase();
+
+const resolveIsoDateInput = (input) => {
+  if (!input) {
+    return new Date().toLocaleDateString("en-CA", {
+      timeZone: DEFAULT_ATTENDANCE_TIMEZONE,
+    });
+  }
+
+  if (typeof input === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.trim())) {
+    return input.trim();
+  }
+
+  const parsed = new Date(input);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleDateString("en-CA", {
+      timeZone: DEFAULT_ATTENDANCE_TIMEZONE,
+    });
+  }
+
+  return new Date().toLocaleDateString("en-CA", {
+    timeZone: DEFAULT_ATTENDANCE_TIMEZONE,
+  });
+};
 
 const attendanceDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: DEFAULT_ATTENDANCE_TIMEZONE,
@@ -1496,6 +1539,25 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       });
     }
 
+    // 📍 Geofencing Validation
+    const geoCheck = await validateGeofencing(empId, locationPayload.latitude, locationPayload.longitude);
+    if (!geoCheck.allowed) {
+      if (geoCheck.notConfigured) {
+        // Geofencing rules not set up for this zone/ward yet
+        return res.status(403).json({
+          error: "Your geofencing location is not mapped yet",
+          notConfigured: true,
+          details: geoCheck.message || "Please contact admin to configure your zone boundaries."
+        });
+      }
+      // Out of zone
+      return res.status(403).json({
+        error: "Out of Zone",
+        notConfigured: false,
+        details: geoCheck.message || "You are outside the allowed geo-fence zone."
+      });
+    }
+
     const updated = await processPunch(
       attendance.attendance_id,
       punchType,
@@ -1956,6 +2018,110 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
         .json({ error: error.message, details: error.details });
     }
     res.status(500).json({ error: "Unable to process self punch" });
+  }
+});
+
+// Mark leave (CASUAL / MEDICAL), allows future dates, no cancellation here
+router.post("/mark-leave", authenticate, async (req, res) => {
+  try {
+    const user = req.user || {};
+    const role = (user.role || "").toLowerCase();
+    const empId = Number(req.body.emp_id ?? req.body.employeeId);
+    const leaveType = normalizeLeaveInput(req.body.leave_type || req.body.leaveType || "");
+    const targetDate = resolveIsoDateInput(req.body.date);
+
+    if (!empId) {
+      return res.status(400).json({ error: "emp_id is required" });
+    }
+    if (!ALLOWED_LEAVE_TYPES.has(leaveType)) {
+      return res.status(400).json({
+        error: "Invalid leave_type",
+        allowed: Array.from(ALLOWED_LEAVE_TYPES),
+      });
+    }
+    if (!role) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // If supervisor, ensure employee is in their wards
+    if (role !== "admin") {
+      const wardCheck = await pool.query(
+        `SELECT 1
+         FROM supervisor_ward sw
+         JOIN employee e ON e.ward_id = sw.ward_id
+         WHERE sw.supervisor_id = $1 AND e.emp_id = $2
+         LIMIT 1`,
+        [user.user_id, empId]
+      );
+      if (wardCheck.rowCount === 0) {
+        return res.status(403).json({ error: "Employee not assigned to this supervisor." });
+      }
+    }
+
+    const existing = await pool.query(
+      `SELECT attendance_id, punch_in_time, punch_out_time, leave_type
+       FROM attendance WHERE emp_id = $1 AND date = $2 LIMIT 1`,
+      [empId, targetDate]
+    );
+
+    const row = existing.rows[0];
+    if (row?.punch_in_time) {
+      return res.status(409).json({ error: "Attendance already punched for this date." });
+    }
+    if (row?.leave_type) {
+      return res.status(200).json({ success: true, attendance_id: row.attendance_id, leave_type: row.leave_type });
+    }
+
+    // fetch ward / zone / city so we never insert null ward_id
+    const empMetaResult = await pool.query(
+      `SELECT e.emp_id, e.ward_id
+       FROM employee e
+       WHERE e.emp_id = $1
+       LIMIT 1`,
+      [empId]
+    );
+    const empMeta = empMetaResult.rows[0];
+    if (!empMeta) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+    if (!empMeta.ward_id) {
+      return res
+        .status(400)
+        .json({ error: "Employee is missing ward assignment." });
+    }
+
+    let result;
+    if (row) {
+      result = await pool.query(
+        `UPDATE attendance
+         SET leave_type = $1,
+             leave_marked_by = $2,
+             leave_marked_at = NOW(),
+             punch_in_time = NULL,
+             punch_out_time = NULL,
+             ward_id = COALESCE(ward_id, $4)
+         WHERE attendance_id = $3
+         RETURNING *`,
+        [leaveType, user.user_id || null, row.attendance_id, empMeta.ward_id]
+      );
+    } else {
+      result = await pool.query(
+        `INSERT INTO attendance (emp_id, ward_id, date, leave_type, leave_marked_by, leave_marked_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         RETURNING *`,
+        [empId, empMeta.ward_id, targetDate, leaveType, user.user_id || null]
+      );
+    }
+
+    res.json({ success: true, attendance: result.rows[0] });
+  } catch (error) {
+    console.error("Mark leave error:", error);
+    res.status(500).json({
+      error: "Unable to mark leave",
+      message: error?.message,
+      code: error?.code,
+      detail: error?.detail,
+    });
   }
 });
 
