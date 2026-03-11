@@ -264,7 +264,8 @@ const fetchSupervisorSummary = async (
     attendance_status AS (
       SELECT
         ae.emp_id,
-        MAX(CASE WHEN a.attendance_id IS NOT NULL THEN 1 ELSE 0 END) AS has_attendance,
+        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
       FROM assigned_employees ae
       LEFT JOIN attendance a
@@ -274,12 +275,14 @@ const fetchSupervisorSummary = async (
     )
     SELECT
       (SELECT COUNT(*) FROM assigned_employees) AS total_employees,
-      COALESCE(SUM(CASE WHEN has_attendance = 1 THEN 1 ELSE 0 END), 0) AS present,
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
+      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
-      COALESCE(SUM(CASE WHEN has_attendance = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
       GREATEST(
         (SELECT COUNT(*) FROM assigned_employees) -
-        COALESCE(SUM(CASE WHEN has_attendance = 1 THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0),
         0
       ) AS not_marked
     FROM attendance_status
@@ -295,12 +298,13 @@ const fetchSupervisorSummary = async (
 
   const totalEmployees = Number(summary.total_employees) || 0;
   const present = Number(summary.present) || 0;
+  const onLeave = Number(summary.on_leave) || 0;
   const fullyMarked = Number(summary.fully_marked) || 0;
   const inProgress = Number(summary.in_progress) || 0;
   const notMarked = Number(summary.not_marked) || 0;
   const attendanceRate =
     totalEmployees > 0
-      ? Number(((present / totalEmployees) * 100).toFixed(1))
+      ? Number((((present + onLeave) / totalEmployees) * 100).toFixed(1))
       : 0;
 
   if (allowCityFallback && userId !== null && totalEmployees === 0) {
@@ -314,9 +318,10 @@ const fetchSupervisorSummary = async (
   return {
     totalEmployees,
     present,
-    marked: present, // align dashboard with attendance-report punch-in count
+    marked: present, // green card = fullyMarked (frontend maps), present kept for reference
     fullyMarked,
     inProgress,
+    onLeave,
     notMarked,
     attendanceRate,
   };
@@ -351,6 +356,7 @@ const fetchSupervisorEmployees = async (
       e.face_id,
       e.self_attendance_enabled,
       CASE
+          WHEN COALESCE(summary.has_leave, 0) = 1 THEN 'Leave'
           WHEN COALESCE(summary.has_punch_in, 0) = 0 THEN 'Not Marked'
           WHEN COALESCE(summary.has_punch_out, 0) = 1 THEN 'Marked'
           ELSE 'In Progress'
@@ -380,6 +386,7 @@ const fetchSupervisorEmployees = async (
       SELECT
         a.emp_id,
         MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
         COUNT(*) FILTER (WHERE a.punch_in_time IS NOT NULL) AS days_present,
         COUNT(*) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
@@ -469,7 +476,8 @@ const fetchCitySummary = async (
         ec.city_id,
         ec.city_name,
         ec.emp_id,
-        MAX(CASE WHEN a.attendance_id IS NOT NULL THEN 1 ELSE 0 END) AS has_attendance,
+        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
       FROM employee_city ec
       LEFT JOIN attendance a
@@ -481,10 +489,17 @@ const fetchCitySummary = async (
       city_id,
       city_name,
       COUNT(*) AS total_employees,
-      COALESCE(SUM(CASE WHEN has_attendance = 1 THEN 1 ELSE 0 END), 0) AS present,
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
+      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
-      COALESCE(SUM(CASE WHEN has_attendance = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
-      COALESCE(SUM(CASE WHEN has_attendance = 0 THEN 1 ELSE 0 END), 0) AS not_marked
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave_only,
+      GREATEST(
+        COUNT(*) -
+        COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0),
+        0
+      ) AS not_marked
     FROM attendance_status
     GROUP BY city_id, city_name
     ORDER BY city_name;
@@ -502,10 +517,14 @@ const fetchCitySummary = async (
     city_name: row.city_name || "Unassigned",
     totalEmployees: Number(row.total_employees) || 0,
     present: Number(row.present) || 0,
+    onLeave: Number(row.on_leave) || 0,
     marked: Number(row.present) || 0,
     fullyMarked: Number(row.fully_marked) || 0,
     inProgress: Number(row.in_progress) || 0,
-    notMarked: Number(row.not_marked) || 0,
+    notMarked: Math.max(
+      (Number(row.total_employees) || 0) - (Number(row.present) || 0) - (Number(row.on_leave) || 0),
+      0
+    ),
   }));
 };
 
@@ -529,8 +548,9 @@ const fetchZoneSummary = async (userId, cityId, startDate, endDate) => {
         ez.zone_id,
         ez.zone_name,
         ez.emp_id,
-        MAX(CASE WHEN a.attendance_id IS NOT NULL THEN 1 ELSE 0 END) AS has_attendance,
-        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
+        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave
       FROM employee_zone ez
       LEFT JOIN attendance a
         ON a.emp_id = ez.emp_id
@@ -541,10 +561,11 @@ const fetchZoneSummary = async (userId, cityId, startDate, endDate) => {
       zone_id,
       zone_name,
       COUNT(*) AS total_employees,
-      COALESCE(SUM(CASE WHEN has_attendance = 1 THEN 1 ELSE 0 END), 0) AS present,
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
+      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
-      COALESCE(SUM(CASE WHEN has_attendance = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
-      COALESCE(SUM(CASE WHEN has_attendance = 0 THEN 1 ELSE 0 END), 0) AS not_marked
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      GREATEST(COUNT(*) - COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0), 0) AS not_marked
     FROM attendance_status
     GROUP BY zone_id, zone_name
     ORDER BY zone_name;
@@ -558,10 +579,16 @@ const fetchZoneSummary = async (userId, cityId, startDate, endDate) => {
     zone_name: row.zone_name || "Unassigned",
     totalEmployees: Number(row.total_employees) || 0,
     present: Number(row.present) || 0,
+    onLeave: Number(row.on_leave) || 0,
     marked: Number(row.present) || 0,
     fullyMarked: Number(row.fully_marked) || 0,
     inProgress: Number(row.in_progress) || 0,
-    notMarked: Number(row.not_marked) || 0,
+    notMarked: Math.max(
+      (Number(row.total_employees) || 0) -
+        (Number(row.present) || 0) -
+        (Number(row.on_leave) || 0),
+      0
+    ),
   }));
 };
 
