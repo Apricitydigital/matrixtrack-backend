@@ -33,7 +33,6 @@ router.get(
   authenticate,
   attachCityScope,
   requireCityScope(),
-  authorize("master", "view"),
   async (req, res) => {
     try {
       const scope = req.cityScope || { all: false, ids: [] };
