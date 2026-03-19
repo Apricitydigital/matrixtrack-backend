@@ -46,6 +46,8 @@ router.post("/", async (req, res) => {
         w.ward_name AS ward, 
         z.zone_name AS zone, 
         c.city_name AS city, 
+        dept.department_name AS department,
+        des.designation_name AS designation,
         e.phone AS contact_no, 
         TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in, 
         a.in_address, 
@@ -62,6 +64,8 @@ router.post("/", async (req, res) => {
       JOIN wards w ON a.ward_id = w.ward_id
       JOIN zones z ON w.zone_id = z.zone_id
       JOIN cities c ON z.city_id = c.city_id
+      LEFT JOIN designation des ON e.designation_id = des.designation_id
+      LEFT JOIN department dept ON des.department_id = dept.department_id
       LEFT JOIN users u ON a.punched_in_by = u.user_id
       LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
       WHERE a.date = $1

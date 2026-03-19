@@ -149,12 +149,10 @@ const buildAttendanceFilters = (query, { locationExpression, cityScope }) => {
   addNumericFilter(query.zone_id, (ph) => `z.zone_id = ${ph}`, "zone_id");
   addNumericFilter(query.ward_id, (ph) => `w.ward_id = ${ph}`, "ward_id");
   addNumericFilter(query.city_id, (ph) => `c.city_id = ${ph}`, "city_id");
-  addNumericFilter(
-    query.supervisor_id,
-    (ph) => `supervisor.user_id = ${ph}`,
-    "supervisor_id"
-  );
+  addNumericFilter(query.supervisor_id, (ph) => `supervisor.user_id = ${ph}`, "supervisor_id");
   addNumericFilter(query.employee_id, (ph) => `a.emp_id = ${ph}`, "employee_id");
+  addNumericFilter(query.department_id, (ph) => `dept.department_id = ${ph}`, "department_id");
+  addNumericFilter(query.designation_id, (ph) => `des.designation_id = ${ph}`, "designation_id");
 
   addTextFilter(query.emp_code, (ph) => `e.emp_code = ${ph}`, "emp_code");
   addTextFilter(
@@ -334,8 +332,9 @@ const groupingConfigs = {
       w.ward_name,
       z.zone_id,
       z.zone_name,
-      c.city_id,
       c.city_name,
+      dept.department_name,
+      des.designation_name,
       COALESCE(supervisor.user_id, 0) AS supervisor_id,
       COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
       COALESCE(u.name, 'Self') AS punched_in_by,
@@ -357,6 +356,8 @@ const groupingConfigs = {
       { key: "ward_name", label: "Ward" },
       { key: "zone_name", label: "Zone" },
       { key: "city_name", label: "City" },
+      { key: "department_name", label: "Department" },
+      { key: "designation_name", label: "Designation" },
       { key: "supervisor_name", label: "Supervisor" },
       { key: "punched_in_by", label: "Punched In By" },
       { key: "punched_out_by", label: "Punched Out By" },
@@ -727,6 +728,16 @@ const createAttendanceDownloadHandler =
             detailParams.push(empCode);
             filters.push(`e.emp_code = $${detailParams.length}`);
           }
+          const departmentId = parseIntegerParam(req.query.department_id);
+          if (departmentId !== null) {
+            detailParams.push(departmentId);
+            filters.push(`dept.department_id = $${detailParams.length}`);
+          }
+          const designationId = parseIntegerParam(req.query.designation_id);
+          if (designationId !== null) {
+            detailParams.push(designationId);
+            filters.push(`des.designation_id = $${detailParams.length}`);
+          }
 
           if (absOnlyFlag === true) {
             filters.push("a.punch_in_time IS NULL");
@@ -768,6 +779,8 @@ const createAttendanceDownloadHandler =
               z.zone_name,
               c.city_id,
               c.city_name,
+              dept.department_name,
+              des.designation_name,
               COALESCE(supervisor.user_id, 0) AS supervisor_id,
               COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
               COALESCE(u.name, 'Self') AS punched_in_by,
@@ -776,6 +789,8 @@ const createAttendanceDownloadHandler =
             JOIN wards w ON e.ward_id = w.ward_id
             JOIN zones z ON w.zone_id = z.zone_id
             JOIN cities c ON z.city_id = c.city_id
+            LEFT JOIN designation des ON e.designation_id = des.designation_id
+            LEFT JOIN department dept ON des.department_id = dept.department_id
             LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
             LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
             LEFT JOIN LATERAL (
