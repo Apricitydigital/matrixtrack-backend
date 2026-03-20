@@ -62,7 +62,7 @@ router.get("/", requireCityScope(), authorize("supervisors", "view"), async (req
   try {
     const supervisors = await pool.query(
       `
-        SELECT DISTINCT
+        SELECT DISTINCT ON (u.user_id)
           u.user_id,
           u.name,
           u.emp_code,
@@ -77,8 +77,14 @@ router.get("/", requireCityScope(), authorize("supervisors", "view"), async (req
         LEFT JOIN zones z ON w.zone_id = z.zone_id
         LEFT JOIN cities c ON z.city_id = c.city_id
         WHERE u.role = 'supervisor'
-          AND ($1::int IS NULL OR c.city_id = $1::int)
-        ORDER BY u.name
+          AND (
+            $1::int IS NULL
+            OR c.city_id = $1::int
+            OR NOT EXISTS (
+              SELECT 1 FROM supervisor_ward sw2 WHERE sw2.supervisor_id = u.user_id
+            )
+          )
+        ORDER BY u.user_id, u.name
       `,
       [scopedCityId ?? null]
     );
