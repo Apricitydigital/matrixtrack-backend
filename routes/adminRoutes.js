@@ -234,23 +234,24 @@ router.get("/supervisors/:id", async (req, res) => {
 
 // Update supervisor ward assignments
 router.put("/supervisors/:id/assignments", async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
     const { wardIds } = req.body;
 
     // Start transaction
-    await pool.query('BEGIN');
+    await client.query('BEGIN');
 
     // Remove existing assignments
-    await pool.query('DELETE FROM assigned_wards WHERE supervisor_id = $1', [id]);
+    await client.query('DELETE FROM supervisor_ward WHERE supervisor_id = $1', [id]);
 
     // Add new assignments
     if (wardIds && wardIds.length > 0) {
       const values = wardIds.map((wardId, index) => `($1, $${index + 2})`).join(', ');
       const params = [id, ...wardIds];
 
-      const insertResult = await pool.query(
-        `INSERT INTO assigned_wards (supervisor_id, ward_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+      const insertResult = await client.query(
+        `INSERT INTO supervisor_ward (supervisor_id, ward_id) VALUES ${values} ON CONFLICT DO NOTHING`,
         params
       );
 
@@ -259,12 +260,14 @@ router.put("/supervisors/:id/assignments", async (req, res) => {
       }
     }
 
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
     res.json({ message: "Ward assignments updated successfully" });
   } catch (error) {
-    await pool.query('ROLLBACK');
+    if (client) await client.query('ROLLBACK');
     console.error("Update assignments error:", error);
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 

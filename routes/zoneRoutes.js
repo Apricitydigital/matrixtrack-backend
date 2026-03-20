@@ -5,17 +5,20 @@ const authenticate = require("../middleware/authMiddleware");
 const { authorize, getPermissionCityFilter } = require("../middleware/permissionMiddleware");
 const { attachCityScope, requireCityScope } = require("../middleware/cityScope");
 const { attachZoneScope } = require("../middleware/zoneScope");
+const { attachKothiScope } = require("../middleware/kothiScope");
 
 // 🟢 Fetch all zones with city names
 router.get(
   "/",
   authenticate,
+  attachKothiScope,
   attachZoneScope,
   attachCityScope,
   requireCityScope(true),
   async (req, res) => {
     try {
       const scope = req.cityScope || { all: false, ids: [] };
+      const kothiScope = req.kothiScope || { all: true, ids: [] };
       const params = [];
       let whereClause = "";
 
@@ -33,6 +36,17 @@ router.get(
           params.push(ids);
           whereClause += whereClause ? ` AND c.city_id = ANY($${params.length})` : `WHERE c.city_id = ANY($${params.length})`;
         }
+      }
+
+      // Kothi (Ward) Scope Filtering
+      if (!kothiScope.all && kothiScope.ids.length > 0) {
+        params.push(kothiScope.ids);
+        whereClause += whereClause 
+          ? ` AND z.zone_id IN (SELECT DISTINCT zone_id FROM wards WHERE ward_id = ANY($$${params.length}))` 
+          : `WHERE z.zone_id IN (SELECT DISTINCT zone_id FROM wards WHERE ward_id = ANY($$${params.length}))`;
+      } else if (!kothiScope.all) {
+        // No Kothis assigned, return nothing
+        whereClause += whereClause ? " AND 1=0" : "WHERE 1=0";
       }
 
       const result = await pool.query(

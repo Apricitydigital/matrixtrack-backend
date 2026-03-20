@@ -250,6 +250,30 @@ const runSchemaSetup = async () => {
     `);
 
     await client.query(`
+      CREATE TABLE IF NOT EXISTS supervisor_kothi (
+        assigned_id SERIAL PRIMARY KEY,
+        supervisor_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        ward_id INTEGER NOT NULL REFERENCES wards(ward_id) ON DELETE CASCADE,
+        UNIQUE (supervisor_id, ward_id)
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_kothi_access (
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        ward_id INTEGER NOT NULL REFERENCES wards(ward_id) ON DELETE CASCADE,
+        granted_at TIMESTAMPTZ DEFAULT NOW(),
+        granted_by INTEGER,
+        PRIMARY KEY (user_id, ward_id)
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_kothi_access_ward_id
+      ON user_kothi_access (ward_id)
+    `);
+
+    await client.query(`
       ALTER TABLE users
       ADD COLUMN IF NOT EXISTS department VARCHAR(120)
     `);

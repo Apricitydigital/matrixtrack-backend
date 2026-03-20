@@ -6,6 +6,7 @@ const {
 } = require("../utils/attendanceReportDownload");
 const authenticate = require("../middleware/authMiddleware");
 const { attachCityScope, requireCityScope } = require("../middleware/cityScope");
+const { attachKothiScope, buildKothiFilterClause } = require("../middleware/kothiScope");
 
 // 🛠 IST Date Formatter
 const formatDateIST = (date = new Date()) => {
@@ -14,13 +15,15 @@ const formatDateIST = (date = new Date()) => {
   });
 };
 
-router.use(authenticate, attachCityScope, requireCityScope());
+router.use(authenticate, attachKothiScope, attachCityScope, requireCityScope());
 
 // 🟢 Fetch attendance report for a specific date (current date or selected date)
 router.post("/", async (req, res) => {
   // Get the date from query parameters, if available; otherwise, default to IST date
   const date = req.query.date || formatDateIST(); // IST Date in YYYY-MM-DD format
   const scope = req.cityScope || { all: false, ids: [] };
+  const kothiScope = req.kothiScope || { all: true, ids: [] };
+
   if (!scope.all && (!scope.ids || scope.ids.length === 0)) {
     return res
       .status(403)
@@ -28,12 +31,11 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    const params = [date];
-    let cityClause = "";
-    if (!scope.all) {
-      params.push(scope.ids);
-      cityClause = `AND c.city_id = ANY($${params.length})`;
-    }
+    const scope = req.cityScope || { all: false, ids: [] };
+    const kothiScope = req.kothiScope || { all: true, ids: [] };
+
+    const cityFilter = buildCityFilterClause(scope, "c", [date]);
+    const kothiFilter = buildKothiFilterClause(kothiScope, "w", cityFilter.params);
 
     const result = await pool.query(
       `SELECT 
@@ -69,9 +71,9 @@ router.post("/", async (req, res) => {
       LEFT JOIN users u ON a.punched_in_by = u.user_id
       LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
       WHERE a.date = $1
-        ${cityClause}
+        ${cityFilter.clause} ${kothiFilter.clause}
       ORDER BY a.date DESC, a.attendance_id;`,
-      params
+      kothiFilter.params
     );
 
     res.json(result.rows);
@@ -84,6 +86,7 @@ router.post("/", async (req, res) => {
 const handleAttendanceDownload = createAttendanceDownloadHandler({
   pool,
   resolveCityScope: (req) => req.cityScope,
+  resolveKothiScope: (req) => req.kothiScope,
 });
 
 // Download attendance reports with flexible grouping & filters

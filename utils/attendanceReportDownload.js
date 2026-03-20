@@ -89,7 +89,7 @@ const getLocationExpression = (locationType = "both") => {
   }
 };
 
-const buildAttendanceFilters = (query, { locationExpression, cityScope }) => {
+const buildAttendanceFilters = (query, { locationExpression, cityScope, kothiScope }) => {
   const filters = [];
   const params = [];
   const metadata = {};
@@ -237,6 +237,17 @@ const buildAttendanceFilters = (query, { locationExpression, cityScope }) => {
     }
   }
 
+  if (kothiScope && !kothiScope.all) {
+    if (!kothiScope.ids || kothiScope.ids.length === 0) {
+      filters.push("1 = 0");
+    } else {
+      params.push(kothiScope.ids);
+      const placeholder = `$${params.length}`;
+      filters.push(`w.ward_id = ANY(${placeholder})`);
+      metadata.kothi_scope = kothiScope.ids;
+    }
+  }
+
   return {
     whereClause: filters.length ? `WHERE ${filters.join(" AND ")}` : "",
     params,
@@ -244,7 +255,7 @@ const buildAttendanceFilters = (query, { locationExpression, cityScope }) => {
   };
 };
 
-const buildSupervisorSummaryFilters = (query, { cityScope }) => {
+const buildSupervisorSummaryFilters = (query, { cityScope, kothiScope }) => {
   const filters = [];
   const params = [];
   const metadata = {};
@@ -297,6 +308,17 @@ const buildSupervisorSummaryFilters = (query, { cityScope }) => {
       const placeholder = `$${params.length}`;
       filters.push(`c.city_id = ANY(${placeholder})`);
       metadata.city_scope = cityScope.ids;
+    }
+  }
+
+  if (kothiScope && !kothiScope.all) {
+    if (!kothiScope.ids || kothiScope.ids.length === 0) {
+      filters.push("1 = 0");
+    } else {
+      params.push(kothiScope.ids);
+      const placeholder = `$${params.length}`;
+      filters.push(`w.ward_id = ANY(${placeholder})`);
+      metadata.kothi_scope = kothiScope.ids;
     }
   }
 
@@ -602,7 +624,7 @@ const groupingConfigs = {
 };
 
 const createAttendanceDownloadHandler =
-  ({ pool, defaultFormat = "csv", resolveCityScope } = {}) =>
+  ({ pool, defaultFormat = "csv", resolveCityScope, resolveKothiScope } = {}) =>
     async (req, res) => {
       try {
         const format = (req.query.format || defaultFormat).toString().toLowerCase();
@@ -636,6 +658,7 @@ const createAttendanceDownloadHandler =
           : "both";
         const locationExpression = getLocationExpression(locationType);
         const cityScope = resolveCityScope?.(req) || { all: false, ids: [] };
+        const kothiScope = resolveKothiScope?.(req) || { all: true, ids: [] };
         const requestedCityId = parseIntegerParam(req.query.city_id);
 
         if (!cityScope.all) {
@@ -659,10 +682,12 @@ const createAttendanceDownloadHandler =
           requestedGrouping === "supervisor_summary"
             ? buildSupervisorSummaryFilters(req.query, {
               cityScope,
+              kothiScope,
             })
             : buildAttendanceFilters(req.query, {
               locationExpression,
               cityScope,
+              kothiScope,
             });
 
         const { whereClause, params, metadata } = filterResult;
@@ -698,6 +723,12 @@ const createAttendanceDownloadHandler =
           } else if (requestedCityId !== null) {
             detailParams.push(requestedCityId);
             filters.push(`c.city_id = $${detailParams.length}`);
+          }
+
+          // Kothi scope
+          if (!kothiScope.all) {
+            detailParams.push(kothiScope.ids);
+            filters.push(`w.ward_id = ANY($${detailParams.length}::int[])`);
           }
 
           // Optional filters

@@ -59,7 +59,8 @@ const buildCityFilterClause = (scope, alias, params) => {
     return { clause: "", params };
   }
   if (!scope.ids || scope.ids.length === 0) {
-    return { clause: "WHERE 1=0", params };
+    const clausePrefix = params.length > 0 ? "AND" : "WHERE";
+    return { clause: `${clausePrefix} 1=0`, params };
   }
   const nextParams = [...params, scope.ids];
   const placeholder = `$${nextParams.length}`;

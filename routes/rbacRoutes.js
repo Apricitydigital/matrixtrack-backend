@@ -8,14 +8,15 @@ const {
 } = require("../middleware/permissionMiddleware");
 const { syncUserCityAccess } = require("../utils/userCityAccess");
 const { syncUserZoneAccess } = require("../utils/userZoneAccess");
+const { syncUserKothiAccess } = require("../utils/userKothiAccess");
 
 const { ensureRbacSchema } = require("../utils/rbacSetup");
 
 const router = express.Router();
 
-ensureRbacSchema().catch((error) => {
-  console.warn("RBAC bootstrap skipped:", error.message || error);
-});
+// ensureRbacSchema().catch((error) => {
+//   console.warn("RBAC bootstrap skipped:", error.message || error);
+// });
 
 const assertAdminOrPermission = async (req, res, next) => {
   if (req.user?.role === "admin") {
@@ -40,7 +41,10 @@ const fetchPermissions = async (req, res) => {
   }
 };
 
-const upsertPermission = async ({ module, action, label, description }) => {
+const upsertPermission = async (
+  { module, action, label, description },
+  client = pool
+) => {
   const query = `
     INSERT INTO permissions (module, action, label, description)
     VALUES ($1, $2, $3, $4)
@@ -50,7 +54,7 @@ const upsertPermission = async ({ module, action, label, description }) => {
                   updated_at = NOW()
     RETURNING id
   `;
-  const { rows } = await pool.query(query, [
+  const { rows } = await client.query(query, [
     module.toLowerCase(),
     action.toLowerCase(),
     label || null,
@@ -150,7 +154,10 @@ const syncUserPermissions = async (
   );
 };
 
-const normalizePermissionAssignments = async (permissions = []) => {
+const normalizePermissionAssignments = async (
+  permissions = [],
+  client = pool
+) => {
   if (!Array.isArray(permissions) || permissions.length === 0) {
     return [];
   }
@@ -174,12 +181,15 @@ const normalizePermissionAssignments = async (permissions = []) => {
           permissionId = numeric;
         }
       } else if (perm.module && perm.action) {
-        const createdId = await upsertPermission({
-          module: perm.module,
-          action: perm.action,
-          label: perm.label,
-          description: perm.description,
-        });
+        const createdId = await upsertPermission(
+          {
+            module: perm.module,
+            action: perm.action,
+            label: perm.label,
+            description: perm.description,
+          },
+          client
+        );
         permissionId = createdId;
       }
 
@@ -407,7 +417,9 @@ router.get("/users", authenticate, assertAdminOrPermission, async (req, res) => 
           'cities',
           COALESCE(city_access.cities, '[]'::json),
           'zones',
-          COALESCE(zone_access.zones, '[]'::json)
+          COALESCE(zone_access.zones, '[]'::json),
+          'kothis',
+          COALESCE(kothi_access.kothis, '[]'::json)
         ) AS access
       FROM users u
       LEFT JOIN LATERAL (
@@ -459,6 +471,26 @@ router.get("/users", authenticate, assertAdminOrPermission, async (req, res) => 
         JOIN cities c ON c.city_id = z.city_id
         WHERE uza.user_id = u.user_id
       ) zone_access ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT json_agg(
+          DISTINCT jsonb_build_object(
+            'ward_id', uka.ward_id,
+            'ward_name', w.ward_name,
+            'sector_id', w.sector_id,
+            'sector_name', s.sector_name,
+            'zone_id', s.zone_id,
+            'zone_name', z.zone_name,
+            'city_id', z.city_id,
+            'city_name', c.city_name
+          )
+        ) AS kothis
+        FROM user_kothi_access uka
+        JOIN wards w ON w.ward_id = uka.ward_id
+        LEFT JOIN sectors s ON s.sector_id = w.sector_id
+        LEFT JOIN zones z ON z.zone_id = COALESCE(s.zone_id, w.zone_id)
+        LEFT JOIN cities c ON c.city_id = z.city_id
+        WHERE uka.user_id = u.user_id
+      ) kothi_access ON TRUE
       ORDER BY u.user_id DESC
     `);
 
@@ -481,6 +513,7 @@ router.post("/users", authenticate, assertAdminOrPermission, async (req, res) =>
     permissions,
     allowedCities,
     allowedZones,
+    allowedKothis,
   } = req.body || {};
 
   if (!name || !email || !password) {
@@ -545,6 +578,10 @@ router.post("/users", authenticate, assertAdminOrPermission, async (req, res) =>
       await syncUserZoneAccess(userId, allowedZones, req.user?.user_id);
     }
 
+    if (Array.isArray(allowedKothis)) {
+      await syncUserKothiAccess(userId, allowedKothis, req.user?.user_id);
+    }
+
     invalidatePermissionCache();
     res.status(201).json({ id: userId });
   } catch (error) {
@@ -570,7 +607,14 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
     permissions,
     allowedCities,
     allowedZones,
+    allowedKothis,
   } = req.body || {};
+
+  console.log(`[RBAC] Updating user ${userId}:`, {
+    cities: allowedCities?.length,
+    zones: allowedZones?.length,
+    kothis: allowedKothis?.length,
+  });
 
   try {
     await withTransaction(async (client) => {
@@ -617,7 +661,8 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
 
       if (Array.isArray(permissions)) {
         const normalizedPermissions = await normalizePermissionAssignments(
-          permissions
+          permissions,
+          client
         );
         await syncUserPermissions(
           userId,
@@ -640,6 +685,15 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
         await syncUserZoneAccess(
           userId,
           allowedZones,
+          req.user?.user_id,
+          client
+        );
+      }
+
+      if (Array.isArray(allowedKothis)) {
+        await syncUserKothiAccess(
+          userId,
+          allowedKothis,
           req.user?.user_id,
           client
         );
