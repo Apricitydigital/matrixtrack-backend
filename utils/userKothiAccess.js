@@ -44,11 +44,22 @@ const fetchUserKothiAccess = async (user, options = {}) => {
   const queryText = includeMetadata
     ? `
         WITH all_ward_ids AS (
+          -- Direct Kothi Assignments
           SELECT ward_id FROM user_kothi_access WHERE user_id = $1
           UNION
+          -- Legacy Kothi Assignments
           SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1
           UNION
+          -- Legacy Sector/Ward Assignments
           SELECT ward_id FROM wards WHERE sector_id IN (SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1)
+          UNION
+          -- Zone-level Assignments
+          SELECT ward_id FROM wards WHERE zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1)
+          UNION
+          -- City-level Assignments
+          SELECT w.ward_id FROM wards w
+          JOIN zones z ON w.zone_id = z.zone_id
+          WHERE z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
         )
         SELECT DISTINCT w.ward_id, w.ward_name, s.sector_id, s.sector_name, z.zone_id, z.zone_name, c.city_id, c.city_name
         FROM all_ward_ids awi
@@ -59,11 +70,22 @@ const fetchUserKothiAccess = async (user, options = {}) => {
         ORDER BY w.ward_name ASC
       `
     : `
+        -- Direct Kothi Assignments
         SELECT ward_id FROM user_kothi_access WHERE user_id = $1
         UNION
+        -- Legacy Kothi Assignments
         SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1
         UNION
+        -- Legacy Sector/Ward Assignments
         SELECT ward_id FROM wards WHERE sector_id IN (SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1)
+        UNION
+        -- Zone-level Assignments
+        SELECT ward_id FROM wards WHERE zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1)
+        UNION
+        -- City-level Assignments
+        SELECT w.ward_id FROM wards w
+        JOIN zones z ON w.zone_id = z.zone_id
+        WHERE z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
       `;
 
   const { rows } = await pool.query(queryText, [userId]);

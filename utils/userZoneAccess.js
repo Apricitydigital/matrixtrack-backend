@@ -44,16 +44,16 @@ const fetchUserZoneAccess = async (user, options = {}) => {
   const queryText = includeZoneMetadata
     ? `
         SELECT z.zone_id, z.zone_name, z.city_id, c.city_name
-        FROM user_zone_access uza
-        JOIN zones z ON z.zone_id = uza.zone_id
+        FROM zones z
         JOIN cities c ON c.city_id = z.city_id
-        WHERE uza.user_id = $1
+        WHERE z.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1)
+           OR z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
         ORDER BY z.zone_name ASC
       `
     : `
-        SELECT zone_id
-        FROM user_zone_access
-        WHERE user_id = $1
+        SELECT zone_id FROM user_zone_access WHERE user_id = $1
+        UNION
+        SELECT zone_id FROM zones WHERE city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
       `;
 
   const { rows } = await pool.query(queryText, [userId]);

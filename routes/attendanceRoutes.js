@@ -5,7 +5,7 @@ const {
   createAttendanceDownloadHandler,
 } = require("../utils/attendanceReportDownload");
 const authenticate = require("../middleware/authMiddleware");
-const { attachCityScope, requireCityScope } = require("../middleware/cityScope");
+const { attachCityScope, requireCityScope, buildCityFilterClause } = require("../middleware/cityScope");
 const { attachKothiScope, buildKothiFilterClause } = require("../middleware/kothiScope");
 
 // 🛠 IST Date Formatter
@@ -79,7 +79,7 @@ router.post("/", async (req, res) => {
     res.json(result.rows);
   } catch (error) {
     console.error("Error fetching attendance report:", error);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: "Database error", details: error.message });
   }
 });
 

@@ -257,7 +257,13 @@ const fetchSupervisorSummary = async (
       LEFT JOIN zones z ON w.zone_id = z.zone_id
       LEFT JOIN cities c ON z.city_id = c.city_id
       LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
-      WHERE ($1::int IS NULL OR sw.supervisor_id = $1::int)
+      WHERE ($1::int IS NULL OR 
+             sw.supervisor_id = $1::int OR 
+             w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $1) OR
+             w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1) OR
+             w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1) OR
+             z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
+            )
         AND ($4::int IS NULL OR c.city_id = $4::int)
         ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
     ),
@@ -307,13 +313,7 @@ const fetchSupervisorSummary = async (
       ? Number((((present + onLeave) / totalEmployees) * 100).toFixed(1))
       : 0;
 
-  if (allowCityFallback && userId !== null && totalEmployees === 0) {
-    // Supervisor has access but no ward assignment; fall back to city-wide view
-    return fetchSupervisorSummary(null, cityId, startDate, endDate, {
-      allowCityFallback: false,
-      zoneIds,
-    });
-  }
+  // REMOVED allowCityFallback to prevent showing whole city data if no wards assigned
 
   return {
     totalEmployees,
@@ -423,7 +423,13 @@ const fetchSupervisorEmployees = async (
       WHERE a.date::date BETWEEN $2::date AND $3::date
       GROUP BY a.emp_id
     ) summary ON summary.emp_id = e.emp_id
-    WHERE ($1::int IS NULL OR u.user_id = $1::int)
+    WHERE ($1::int IS NULL OR 
+           u.user_id = $1::int OR 
+           w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $1) OR
+           w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1) OR
+           w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1) OR
+           z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
+          )
       AND ($4::int IS NULL OR c.city_id = $4::int)
       ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
     ORDER BY w.ward_id, e.name;
@@ -437,13 +443,7 @@ const fetchSupervisorEmployees = async (
   const result = await pool.query(query, params);
   const rows = result.rows;
 
-  if (allowCityFallback && userId !== null && rows.length === 0) {
-    // Supervisor has access but no ward assignment; fall back to city-wide view
-    return fetchSupervisorEmployees(null, cityId, startDate, endDate, {
-      allowCityFallback: false,
-      zoneIds,
-    });
-  }
+  // REMOVED allowCityFallback
 
   return mapRowsToWards(rows);
 };
@@ -467,7 +467,13 @@ const fetchCitySummary = async (
       JOIN zones z ON w.zone_id = z.zone_id
       JOIN cities c ON z.city_id = c.city_id
       LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
-      WHERE ($1::int IS NULL OR sw.supervisor_id = $1::int)
+      WHERE ($1::int IS NULL OR 
+             sw.supervisor_id = $1::int OR 
+             w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $1) OR
+             w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1) OR
+             w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1) OR
+             z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
+            )
         AND ($4::int IS NULL OR c.city_id = $4::int)
         ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
     ),
@@ -540,7 +546,13 @@ const fetchZoneSummary = async (userId, cityId, startDate, endDate) => {
       JOIN zones z ON w.zone_id = z.zone_id
       JOIN cities c ON z.city_id = c.city_id
       LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
-      WHERE ($1::int IS NULL OR sw.supervisor_id = $1::int)
+      WHERE ($1::int IS NULL OR 
+             sw.supervisor_id = $1::int OR 
+             w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $1) OR
+             w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1) OR
+             w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1) OR
+             z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
+            )
         AND ($4::int IS NULL OR c.city_id = $4::int)
     ),
     attendance_status AS (
