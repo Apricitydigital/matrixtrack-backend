@@ -18,9 +18,12 @@ const attachKothiScope = async (req, res, next) => {
     }
 
     // Supervisors/Users get filtered by their assignments
-    const scope = await fetchUserKothiAccess(req.user.user_id);
+    const scope = await fetchUserKothiAccess(req.user.user_id, {
+      allowZoneFallback: true,
+      allowCityFallback: false,
+    });
     req.kothiScope = {
-      all: false,
+      all: Array.isArray(scope.ids) ? false : Boolean(scope.all),
       ids: Array.isArray(scope.ids) ? scope.ids : [],
     };
     next();

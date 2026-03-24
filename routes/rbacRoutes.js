@@ -7,8 +7,14 @@ const {
   invalidatePermissionCache,
 } = require("../middleware/permissionMiddleware");
 const { syncUserCityAccess } = require("../utils/userCityAccess");
-const { syncUserZoneAccess } = require("../utils/userZoneAccess");
-const { syncUserKothiAccess } = require("../utils/userKothiAccess");
+const {
+  syncUserZoneAccess,
+  invalidateZoneAccessCache,
+} = require("../utils/userZoneAccess");
+const {
+  syncUserKothiAccess,
+  invalidateKothiAccessCache,
+} = require("../utils/userKothiAccess");
 
 const { ensureRbacSchema } = require("../utils/rbacSetup");
 
@@ -582,6 +588,8 @@ router.post("/users", authenticate, assertAdminOrPermission, async (req, res) =>
       await syncUserKothiAccess(userId, allowedKothis, req.user?.user_id);
     }
 
+    invalidateZoneAccessCache();
+    invalidateKothiAccessCache();
     invalidatePermissionCache();
     res.status(201).json({ id: userId });
   } catch (error) {
@@ -700,6 +708,8 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
       }
     });
 
+    invalidateZoneAccessCache();
+    invalidateKothiAccessCache();
     invalidatePermissionCache();
     res.json({ id: Number(userId) });
   } catch (error) {

@@ -36,8 +36,8 @@ const enforceCityScope = (req, requestedCityId) => {
 
 router.use(authenticate, attachCityScope);
 
-// ✅ Fetch all supervisors (Only Admins can fetch)
-router.get("/", requireCityScope(), authorize("supervisors", "view"), async (req, res) => {
+// ✅ Fetch all supervisors (city-scoped; no special permission needed)
+router.get("/", requireCityScope(), async (req, res) => {
   const { cityId: rawCityId } = req.query;
 
   let cityId = null;

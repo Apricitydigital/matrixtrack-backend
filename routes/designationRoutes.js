@@ -8,7 +8,6 @@ const { authorize } = require("../middleware/permissionMiddleware");
 router.get(
   "/",
   authenticate,
-  authorize("master", "view"),
   async (req, res) => {
   try {
     const result = await pool.query(

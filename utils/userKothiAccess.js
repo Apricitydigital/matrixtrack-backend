@@ -31,6 +31,14 @@ const fetchUserKothiAccess = async (user, options = {}) => {
     Number(user) ||
     null;
   const includeMetadata = options.includeKothis || options.withNames;
+  const allowZoneFallback =
+    options.allowZoneFallback === undefined
+      ? true
+      : Boolean(options.allowZoneFallback);
+  const allowCityFallback =
+    options.allowCityFallback === undefined
+      ? true
+      : Boolean(options.allowCityFallback);
 
   if (!userId) {
     return { ids: [], kothis: [] };
@@ -41,76 +49,111 @@ const fetchUserKothiAccess = async (user, options = {}) => {
     return kothiAccessCache.get(cacheKey);
   }
 
-  const queryText = includeMetadata
-    ? `
-        WITH all_ward_ids AS (
-          -- Direct Kothi Assignments
-          SELECT ward_id FROM user_kothi_access WHERE user_id = $1
-          UNION
-          -- Legacy Kothi Assignments
-          SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1
-          UNION
-          -- Legacy Sector/Ward Assignments
-          SELECT ward_id FROM wards WHERE sector_id IN (SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1)
-          UNION
-          -- Zone-level Assignments
-          SELECT ward_id FROM wards WHERE zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1)
-          UNION
-          -- City-level Assignments
-          SELECT w.ward_id FROM wards w
-          JOIN zones z ON w.zone_id = z.zone_id
-          WHERE z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
-        )
-        SELECT DISTINCT w.ward_id, w.ward_name, s.sector_id, s.sector_name, z.zone_id, z.zone_name, c.city_id, c.city_name
-        FROM all_ward_ids awi
-        JOIN wards w ON w.ward_id = awi.ward_id
+  // 1) Direct Kothi assignments (user + legacy supervisor mappings)
+  const directRows = await pool.query(
+    `
+      SELECT ward_id FROM user_kothi_access WHERE user_id = $1
+      UNION
+      SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1
+      UNION
+      SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1
+      UNION
+      -- Fallback: some datasets store sector_id inside supervisor_ward. Map those to wards.
+      SELECT w.ward_id
+      FROM wards w
+      WHERE w.sector_id IN (
+        SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1
+      )
+    `,
+    [userId]
+  );
+  let wardIds = normalizeWardIds(directRows.rows.map((row) => row.ward_id));
+
+  // 2) Fallback to zones -> wards if nothing explicit
+  if (wardIds.length === 0 && allowZoneFallback) {
+    const zoneRows = await pool.query(
+      "SELECT zone_id FROM user_zone_access WHERE user_id = $1",
+      [userId]
+    );
+    const zoneIds = zoneRows.rows
+      .map((row) => Number(row.zone_id))
+      .filter((id) => Number.isFinite(id));
+
+    if (zoneIds.length > 0) {
+      const zoneWardRows = await pool.query(
+        "SELECT ward_id FROM wards WHERE zone_id = ANY($1)",
+        [zoneIds]
+      );
+      wardIds = normalizeWardIds(zoneWardRows.rows.map((row) => row.ward_id));
+    }
+  }
+
+  // 3) Fallback to city -> wards only when no zone/ward assignments
+  if (wardIds.length === 0 && allowCityFallback) {
+    const cityRows = await pool.query(
+      "SELECT city_id FROM user_city_access WHERE user_id = $1",
+      [userId]
+    );
+    const cityIds = cityRows.rows
+      .map((row) => Number(row.city_id))
+      .filter((id) => Number.isFinite(id));
+
+    if (cityIds.length > 0) {
+      const cityWardRows = await pool.query(
+        `
+          SELECT w.ward_id
+          FROM wards w
+          JOIN zones z ON z.zone_id = w.zone_id
+          WHERE z.city_id = ANY($1)
+        `,
+        [cityIds]
+      );
+      wardIds = normalizeWardIds(cityWardRows.rows.map((row) => row.ward_id));
+    }
+  }
+
+  if (includeMetadata) {
+    if (wardIds.length === 0) {
+      return { ids: [], kothis: [] };
+    }
+
+    const { rows } = await pool.query(
+      `
+        SELECT w.ward_id,
+               w.ward_name,
+               s.sector_id,
+               s.sector_name,
+               z.zone_id,
+               z.zone_name,
+               c.city_id,
+               c.city_name
+        FROM wards w
         LEFT JOIN sectors s ON s.sector_id = w.sector_id
         LEFT JOIN zones z ON z.zone_id = COALESCE(s.zone_id, w.zone_id)
         LEFT JOIN cities c ON c.city_id = z.city_id
+        WHERE w.ward_id = ANY($1)
         ORDER BY w.ward_name ASC
-      `
-    : `
-        -- Direct Kothi Assignments
-        SELECT ward_id FROM user_kothi_access WHERE user_id = $1
-        UNION
-        -- Legacy Kothi Assignments
-        SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1
-        UNION
-        -- Legacy Sector/Ward Assignments
-        SELECT ward_id FROM wards WHERE sector_id IN (SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1)
-        UNION
-        -- Zone-level Assignments
-        SELECT ward_id FROM wards WHERE zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1)
-        UNION
-        -- City-level Assignments
-        SELECT w.ward_id FROM wards w
-        JOIN zones z ON w.zone_id = z.zone_id
-        WHERE z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)
-      `;
+      `,
+      [wardIds]
+    );
 
-  const { rows } = await pool.query(queryText, [userId]);
-  const ids = normalizeWardIds(rows.map((row) => row.ward_id));
-
-  const payload = includeMetadata
-    ? {
-        ids,
-        kothis: rows.map((row) => ({
-          ward_id: row.ward_id,
-          ward_name: row.ward_name,
-          sector_id: row.sector_id,
-          sector_name: row.sector_name,
-          zone_id: row.zone_id,
-          zone_name: row.zone_name,
-          city_id: row.city_id,
-          city_name: row.city_name,
-        })),
-      }
-    : { ids };
-
-  if (!includeMetadata) {
-    kothiAccessCache.set(cacheKey, payload);
+    return {
+      ids: normalizeWardIds(rows.map((row) => row.ward_id)),
+      kothis: rows.map((row) => ({
+        ward_id: row.ward_id,
+        ward_name: row.ward_name,
+        sector_id: row.sector_id,
+        sector_name: row.sector_name,
+        zone_id: row.zone_id,
+        zone_name: row.zone_name,
+        city_id: row.city_id,
+        city_name: row.city_name,
+      })),
+    };
   }
 
+  const payload = { ids: wardIds };
+  kothiAccessCache.set(cacheKey, payload);
   return payload;
 };
 
