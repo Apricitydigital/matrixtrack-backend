@@ -517,6 +517,7 @@ const handleAdminAttendanceDownload = createAttendanceDownloadHandler({
 });
 
 router.get("/export/attendance", handleAdminAttendanceDownload);
+router.post("/export/attendance", handleAdminAttendanceDownload);
 
 // ===== SYSTEM SETTINGS =====
 
