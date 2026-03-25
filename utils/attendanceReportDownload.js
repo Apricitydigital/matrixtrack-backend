@@ -357,8 +357,13 @@ const groupingConfigs = {
       c.city_name,
       dept.department_name,
       des.designation_name,
-      COALESCE(supervisor.user_id, 0) AS supervisor_id,
-      COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+      0 AS supervisor_id,
+      COALESCE((
+        SELECT STRING_AGG(su.name, ', ' ORDER BY su.name)
+        FROM supervisor_ward sw2
+        JOIN users su ON sw2.supervisor_id = su.user_id
+        WHERE sw2.ward_id = w.ward_id
+      ), 'Unassigned') AS supervisor_name,
       COALESCE(u.name, 'Self') AS punched_in_by,
       COALESCE(u1.name, 'Self') AS punched_out_by
     `,
@@ -394,7 +399,7 @@ const groupingConfigs = {
       z.zone_name,
       c.city_id,
       c.city_name,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -431,7 +436,7 @@ const groupingConfigs = {
       c.city_id,
       c.city_name,
       COALESCE(array_to_string(array_agg(DISTINCT COALESCE(supervisor.name, 'Unassigned')), ', '), 'Unassigned') AS supervisors,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -464,7 +469,7 @@ const groupingConfigs = {
       c.city_id,
       c.city_name,
       COALESCE(array_to_string(array_agg(DISTINCT z.zone_name), ', '), 'N/A') AS zones,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -577,7 +582,7 @@ const groupingConfigs = {
       COALESCE(array_to_string(array_agg(DISTINCT w.ward_name), ', '), 'N/A') AS wards,
       COALESCE(array_to_string(array_agg(DISTINCT z.zone_name), ', '), 'N/A') AS zones,
       COALESCE(array_to_string(array_agg(DISTINCT c.city_name), ', '), 'N/A') AS cities,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -606,11 +611,16 @@ const groupingConfigs = {
       c.city_name AS city_name,
       z.zone_name AS zone_name,
       w.ward_name AS kothi_name,
-      COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+      COALESCE((
+        SELECT STRING_AGG(su.name, ', ' ORDER BY su.name)
+        FROM supervisor_ward sw2
+        JOIN users su ON sw2.supervisor_id = su.user_id
+        WHERE sw2.ward_id = w.ward_id
+      ), 'Unassigned') AS supervisor_name,
       (SELECT COUNT(*) FROM employee reg WHERE reg.ward_id = w.ward_id) AS total_registered,
       COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN a.emp_id END) AS total_present
     `,
-    groupBy: `c.city_name, z.zone_name, w.ward_name, COALESCE(supervisor.name, 'Unassigned')`,
+    groupBy: `c.city_name, z.zone_name, w.ward_name`,
     orderBy: "c.city_name, z.zone_name, w.ward_name",
     csvHeaders: [
       { key: "city_name", label: "City" },
@@ -812,8 +822,13 @@ const createAttendanceDownloadHandler =
               c.city_name,
               dept.department_name,
               des.designation_name,
-              COALESCE(supervisor.user_id, 0) AS supervisor_id,
-              COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+              0 AS supervisor_id,
+              COALESCE((
+                SELECT STRING_AGG(su.name, ', ' ORDER BY su.name)
+                FROM supervisor_ward sw2
+                JOIN users su ON sw2.supervisor_id = su.user_id
+                WHERE sw2.ward_id = w.ward_id
+              ), 'Unassigned') AS supervisor_name,
               COALESCE(u.name, 'Self') AS punched_in_by,
               COALESCE(u1.name, 'Self') AS punched_out_by
             FROM employee e
@@ -822,12 +837,22 @@ const createAttendanceDownloadHandler =
             JOIN cities c ON z.city_id = c.city_id
             LEFT JOIN designation des ON e.designation_id = des.designation_id
             LEFT JOIN department dept ON des.department_id = dept.department_id
-            LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
-            LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
+            -- Removed direct supervisor join to prevent row duplication.
+            -- Using correlate subquery instead for supervisor_name.
             LEFT JOIN LATERAL (
-              SELECT * FROM attendance a
-              WHERE a.emp_id = e.emp_id AND a.date = $1::date
-              ORDER BY a.attendance_id DESC
+              SELECT 
+                att.attendance_id, 
+                att.punch_in_time, 
+                att.punch_out_time, 
+                att.duration, 
+                att.in_address, 
+                att.out_address,
+                att.punched_in_by,
+                att.punched_out_by
+              FROM attendance att
+              WHERE att.emp_id = e.emp_id 
+                AND (att.date = $1::date OR att.date = $1)
+              ORDER BY att.attendance_id DESC
               LIMIT 1
             ) a ON TRUE
             LEFT JOIN users u ON a.punched_in_by = u.user_id

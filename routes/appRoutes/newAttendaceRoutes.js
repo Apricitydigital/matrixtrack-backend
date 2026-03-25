@@ -2125,4 +2125,47 @@ router.post("/mark-leave", authenticate, async (req, res) => {
   }
 });
 
+router.post("/unmark-leave", authenticate, async (req, res) => {
+  try {
+    const user = req.user || {};
+    const role = (user.role || "").toLowerCase();
+    const empId = Number(req.body.emp_id ?? req.body.employeeId);
+    const targetDate = resolveIsoDateInput(req.body.date);
+
+    if (!empId) {
+      return res.status(400).json({ error: "emp_id is required" });
+    }
+
+    if (role !== "admin") {
+      const wardCheck = await pool.query(
+        `SELECT 1
+         FROM supervisor_ward sw
+         JOIN employee e ON e.ward_id = sw.ward_id
+         WHERE sw.supervisor_id = $1 AND e.emp_id = $2
+         LIMIT 1`,
+        [user.user_id, empId]
+      );
+      if (wardCheck.rowCount === 0) {
+        return res.status(403).json({ error: "Employee not assigned to this supervisor." });
+      }
+    }
+
+    const result = await pool.query(
+      `UPDATE attendance
+       SET leave_type = NULL,
+           leave_marked_by = NULL,
+           leave_marked_at = NULL
+       WHERE emp_id = $1 AND date = $2::date
+       RETURNING *`,
+      [empId, targetDate]
+    );
+
+    res.json({ success: true, attendance: result.rows[0] });
+  } catch (error) {
+    console.error("Unmark leave error:", error);
+    res.status(500).json({ error: "Unable to unmark leave", message: error.message });
+  }
+});
+
 module.exports = router;
+
