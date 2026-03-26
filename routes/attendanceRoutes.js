@@ -91,6 +91,7 @@ const handleAttendanceDownload = createAttendanceDownloadHandler({
 
 // Download attendance reports with flexible grouping & filters
 router.get("/download", handleAttendanceDownload);
+router.post("/download", handleAttendanceDownload);
 
 // Short Attendance summarized report - supports optional wardId (sector) and kothiId filters
 router.get("/short-report", async (req, res) => {

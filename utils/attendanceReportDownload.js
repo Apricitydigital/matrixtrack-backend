@@ -357,8 +357,8 @@ const groupingConfigs = {
       c.city_name,
       dept.department_name,
       des.designation_name,
-      COALESCE(supervisor.user_id, 0) AS supervisor_id,
-      COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+      0 AS supervisor_id,
+      COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
       COALESCE(u.name, 'Self') AS punched_in_by,
       COALESCE(u1.name, 'Self') AS punched_out_by
     `,
@@ -394,7 +394,7 @@ const groupingConfigs = {
       z.zone_name,
       c.city_id,
       c.city_name,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -431,7 +431,7 @@ const groupingConfigs = {
       c.city_id,
       c.city_name,
       COALESCE(array_to_string(array_agg(DISTINCT COALESCE(supervisor.name, 'Unassigned')), ', '), 'Unassigned') AS supervisors,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -464,7 +464,7 @@ const groupingConfigs = {
       c.city_id,
       c.city_name,
       COALESCE(array_to_string(array_agg(DISTINCT z.zone_name), ', '), 'N/A') AS zones,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -577,7 +577,7 @@ const groupingConfigs = {
       COALESCE(array_to_string(array_agg(DISTINCT w.ward_name), ', '), 'N/A') AS wards,
       COALESCE(array_to_string(array_agg(DISTINCT z.zone_name), ', '), 'N/A') AS zones,
       COALESCE(array_to_string(array_agg(DISTINCT c.city_name), ', '), 'N/A') AS cities,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -606,11 +606,11 @@ const groupingConfigs = {
       c.city_name AS city_name,
       z.zone_name AS zone_name,
       w.ward_name AS kothi_name,
-      COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+      COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
       (SELECT COUNT(*) FROM employee reg WHERE reg.ward_id = w.ward_id) AS total_registered,
       COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN a.emp_id END) AS total_present
     `,
-    groupBy: `c.city_name, z.zone_name, w.ward_name, COALESCE(supervisor.name, 'Unassigned')`,
+    groupBy: `c.city_name, z.zone_name, w.ward_name, supervisor_agg.supervisor_names`,
     orderBy: "c.city_name, z.zone_name, w.ward_name",
     csvHeaders: [
       { key: "city_name", label: "City" },
@@ -627,7 +627,8 @@ const createAttendanceDownloadHandler =
   ({ pool, defaultFormat = "csv", resolveCityScope, resolveKothiScope } = {}) =>
     async (req, res) => {
       try {
-        const format = (req.query.format || defaultFormat).toString().toLowerCase();
+        const payload = { ...req.query, ...req.body };
+        const format = (payload.format || defaultFormat).toString().toLowerCase();
 
         if (!SUPPORTED_FORMATS.has(format)) {
           return res.status(400).json({
@@ -637,19 +638,19 @@ const createAttendanceDownloadHandler =
           });
         }
 
-        const requestedGrouping = (req.query.group_by || "detail")
+        const requestedGrouping = (payload.group_by || "detail")
           .toString()
           .toLowerCase();
         if (!SUPPORTED_GROUPINGS.has(requestedGrouping)) {
           return res.status(400).json({
-            error: `Invalid group_by "${req.query.group_by}". Supported values: ${[
+            error: `Invalid group_by "${payload.group_by}". Supported values: ${[
               ...SUPPORTED_GROUPINGS,
             ].join(", ")}`,
           });
         }
 
         const groupConfig = groupingConfigs[requestedGrouping];
-        const rawLocationType = (req.query.location_type || "both")
+        const rawLocationType = (payload.location_type || "both")
           .toString()
           .trim()
           .toLowerCase();
@@ -659,7 +660,7 @@ const createAttendanceDownloadHandler =
         const locationExpression = getLocationExpression(locationType);
         const cityScope = resolveCityScope?.(req) || { all: false, ids: [] };
         const kothiScope = resolveKothiScope?.(req) || { all: true, ids: [] };
-        const requestedCityId = parseIntegerParam(req.query.city_id);
+        const requestedCityId = parseIntegerParam(payload.city_id);
 
         if (!cityScope.all) {
           const allowedIds = (cityScope.ids || []).map((id) => Number(id));
@@ -680,11 +681,11 @@ const createAttendanceDownloadHandler =
 
         const filterResult =
           requestedGrouping === "supervisor_summary"
-            ? buildSupervisorSummaryFilters(req.query, {
+            ? buildSupervisorSummaryFilters(payload, {
               cityScope,
               kothiScope,
             })
-            : buildAttendanceFilters(req.query, {
+            : buildAttendanceFilters(payload, {
               locationExpression,
               cityScope,
               kothiScope,
@@ -695,7 +696,7 @@ const createAttendanceDownloadHandler =
         metadata.group_by = requestedGrouping;
         metadata.location_type = locationType;
         metadata.format = format;
-        const absOnlyFlag = parseBooleanFlag(req.query.absentees_only);
+        const absOnlyFlag = parseBooleanFlag(payload.absentees_only);
         if (absOnlyFlag !== null) {
           metadata.absentees_only = absOnlyFlag;
         }
@@ -705,16 +706,16 @@ const createAttendanceDownloadHandler =
         if (requestedGrouping === "detail") {
           // Single unified query: start from employee and left-join attendance for the target date.
           const targetDate =
-            req.query.date ||
-            req.query.start_date ||
-            req.query.date_from ||
+            payload.date ||
+            payload.start_date ||
+            payload.date_from ||
             new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
           const detailParams = [targetDate];
           const filters = [];
-          const hasPunchInFlag = parseBooleanFlag(req.query.has_punch_in);
-          const hasPunchOutFlag = parseBooleanFlag(req.query.has_punch_out);
-          const absOnlyFlag = parseBooleanFlag(req.query.absentees_only);
+          const hasPunchInFlag = parseBooleanFlag(payload.has_punch_in);
+          const hasPunchOutFlag = parseBooleanFlag(payload.has_punch_out);
+          const absOnlyFlag = parseBooleanFlag(payload.absentees_only);
 
           // City scope
           if (!cityScope.all) {
@@ -732,44 +733,43 @@ const createAttendanceDownloadHandler =
           }
 
           // Optional filters
-          const zoneId = parseIntegerParam(req.query.zone_id);
+          const zoneId = parseIntegerParam(payload.zone_id);
           if (zoneId !== null) {
             detailParams.push(zoneId);
             filters.push(`z.zone_id = $${detailParams.length}`);
           }
-          const wardId = parseIntegerParam(req.query.ward_id);
+          const wardId = parseIntegerParam(payload.ward_id || payload.kothi_id);
           if (wardId !== null) {
             detailParams.push(wardId);
             filters.push(`w.ward_id = $${detailParams.length}`);
           }
-          const supervisorId = parseIntegerParam(req.query.supervisor_id);
+          const supervisorId = parseIntegerParam(payload.supervisor_id);
           if (supervisorId !== null) {
             detailParams.push(supervisorId);
             filters.push(
               `EXISTS (SELECT 1 FROM supervisor_ward sw2 WHERE sw2.ward_id = w.ward_id AND sw2.supervisor_id = $${detailParams.length})`
             );
           }
-          const employeeId = parseIntegerParam(req.query.employee_id);
+          const employeeId = parseIntegerParam(payload.employee_id);
           if (employeeId !== null) {
             detailParams.push(employeeId);
             filters.push(`e.emp_id = $${detailParams.length}`);
           }
-          const empCode = (req.query.emp_code || "").toString().trim();
+          const empCode = (payload.emp_code || "").toString().trim();
           if (empCode) {
             detailParams.push(empCode);
             filters.push(`e.emp_code = $${detailParams.length}`);
           }
-          const departmentId = parseIntegerParam(req.query.department_id);
+          const departmentId = parseIntegerParam(payload.department_id);
           if (departmentId !== null) {
             detailParams.push(departmentId);
             filters.push(`dept.department_id = $${detailParams.length}`);
           }
-          const designationId = parseIntegerParam(req.query.designation_id);
+          const designationId = parseIntegerParam(payload.designation_id);
           if (designationId !== null) {
             detailParams.push(designationId);
             filters.push(`des.designation_id = $${detailParams.length}`);
           }
-
           if (absOnlyFlag === true) {
             filters.push("a.punch_in_time IS NULL");
           }
@@ -812,28 +812,44 @@ const createAttendanceDownloadHandler =
               c.city_name,
               dept.department_name,
               des.designation_name,
-              COALESCE(supervisor.user_id, 0) AS supervisor_id,
-              COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+              0 AS supervisor_id,
+              COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
               COALESCE(u.name, 'Self') AS punched_in_by,
               COALESCE(u1.name, 'Self') AS punched_out_by
             FROM employee e
             JOIN wards w ON e.ward_id = w.ward_id
             JOIN zones z ON w.zone_id = z.zone_id
             JOIN cities c ON z.city_id = c.city_id
+            LEFT JOIN (
+              SELECT sw_agg.ward_id, STRING_AGG(su_agg.name, ', ' ORDER BY su_agg.name) AS supervisor_names
+              FROM supervisor_ward sw_agg
+              JOIN users su_agg ON sw_agg.supervisor_id = su_agg.user_id
+              GROUP BY sw_agg.ward_id
+            ) supervisor_agg ON w.ward_id = supervisor_agg.ward_id
             LEFT JOIN designation des ON e.designation_id = des.designation_id
             LEFT JOIN department dept ON des.department_id = dept.department_id
-            LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
-            LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
+            -- Removed direct supervisor join to prevent row duplication.
+            -- Using correlate subquery instead for supervisor_name.
             LEFT JOIN LATERAL (
-              SELECT * FROM attendance a
-              WHERE a.emp_id = e.emp_id AND a.date = $1::date
-              ORDER BY a.attendance_id DESC
+              SELECT 
+                att.attendance_id, 
+                att.punch_in_time, 
+                att.punch_out_time, 
+                att.duration, 
+                att.in_address, 
+                att.out_address,
+                att.punched_in_by,
+                att.punched_out_by
+              FROM attendance att
+              WHERE att.emp_id = e.emp_id 
+                AND (att.date = $1::date OR att.date = $1)
+              ORDER BY att.attendance_id DESC
               LIMIT 1
             ) a ON TRUE
             LEFT JOIN users u ON a.punched_in_by = u.user_id
             LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
             ${whereCombined}
-            ORDER BY e.emp_id;
+            ORDER BY a.attendance_date DESC, e.name ASC;
           `;
 
           const unifiedResult = await pool.query(unifiedQuery, detailParams);
@@ -868,8 +884,12 @@ const createAttendanceDownloadHandler =
       `;
 
           const defaultJoinClause = `
-        LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
-        LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
+        LEFT JOIN (
+          SELECT sw_agg.ward_id, STRING_AGG(su_agg.name, ', ' ORDER BY su_agg.name) AS supervisor_names
+          FROM supervisor_ward sw_agg
+          JOIN users su_agg ON sw_agg.supervisor_id = su_agg.user_id
+          GROUP BY sw_agg.ward_id
+        ) supervisor_agg ON w.ward_id = supervisor_agg.ward_id
         LEFT JOIN users u ON a.punched_in_by = u.user_id
         LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
       `;
@@ -889,7 +909,7 @@ const createAttendanceDownloadHandler =
           const havingClause =
             typeof groupConfig.havingClauseBuilder === "function"
               ? groupConfig.havingClauseBuilder({
-                query: req.query,
+                query: payload,
               })
               : "";
 
