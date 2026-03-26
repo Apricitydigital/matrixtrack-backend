@@ -1,0 +1,20 @@
+[2026-03-26T10:10:20.437Z] wards-post: error: column e.zone_id does not exist
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:541:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1168:22
+[2026-03-26T10:10:20.622Z] wards-post: error: column e.zone_id does not exist
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:541:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1168:22
+[2026-03-26T10:10:20.647Z] wards-post: error: column e.zone_id does not exist
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:541:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1168:22
+[2026-03-26T10:10:20.989Z] wards-post: error: column e.zone_id does not exist
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:541:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1168:22

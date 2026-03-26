@@ -475,7 +475,8 @@ const fetchSupervisorEmployees = async (
     LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM supervisor_ward sw WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1) AS is_assigned) sw_exists ON TRUE
     LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM user_kothi_access uk WHERE uk.ward_id = e.ward_id AND uk.user_id = $1) AS is_assigned) kothi_rbac ON TRUE
     LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM supervisor_kothi sk WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1) AS is_assigned) sup_kothi_rbac ON TRUE
-    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM user_zone_access uz WHERE uz.zone_id = e.zone_id AND uz.user_id = $1) AS is_assigned) zone_rbac ON TRUE
+    -- zone access should be checked against the employee's ward's zone, not a non-existent e.zone_id
+    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM user_zone_access uz WHERE uz.zone_id = w.zone_id AND uz.user_id = $1) AS is_assigned) zone_rbac ON TRUE
     LEFT JOIN (
       SELECT  
         a.emp_id,
