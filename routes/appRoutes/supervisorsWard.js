@@ -242,6 +242,7 @@ const mapRowsToWards = (rows) => {
       phone: row.phone,
       designation: row.designation_name,
       department: row.department_name,
+      supervisor_name: row.supervisor_name,
       attendance_status: row.attendance_status,
       days_present: Number(row.days_present ?? 0),
       days_marked: Number(row.days_marked ?? 0),
@@ -410,12 +411,20 @@ const fetchSupervisorEmployees = async (
   endDate,
   options = {}
 ) => {
-  const { zoneIds = [], kothiIds = [] } = options;
+  const { zoneIds = [], kothiIds = [], allowCityFallback = false } = options;
   const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
   const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
   await ensureSelfAttendanceSupport();
-  const query = `
-    SELECT
+  const params = [userId ?? null, startDate, endDate, cityId ?? null];
+  
+  let accessFilter = "TRUE";
+  // Only restrict if we're not allowing city fallback and no specific filters are applied
+  if (!allowCityFallback && userId && !hasZoneFilter && !hasKothiFilter) {
+    accessFilter = `($1::int IS NULL OR sw_exists.is_assigned OR kothi_rbac.is_assigned OR sup_kothi_rbac.is_assigned OR zone_rbac.is_assigned)`;
+  }
+  
+  const queryParts = [
+    `SELECT DISTINCT ON (e.emp_id)
       e.emp_id,
       e.name AS employee_name,
       e.emp_code,
@@ -428,6 +437,12 @@ const fetchSupervisorEmployees = async (
       c.city_name,
       d.designation_name,
       dept.department_name,
+      (
+        SELECT STRING_AGG(su.name, ', ')
+        FROM supervisor_ward sw2
+        JOIN users su ON sw2.supervisor_id = su.user_id
+        WHERE sw2.ward_id = e.ward_id
+      ) AS supervisor_name,
       e.face_embedding,
       e.face_confidence,
       e.face_id,
@@ -452,15 +467,17 @@ const fetchSupervisorEmployees = async (
       summary.punch_out_epoch,
       summary.last_punch_epoch
     FROM employee e
-    JOIN wards w ON e.ward_id = w.ward_id
-    JOIN zones z ON w.zone_id = z.zone_id
-    JOIN cities c ON z.city_id = c.city_id
-    LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
-    LEFT JOIN users u ON sw.supervisor_id = u.user_id
-    JOIN designation d ON e.designation_id = d.designation_id
-    JOIN department dept ON d.department_id = dept.department_id
+    LEFT JOIN wards w ON e.ward_id = w.ward_id
+    LEFT JOIN zones z ON w.zone_id = z.zone_id
+    LEFT JOIN cities c ON z.city_id = c.city_id
+    LEFT JOIN designation d ON e.designation_id = d.designation_id
+    LEFT JOIN department dept ON d.department_id = dept.department_id
+    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM supervisor_ward sw WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1) AS is_assigned) sw_exists ON TRUE
+    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM user_kothi_access uk WHERE uk.ward_id = e.ward_id AND uk.user_id = $1) AS is_assigned) kothi_rbac ON TRUE
+    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM supervisor_kothi sk WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1) AS is_assigned) sup_kothi_rbac ON TRUE
+    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM user_zone_access uz WHERE uz.zone_id = e.zone_id AND uz.user_id = $1) AS is_assigned) zone_rbac ON TRUE
     LEFT JOIN (
-      SELECT
+      SELECT  
         a.emp_id,
         MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
@@ -499,29 +516,31 @@ const fetchSupervisorEmployees = async (
       FROM attendance a
       WHERE a.date::date BETWEEN $2::date AND $3::date
       GROUP BY a.emp_id
-    ) summary ON summary.emp_id = e.emp_id
-    WHERE (
-           $1::int IS NULL
-           ${hasKothiFilter ? "OR w.ward_id = ANY($5::int[])" : ""}
-           ${hasZoneFilter ? `OR z.zone_id = ANY($${hasKothiFilter ? 6 : 5}::int[])` : ""}
-           OR sw.supervisor_id = $1::int
-          )
-      AND ($4::int IS NULL OR c.city_id = $4::int)
-      ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
-      ${
-        hasKothiFilter
-          ? `AND w.ward_id = ANY($${hasZoneFilter ? 6 : 5}::int[])`
-          : ""
-      }
-    ORDER BY w.ward_id, e.name;
-  `;
+    ) summary ON summary.emp_id = e.emp_id`
+  ];
 
-  const params = [userId ?? null, startDate, endDate, cityId ?? null];
-  if (hasZoneFilter) params.push(zoneIds);
-  if (hasKothiFilter) params.push(kothiIds);
+  let whereClauses = [`($4::int IS NULL OR c.city_id = $4::int)`];
+  
+  if (hasZoneFilter) {
+    params.push(zoneIds);
+    whereClauses.push(`z.zone_id = ANY($${params.length}::int[])`);
+  }
+  
+  if (hasKothiFilter) {
+    params.push(kothiIds);
+    whereClauses.push(`w.ward_id = ANY($${params.length}::int[])`);
+  }
+
+  const query = `
+    ${queryParts[0]}
+    WHERE ${accessFilter}
+      AND ${whereClauses.join(' AND ')}
+    ORDER BY e.emp_id, w.ward_id, e.name;
+  `;
 
   const result = await pool.query(query, params);
   const rows = result.rows;
+  console.log(`[DEBUG] fetchSupervisorEmployees: returned ${rows.length} rows for user ${userId} in city ${cityId}`);
 
   // REMOVED allowCityFallback
 
@@ -1113,6 +1132,37 @@ router.post("/", async (req, res) => {
   const allowedZoneIds = resolveZoneScope(req);
   const allowedKothiIds = resolveKothiScope(req);
 
+  const requestedZoneIds = parseIdList(
+    req.body?.zoneIds ||
+      req.body?.zone_ids ||
+      req.body?.zones ||
+      req.body?.zoneId ||
+      req.body?.zone_id
+  );
+  const requestedKothiIds = parseIdList(
+    req.body?.kothiIds ||
+      req.body?.kothi_ids ||
+      req.body?.wardIds ||
+      req.body?.ward_ids ||
+      req.body?.kothiId ||
+      req.body?.kothi_id ||
+      req.body?.wardId ||
+      req.body?.ward_id
+  );
+
+  const zoneIds =
+    requestedZoneIds.length > 0
+      ? requestedZoneIds.filter((id) => allowedZoneIds.includes(id))
+      : allowedZoneIds;
+  const kothiIds =
+    requestedKothiIds.length > 0
+      ? requestedKothiIds.filter((id) => allowedKothiIds.includes(id))
+      : allowedKothiIds;
+
+  // A supervisor can see everything if they have city-wide access (scope.all)
+  const isCityWideSupervisor = !isAdmin && (req.cityScope?.all === true);
+  const allowCityFallback = isAdmin || isCityWideSupervisor;
+
   try {
     const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
     const response = await fetchSupervisorEmployees(
@@ -1120,7 +1170,7 @@ router.post("/", async (req, res) => {
       scopedCityId,
       startDate,
       endDate,
-      { allowCityFallback: isAdmin, zoneIds: allowedZoneIds, kothiIds: allowedKothiIds }
+      { allowCityFallback, zoneIds, kothiIds }
     );
 
     res.json({ success: true, data: response });
