@@ -626,8 +626,9 @@ const groupingConfigs = {
 const createAttendanceDownloadHandler =
   ({ pool, defaultFormat = "csv", resolveCityScope, resolveKothiScope } = {}) =>
     async (req, res) => {
+      let payload = null;
       try {
-        const payload = { ...req.query, ...req.body };
+        payload = { ...req.query, ...req.body };
         const format = (payload.format || defaultFormat).toString().toLowerCase();
 
         if (!SUPPORTED_FORMATS.has(format)) {
@@ -849,7 +850,7 @@ const createAttendanceDownloadHandler =
             LEFT JOIN users u ON a.punched_in_by = u.user_id
             LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
             ${whereCombined}
-            ORDER BY a.attendance_date DESC, e.name ASC;
+            ORDER BY a.attendance_id DESC, e.name ASC;
           `;
 
           const unifiedResult = await pool.query(unifiedQuery, detailParams);
@@ -950,7 +951,13 @@ const createAttendanceDownloadHandler =
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         return res.send(csvPayload);
       } catch (error) {
-        console.error("Error generating attendance download:", error);
+        // Note: payload may be undefined if parsing failed earlier, so guard it.
+        console.error("Error generating attendance download:", {
+          message: error?.message,
+          stack: error?.stack,
+          payload: payload || req.body || req.query,
+          user: req.user,
+        });
         return res.status(500).json({
           error: "Unable to generate filtered attendance report",
           details: error?.message || "Unknown error",
