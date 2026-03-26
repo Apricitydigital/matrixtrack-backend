@@ -61,18 +61,14 @@ const resolveSupervisorIdFromQuery = (query = {}) => {
 };
 
 const buildFaceImageUrlFromEmbedding = (embedding, empId) => {
-  if (!embedding) {
-    return null;
+  if (!embedding) return null;
+
+  if (empId) {
+    return `app/attendance/employee/faceRoutes/image/${empId}`;
   }
 
-  let faceImageUrl = buildPublicFaceUrl(embedding);
-  if (!faceImageUrl && isBackblazeUrl(embedding) && empId) {
-    faceImageUrl = `app/attendance/employee/faceRoutes/image/${empId}`;
-  } else if (!faceImageUrl && typeof embedding === "string") {
-    faceImageUrl = embedding;
-  }
-
-  return faceImageUrl;
+  const faceImageUrl = buildPublicFaceUrl(embedding);
+  return faceImageUrl || embedding || null;
 };
 
 async function fetchSupervisorFaceGallery(supervisorId, wardId) {
@@ -295,7 +291,9 @@ router.get("/gallery", async (req, res) => {
           employeeId,
           size: item.Size ?? null,
           lastModified: item.LastModified ?? null,
-          url: buildPublicFaceUrl(item.Key),
+          url: employeeId 
+            ? `app/attendance/employee/faceRoutes/image/${employeeId}`
+            : buildPublicFaceUrl(item.Key),
         });
       });
 
@@ -376,6 +374,7 @@ router.get("/image/:employeeId", async (req, res) => {
       res.set({
         "Content-Type": imageResponse.headers["content-type"] || "image/jpeg",
         "Content-Disposition": `inline; filename="${path.basename(name) || defaultName}"`,
+        "Cache-Control": "public, max-age=31536000, immutable",
       });
 
       imageResponse.data.pipe(res);
@@ -398,6 +397,7 @@ router.get("/image/:employeeId", async (req, res) => {
           res.set({
             "Content-Type": contentType,
             "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
+            "Cache-Control": "public, max-age=31536000, immutable",
           });
 
           return stream.pipe(res);
@@ -425,6 +425,7 @@ router.get("/image/:employeeId", async (req, res) => {
           "Content-Type":
             imageResponse.headers["content-type"] || "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
+          "Cache-Control": "public, max-age=31536000, immutable",
         });
 
         return imageResponse.data.pipe(res);
@@ -452,6 +453,7 @@ router.get("/image/:employeeId", async (req, res) => {
         res.set({
           "Content-Type": contentType,
           "Content-Disposition": `inline; filename="${path.basename(objectKey) || defaultName}"`,
+          "Cache-Control": "public, max-age=31536000, immutable",
         });
 
         return stream.pipe(res);
