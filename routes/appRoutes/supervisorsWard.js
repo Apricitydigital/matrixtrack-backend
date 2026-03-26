@@ -223,10 +223,11 @@ const mapRowsToWards = (rows) => {
       };
     }
 
-    let faceImageUrl = buildPublicFaceUrl(row.face_embedding);
-    if (!faceImageUrl && isBackblazeUrl(row.face_embedding)) {
-      faceImageUrl = `app/attendance/employee/faceRoutes/image/${row.emp_id}`;
-    } else if (!faceImageUrl && typeof row.face_embedding === "string") {
+    let faceImageUrl = row.emp_id 
+      ? `app/attendance/employee/faceRoutes/image/${row.emp_id}`
+      : buildPublicFaceUrl(row.face_embedding);
+    
+    if (!faceImageUrl && typeof row.face_embedding === "string") {
       faceImageUrl = row.face_embedding;
     }
     const faceEnrolled = Boolean(row.face_embedding);

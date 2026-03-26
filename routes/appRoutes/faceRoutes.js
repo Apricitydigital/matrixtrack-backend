@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 const path = require("path");
+const sharp = require("sharp");
 const { Readable } = require("stream");
 const {
   rekognition,
@@ -377,7 +378,16 @@ router.get("/image/:employeeId", async (req, res) => {
         "Cache-Control": "public, max-age=31536000, immutable",
       });
 
-      imageResponse.data.pipe(res);
+      // 🖼 Compression Proxy using Sharp
+      const isThumb = req.query.thumb === '1';
+      const quality = isThumb ? 70 : 85;
+      const width = isThumb ? 300 : 800;
+
+      const transformer = sharp()
+        .resize(width, null, { withoutEnlargement: true })
+        .jpeg({ quality, progressive: true });
+
+      imageResponse.data.pipe(transformer).pipe(res);
       return true;
     };
 
@@ -394,13 +404,21 @@ router.get("/image/:employeeId", async (req, res) => {
             reference.key
           );
 
+          const isThumb = req.query.thumb === '1';
+          const quality = isThumb ? 70 : 85;
+          const width = isThumb ? 300 : 800;
+
+          const transformer = sharp()
+            .resize(width, null, { withoutEnlargement: true })
+            .jpeg({ quality, progressive: true });
+
           res.set({
-            "Content-Type": contentType,
+            "Content-Type": "image/jpeg",
             "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
             "Cache-Control": "public, max-age=31536000, immutable",
           });
 
-          return stream.pipe(res);
+          return stream.pipe(transformer).pipe(res);
         } catch (error) {
           if (error?.response?.status === 404) {
             return res.status(404).json({ error: "Face image not found" });
@@ -421,14 +439,21 @@ router.get("/image/:employeeId", async (req, res) => {
           responseType: "stream",
         });
 
+        const isThumb = req.query.thumb === '1';
+        const quality = isThumb ? 70 : 85;
+        const width = isThumb ? 300 : 800;
+
+        const transformer = sharp()
+          .resize(width, null, { withoutEnlargement: true })
+          .jpeg({ quality, progressive: true });
+
         res.set({
-          "Content-Type":
-            imageResponse.headers["content-type"] || "image/jpeg",
+          "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
           "Cache-Control": "public, max-age=31536000, immutable",
         });
 
-        return imageResponse.data.pipe(res);
+        return imageResponse.data.pipe(transformer).pipe(res);
       } catch (error) {
         console.error("Error proxying Backblaze face image:", error);
         const publicFallback =
@@ -450,13 +475,21 @@ router.get("/image/:employeeId", async (req, res) => {
       try {
         const { stream, contentType } = await streamS3Object(objectKey);
 
+        const isThumb = req.query.thumb === '1';
+        const quality = isThumb ? 70 : 85;
+        const width = isThumb ? 300 : 800;
+
+        const transformer = sharp()
+          .resize(width, null, { withoutEnlargement: true })
+          .jpeg({ quality, progressive: true });
+
         res.set({
-          "Content-Type": contentType,
+          "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(objectKey) || defaultName}"`,
           "Cache-Control": "public, max-age=31536000, immutable",
         });
 
-        return stream.pipe(res);
+        return stream.pipe(transformer).pipe(res);
       } catch (error) {
         console.error("Error streaming S3 face image:", error);
         const publicFallback =
