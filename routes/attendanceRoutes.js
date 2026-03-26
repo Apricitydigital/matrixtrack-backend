@@ -17,10 +17,13 @@ const formatDateIST = (date = new Date()) => {
 
 router.use(authenticate, attachKothiScope, attachCityScope, requireCityScope());
 
-// 🟢 Fetch attendance report for a specific date (current date or selected date)
+// 🟢 Fetch attendance report for a specific date or date range
 router.post("/", async (req, res) => {
-  // Get the date from query parameters, if available; otherwise, default to IST date
-  const date = req.query.date || formatDateIST(); // IST Date in YYYY-MM-DD format
+  // Exhaustive check for all possible date param names from query or body
+  const startDate = req.query.startDate || req.body.startDate || req.query.start_date || req.body.start_date;
+  const endDate = req.query.endDate || req.body.endDate || req.query.end_date || req.body.end_date;
+  const singleDate = req.query.date || req.body.date || req.query.singleDate || req.body.singleDate;
+
   const scope = req.cityScope || { all: false, ids: [] };
   const kothiScope = req.kothiScope || { all: true, ids: [] };
 
@@ -31,15 +34,23 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    const scope = req.cityScope || { all: false, ids: [] };
-    const kothiScope = req.kothiScope || { all: true, ids: [] };
+    let dateFilter;
+    let params;
 
-    const cityFilter = buildCityFilterClause(scope, "c", [date]);
+    if (startDate && endDate && startDate !== "undefined" && endDate !== "undefined") {
+      dateFilter = "a.date::date BETWEEN $1 AND $2";
+      params = [startDate, endDate];
+    } else {
+      dateFilter = "a.date::date = $1";
+      params = [singleDate || formatDateIST()];
+    }
+
+    const cityFilter = buildCityFilterClause(scope, "c", params);
     const kothiFilter = buildKothiFilterClause(kothiScope, "w", cityFilter.params);
 
     const result = await pool.query(
       `SELECT 
-        ROW_NUMBER() OVER (ORDER BY a.date DESC, a.attendance_id) AS sr_no,
+        ROW_NUMBER() OVER (ORDER BY a.date ASC, a.attendance_id ASC) AS sr_no,
         e.emp_id,
         attendance_id,
         e.name, 
@@ -70,9 +81,9 @@ router.post("/", async (req, res) => {
       LEFT JOIN department dept ON des.department_id = dept.department_id
       LEFT JOIN users u ON a.punched_in_by = u.user_id
       LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
-      WHERE a.date = $1
+      WHERE ${dateFilter}
         ${cityFilter.clause} ${kothiFilter.clause}
-      ORDER BY a.date DESC, a.attendance_id;`,
+      ORDER BY a.date ASC, a.attendance_id ASC;`,
       kothiFilter.params
     );
 
