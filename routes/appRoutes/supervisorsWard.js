@@ -109,8 +109,9 @@ const enforceCityScope = (req, requestedCityId) => {
     .map((cityId) => Number(cityId))
     .filter((cityId) => Number.isFinite(cityId));
 
+  // If no explicit city scope, allow request to proceed with null city (will yield empty data downstream).
   if (!allowedCityIds.length) {
-    return { cityId: null, allowed: false };
+    return { cityId: requestedCityId ?? null, allowed: true };
   }
 
   if (requestedCityId === null || requestedCityId === undefined) {
@@ -223,12 +224,16 @@ const mapRowsToWards = (rows) => {
       };
     }
 
-    let faceImageUrl = row.emp_id 
-      ? `app/attendance/employee/faceRoutes/image/${row.emp_id}`
-      : buildPublicFaceUrl(row.face_embedding);
-    
-    if (!faceImageUrl && typeof row.face_embedding === "string") {
-      faceImageUrl = row.face_embedding;
+    // Only attach a face image URL when we know an embedding/key exists.
+    let faceImageUrl = null;
+    if (row.face_embedding) {
+      faceImageUrl = row.emp_id
+        ? `app/attendance/employee/faceRoutes/image/${row.emp_id}`
+        : buildPublicFaceUrl(row.face_embedding);
+
+      if (!faceImageUrl && typeof row.face_embedding === "string") {
+        faceImageUrl = row.face_embedding;
+      }
     }
     const faceEnrolled = Boolean(row.face_embedding);
     const faceConfidence =
@@ -716,7 +721,8 @@ const fetchZoneSummary = async (
 router.use(
   authenticate,
   attachCityScope,
-  requireCityScope(),
+  // Allow empty city scope to return empty summary instead of 403; admins already bypass inside middleware.
+  requireCityScope(false, true),
   attachZoneScope,
   attachKothiScope,
   authorize("dashboard", "view")

@@ -175,7 +175,7 @@ const requestUpload = multer({
 // POST /api/geofencing/request — supervisor submits geofence setup request
 router.post("/request", authenticate, requestUpload.single("photo"), async (req, res) => {
     const { supervisor_name, phone_number, latitude, longitude, message, zone_id, ward_id } = req.body;
-    const emp_id = req.body.emp_id || req.user?.emp_id || req.user?.id || null;
+    const emp_id = req.body.emp_id || req.user?.emp_id || req.user?.user_id || req.user?.id || null;
     const photo_url = req.file ? `/uploads/geofence_requests/${req.file.filename}` : null;
 
     if (!supervisor_name) {
@@ -217,12 +217,13 @@ router.post("/request", authenticate, requestUpload.single("photo"), async (req,
 });
 // GET /api/geofencing/my-request — supervisor checks their own request status
 router.get("/my-request", authenticate, async (req, res) => {
-    const emp_id = req.user?.emp_id || req.user?.id;
-    if (!emp_id) {
-        return res.status(400).json({ error: "Employee identity not found" });
-    }
+    const emp_id = req.user?.emp_id || req.user?.user_id || req.user?.id || null;
 
     try {
+        if (!emp_id) {
+            return res.json(null);
+        }
+
         const result = await pool.query(
             "SELECT * FROM geofencing_requests WHERE emp_id = $1 ORDER BY created_at DESC LIMIT 1",
             [emp_id]
@@ -277,8 +278,25 @@ router.patch("/requests/:id", authenticate, authorize("master", "manage"), async
         }
 
         const updatedRequest = result.rows[0];
-        const finalWardId = req.body.ward_id || updatedRequest.ward_id;
-        const finalZoneId = req.body.zone_id || updatedRequest.zone_id;
+
+        // Resolve ward/zone if missing: prefer payload → request → employee record
+        let finalWardId = req.body.ward_id || updatedRequest.ward_id;
+        let finalZoneId = req.body.zone_id || updatedRequest.zone_id;
+
+        if ((!finalWardId || !finalZoneId) && updatedRequest.emp_id) {
+            try {
+                const empLookup = await pool.query(
+                    "SELECT ward_id, zone_id FROM employee WHERE emp_id = $1 LIMIT 1",
+                    [updatedRequest.emp_id]
+                );
+                if (empLookup.rows.length > 0) {
+                    finalWardId = finalWardId || empLookup.rows[0].ward_id || null;
+                    finalZoneId = finalZoneId || empLookup.rows[0].zone_id || null;
+                }
+            } catch (lookupErr) {
+                console.warn("Geofence approval: could not resolve employee ward/zone", lookupErr);
+            }
+        }
 
         // 📍 If approved, automatically create a geofence rule using the coordinates from the request
         if (status === "approved" && updatedRequest.latitude && updatedRequest.longitude) {
@@ -306,6 +324,32 @@ router.patch("/requests/:id", authenticate, authorize("master", "manage"), async
         res.json({ message: `Request ${status} successfully`, request: updatedRequest });
     } catch (error) {
         console.error("Error reviewing geofencing request:", error);
+        res.status(500).json({ error: "Database error" });
+    }
+});
+
+// DELETE /api/geofencing/requests/:id — admin deletes a request (and matching geofence if it was auto-created)
+router.delete("/requests/:id", authenticate, authorize("master", "manage"), async (req, res) => {
+    const { id } = req.params;
+    try {
+        const existing = await pool.query("SELECT * FROM geofencing_requests WHERE id = $1", [id]);
+        if (existing.rows.length === 0) {
+            return res.status(404).json({ error: "Request not found" });
+        }
+        const reqRow = existing.rows[0];
+
+        // Remove matching geofence entry if it was created with the same ward/coords
+        if (reqRow.ward_id && reqRow.latitude && reqRow.longitude) {
+            await pool.query(
+                "DELETE FROM geofencing WHERE ward_id = $1 AND latitude = $2 AND longitude = $3",
+                [reqRow.ward_id, reqRow.latitude, reqRow.longitude]
+            );
+        }
+
+        await pool.query("DELETE FROM geofencing_requests WHERE id = $1", [id]);
+        res.json({ message: "Geofence request deleted" });
+    } catch (error) {
+        console.error("Error deleting geofencing request:", error);
         res.status(500).json({ error: "Database error" });
     }
 });

@@ -25,6 +25,7 @@ const normalizeCityIds = (cityIds = []) => {
   return normalized;
 };
 
+// If no explicit cities are set, treat as unrestricted ("all") to avoid hard blocks.
 const fetchCitiesFromAssignments = async (userId, includeCityMetadata = false) => {
   if (!userId) {
     return { ids: [], cities: [] };
@@ -39,8 +40,8 @@ const fetchCitiesFromAssignments = async (userId, includeCityMetadata = false) =
           -- Legacy Kothi Assignments
           SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1
           UNION
-          -- Legacy Sector/Ward Assignments
-          SELECT ward_id FROM wards WHERE sector_id IN (SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1)
+          -- Supervisor → ward assignments
+          SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1
           UNION
           -- Zone-level Assignments
           SELECT ward_id FROM wards WHERE zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1)
@@ -63,7 +64,7 @@ const fetchCitiesFromAssignments = async (userId, includeCityMetadata = false) =
           UNION
           SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1
           UNION
-          SELECT ward_id FROM wards WHERE sector_id IN (SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1)
+          SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1
           UNION
           SELECT ward_id FROM wards WHERE zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1)
           UNION
@@ -83,10 +84,12 @@ const fetchCitiesFromAssignments = async (userId, includeCityMetadata = false) =
 
   return {
     ids,
-    cities: includeCityMetadata ? rows.map((row) => ({
-      city_id: row.city_id,
-      city_name: row.city_name,
-    })) : [],
+    cities: includeCityMetadata
+      ? rows.map((row) => ({
+          city_id: row.city_id,
+          city_name: row.city_name,
+        }))
+      : [],
   };
 };
 

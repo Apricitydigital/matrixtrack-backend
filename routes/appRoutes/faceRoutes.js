@@ -353,18 +353,118 @@ router.get("/image/:employeeId", async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT face_embedding
+      `SELECT face_embedding, emp_code
          FROM employee
          WHERE emp_id = $1`,
       [employeeId]
     );
 
-    if (!rows.length || !rows[0].face_embedding) {
-      return res.status(404).json({ error: "Face image not stored for this employee" });
+    const empCode = rows.length ? rows[0].emp_code : null;
+    let faceEmbedding = rows.length ? rows[0].face_embedding : null;
+    const defaultName = `employee_${employeeId}_face.jpg`;
+
+    // Always attempt to locate a current object in S3; overrides stale DB values
+    if (bucketName) {
+      const candidatePrefixes = [
+        `faces/${employeeId}`,
+        `faces/${employeeId}/`,
+        empCode ? `faces/${empCode}` : null,
+        empCode ? `faces/${empCode}/` : null,
+        `${employeeId}`,
+        `${employeeId}/`,
+        empCode ? `${empCode}` : null,
+        empCode ? `${empCode}/` : null,
+      ].filter(Boolean);
+
+      const pickLatest = (contents = []) => {
+        return contents.reduce(
+          (best, obj) => {
+            if (!obj?.Key) return best;
+            const lm = obj.LastModified ? new Date(obj.LastModified).getTime() : 0;
+            if (!best.key || lm > best.ts) {
+              return { key: obj.Key, ts: lm };
+            }
+            return best;
+          },
+          { key: null, ts: -1 }
+        );
+      };
+
+      // Try specific prefixes and pick the newest object per prefix
+      for (const prefix of candidatePrefixes) {
+        try {
+          let continuationToken = undefined;
+          let best = { key: null, ts: -1 };
+          do {
+            const resp = await s3.send(
+              new ListObjectsV2Command({
+                Bucket: bucketName,
+                Prefix: prefix,
+                MaxKeys: 1000,
+                ContinuationToken: continuationToken,
+              })
+            );
+            const candidate = pickLatest(resp.Contents);
+            if (candidate.key && candidate.ts > best.ts) {
+              best = candidate;
+            }
+            continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+          } while (continuationToken);
+
+          if (best.key) {
+            faceEmbedding = best.key;
+            break;
+          }
+        } catch (err) {
+          console.warn("Face image prefix scan failed:", err?.message || err);
+        }
+      }
+
+      // Last-resort loose scan: look for any key under faces/ that contains the empId/empCode, pick newest
+      if (!faceEmbedding) {
+        const identifiers = [employeeId, empCode].filter(Boolean).map(String);
+        if (identifiers.length) {
+          let continuationToken = undefined;
+          let best = { key: null, ts: -1 };
+          try {
+            do {
+              const resp = await s3.send(
+                new ListObjectsV2Command({
+                  Bucket: bucketName,
+                  Prefix: "faces/",
+                  MaxKeys: 1000,
+                  ContinuationToken: continuationToken,
+                })
+              );
+              for (const obj of resp.Contents || []) {
+                const key = obj.Key || "";
+                if (
+                  identifiers.some(
+                    (id) => key.includes(`/${id}`) || key.includes(`${id}/`)
+                  )
+                ) {
+                  const lm = obj.LastModified ? new Date(obj.LastModified).getTime() : 0;
+                  if (lm > best.ts) {
+                    best = { key, ts: lm };
+                  }
+                }
+              }
+              continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+            } while (continuationToken);
+
+            if (best.key) {
+              faceEmbedding = best.key;
+            }
+          } catch (err) {
+            console.warn("Loose face image scan failed:", err?.message || err);
+          }
+        }
+      }
     }
 
-    const faceEmbedding = rows[0].face_embedding;
-    const defaultName = `employee_${employeeId}_face.jpg`;
+    if (!faceEmbedding) {
+      return res.status(404).json({ error: "Face image not stored for this employee" });
+    }
 
     const tryProxyHttp = async (url, name = defaultName) => {
       if (!url) return false;
@@ -375,7 +475,7 @@ router.get("/image/:employeeId", async (req, res) => {
       res.set({
         "Content-Type": imageResponse.headers["content-type"] || "image/jpeg",
         "Content-Disposition": `inline; filename="${path.basename(name) || defaultName}"`,
-        "Cache-Control": "public, max-age=31536000, immutable",
+        "Cache-Control": "public, max-age=3600, must-revalidate",
       });
 
       // 🖼 Compression Proxy using Sharp
@@ -415,7 +515,7 @@ router.get("/image/:employeeId", async (req, res) => {
           res.set({
             "Content-Type": "image/jpeg",
             "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
-            "Cache-Control": "public, max-age=31536000, immutable",
+            "Cache-Control": "public, max-age=3600, must-revalidate",
           });
 
           return stream.pipe(transformer).pipe(res);
@@ -450,7 +550,7 @@ router.get("/image/:employeeId", async (req, res) => {
         res.set({
           "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
-          "Cache-Control": "public, max-age=31536000, immutable",
+          "Cache-Control": "public, max-age=3600, must-revalidate",
         });
 
         return imageResponse.data.pipe(transformer).pipe(res);
@@ -486,12 +586,20 @@ router.get("/image/:employeeId", async (req, res) => {
         res.set({
           "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(objectKey) || defaultName}"`,
-          "Cache-Control": "public, max-age=31536000, immutable",
+          "Cache-Control": "public, max-age=3600, must-revalidate",
         });
 
         return stream.pipe(transformer).pipe(res);
       } catch (error) {
         console.error("Error streaming S3 face image:", error);
+        const isOurBucketUrl =
+          typeof faceEmbedding === "string" &&
+          bucketName &&
+          faceEmbedding.includes(bucketName);
+        // If this is our private bucket, avoid proxying a public request that will 403.
+        if (isOurBucketUrl) {
+          return res.status(404).json({ error: "Face image not found" });
+        }
         const publicFallback =
           buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
         try {
@@ -513,6 +621,39 @@ router.get("/image/:employeeId", async (req, res) => {
     }
 
     if (typeof faceEmbedding === "string" && faceEmbedding.startsWith("http")) {
+      const objectKeyFromUrl = parseFaceKey(faceEmbedding);
+      const isOurBucketUrl =
+        bucketName && objectKeyFromUrl && faceEmbedding.includes(bucketName);
+
+      // Try credentialed S3 fetch first whenever we can resolve a key
+      if (bucketName && objectKeyFromUrl) {
+        try {
+          const { stream, contentType } = await streamS3Object(objectKeyFromUrl);
+
+          const isThumb = req.query.thumb === '1';
+          const quality = isThumb ? 70 : 85;
+          const width = isThumb ? 300 : 800;
+
+          const transformer = sharp()
+            .resize(width, null, { withoutEnlargement: true })
+            .jpeg({ quality, progressive: true });
+
+          res.set({
+            "Content-Type": contentType || "image/jpeg",
+            "Content-Disposition": `inline; filename="${path.basename(objectKeyFromUrl) || defaultName}"`,
+            "Cache-Control": "public, max-age=3600, must-revalidate",
+          });
+
+          return stream.pipe(transformer).pipe(res);
+        } catch (error) {
+          console.error("Direct S3 stream failed for HTTP face URL:", error);
+          if (isOurBucketUrl) {
+            return res.status(404).json({ error: "Face image not found" });
+          }
+          // else fall through to proxy fallback
+        }
+      }
+
       try {
         const proxied = await tryProxyHttp(faceEmbedding);
         if (proxied) return;

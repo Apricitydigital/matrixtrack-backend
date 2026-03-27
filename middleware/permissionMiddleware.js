@@ -121,7 +121,11 @@ const fetchUserPermissions = async (userId) => {
 const authorize = (requiredModule, requiredAction) => {
   return async (req, res, next) => {
     try {
-      const userId = req.user?.user_id;
+      const userId =
+        req.user?.user_id ??
+        req.user?.id ??
+        req.user?.userId ??
+        null;
 
       if (!userId) {
         return res
