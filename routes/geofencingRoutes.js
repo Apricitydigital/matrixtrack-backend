@@ -173,7 +173,16 @@ const requestUpload = multer({
 });
 
 // POST /api/geofencing/request — supervisor submits geofence setup request
-router.post("/request", authenticate, requestUpload.single("photo"), async (req, res) => {
+// ✅ FIX: multer errors are caught properly and returned as JSON (prevents request hanging)
+router.post("/request", authenticate, (req, res, next) => {
+    requestUpload.single("photo")(req, res, (err) => {
+        if (err) {
+            console.error("[Geofence Request] Multer upload error:", err.message);
+            return res.status(400).json({ error: err.message || "File upload failed" });
+        }
+        next();
+    });
+}, async (req, res) => {
     const { supervisor_name, phone_number, latitude, longitude, message, zone_id, ward_id } = req.body;
     const emp_id = req.body.emp_id || req.user?.emp_id || req.user?.user_id || req.user?.id || null;
     const photo_url = req.file ? `/uploads/geofence_requests/${req.file.filename}` : null;
@@ -215,6 +224,7 @@ router.post("/request", authenticate, requestUpload.single("photo"), async (req,
         res.status(500).json({ error: "Database error" });
     }
 });
+
 // GET /api/geofencing/my-request — supervisor checks their own request status
 router.get("/my-request", authenticate, async (req, res) => {
     const emp_id = req.user?.emp_id || req.user?.user_id || req.user?.id || null;
@@ -355,4 +365,3 @@ router.delete("/requests/:id", authenticate, authorize("master", "manage"), asyn
 });
 
 module.exports = router;
-
