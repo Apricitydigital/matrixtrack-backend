@@ -174,7 +174,8 @@ const requestUpload = multer({
 
 // POST /api/geofencing/request — supervisor submits geofence setup request
 router.post("/request", authenticate, requestUpload.single("photo"), async (req, res) => {
-    const { supervisor_name, phone_number, latitude, longitude, message, zone_id, ward_id, emp_id } = req.body;
+    const { supervisor_name, phone_number, latitude, longitude, message, zone_id, ward_id } = req.body;
+    const emp_id = req.body.emp_id || req.user?.emp_id || req.user?.id || null;
     const photo_url = req.file ? `/uploads/geofence_requests/${req.file.filename}` : null;
 
     if (!supervisor_name) {
@@ -182,6 +183,25 @@ router.post("/request", authenticate, requestUpload.single("photo"), async (req,
     }
 
     try {
+        // Allow only one active request per supervisor; if rejected, they may apply again.
+        if (emp_id) {
+            const existing = await pool.query(
+                `SELECT status, id FROM geofencing_requests 
+                 WHERE emp_id = $1 
+                 ORDER BY created_at DESC 
+                 LIMIT 1`,
+                [emp_id]
+            );
+
+            const last = existing.rows[0];
+            if (last && (last.status === 'pending' || last.status === 'approved')) {
+                return res.status(400).json({
+                    error: "You already have an active geofence request. Please wait for it to be reviewed.",
+                    requestId: last.id,
+                });
+            }
+        }
+
         const result = await pool.query(
             `INSERT INTO geofencing_requests 
              (emp_id, zone_id, ward_id, supervisor_name, phone_number, latitude, longitude, photo_url, message, status)
@@ -195,7 +215,6 @@ router.post("/request", authenticate, requestUpload.single("photo"), async (req,
         res.status(500).json({ error: "Database error" });
     }
 });
-
 // GET /api/geofencing/my-request — supervisor checks their own request status
 router.get("/my-request", authenticate, async (req, res) => {
     const emp_id = req.user?.emp_id || req.user?.id;

@@ -1,0 +1,70 @@
+﻿*** Begin Patch
+*** Update File: routes/geofencingRoutes.js
+@@
+-// POST /api/geofencing/request â€” supervisor submits geofence setup request
+-router.post("/request", authenticate, requestUpload.single("photo"), async (req, res) => {
+-    const { supervisor_name, phone_number, latitude, longitude, message, zone_id, ward_id, emp_id } = req.body;
+-    const photo_url = req.file ? `/uploads/geofence_requests/${req.file.filename}` : null;
+-
+-    if (!supervisor_name) {
+-        return res.status(400).json({ error: "Supervisor name is required" });
+-    }
+-
+-    try {
+-        const result = await pool.query(
+-            `INSERT INTO geofencing_requests 
+-             (emp_id, zone_id, ward_id, supervisor_name, phone_number, latitude, longitude, photo_url, message, status)
+-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+-             RETURNING *`,
+-            [emp_id || null, zone_id || null, ward_id || null, supervisor_name, phone_number || null, latitude || null, longitude || null, photo_url, message || null]
+-        );
+-        res.status(201).json({ message: "Request submitted successfully", request: result.rows[0] });
+-    } catch (error) {
+-        console.error("Error submitting geofencing request:", error);
+-        res.status(500).json({ error: "Database error" });
+-    }
+-});
++// POST /api/geofencing/request — supervisor submits geofence setup request
++router.post("/request", authenticate, requestUpload.single("photo"), async (req, res) => {
++    const { supervisor_name, phone_number, latitude, longitude, message, zone_id, ward_id } = req.body;
++    const emp_id = req.body.emp_id || req.user?.emp_id || req.user?.id || null;
++    const photo_url = req.file ? `/uploads/geofence_requests/${req.file.filename}` : null;
++
++    if (!supervisor_name) {
++        return res.status(400).json({ error: "Supervisor name is required" });
++    }
++
++    try {
++        // Allow only one active request per supervisor. They can re-apply only after rejection.
++        if (emp_id) {
++            const existing = await pool.query(
++                `SELECT status, id FROM geofencing_requests 
++                 WHERE emp_id = $1 
++                 ORDER BY created_at DESC 
++                 LIMIT 1`,
++                [emp_id]
++            );
++
++            const last = existing.rows[0];
++            if (last && (last.status === 'pending' || last.status === 'approved')) {
++                return res.status(400).json({
++                    error: "You already have an active geofence request. Please wait for it to be reviewed.",
++                    requestId: last.id,
++                });
++            }
++        }
++
++        const result = await pool.query(
++            `INSERT INTO geofencing_requests 
++             (emp_id, zone_id, ward_id, supervisor_name, phone_number, latitude, longitude, photo_url, message, status)
++             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
++             RETURNING *`,
++            [emp_id || null, zone_id || null, ward_id || null, supervisor_name, phone_number || null, latitude || null, longitude || null, photo_url, message || null]
++        );
++        res.status(201).json({ message: "Request submitted successfully", request: result.rows[0] });
++    } catch (error) {
++        console.error("Error submitting geofencing request:", error);
++        res.status(500).json({ error: "Database error" });
++    }
++});
+*** End Patch
