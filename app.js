@@ -91,6 +91,7 @@ const defaultOrigins = [
   "http://10.205.83.56:8082",
   "http://10.205.83.56:19000",
   "https://portal.matrixtrack.in",
+  "https://api.matrixtrack.in",
 ];
 
 const parseOrigins = (value) =>
