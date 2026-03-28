@@ -184,14 +184,32 @@ router.post("/request", authenticate, (req, res, next) => {
     });
 }, async (req, res) => {
     const { supervisor_name, phone_number, latitude, longitude, message, zone_id, ward_id } = req.body;
-    const emp_id = req.body.emp_id || req.user?.emp_id || req.user?.user_id || req.user?.id || null;
+    const input_emp_id = req.body.emp_id || req.user?.emp_id || req.user?.user_id || req.user?.id || null;
     const photo_url = req.file ? `/uploads/geofence_requests/${req.file.filename}` : null;
 
     if (!supervisor_name) {
         return res.status(400).json({ error: "Supervisor name is required" });
     }
 
+    let emp_id = null;
+
     try {
+        if (input_emp_id) {
+            // Check if input_emp_id already exists in employee table
+            const empCheck = await pool.query('SELECT emp_id FROM employee WHERE emp_id = $1', [input_emp_id]);
+            if (empCheck.rows.length > 0) {
+                emp_id = empCheck.rows[0].emp_id;
+            } else {
+                // Otherwise treat it as user_id and find the joined emp_code
+                const userCheck = await pool.query('SELECT emp_code FROM users WHERE user_id = $1', [input_emp_id]);
+                if (userCheck.rows.length > 0 && userCheck.rows[0].emp_code) {
+                    const mappedEmpCheck = await pool.query('SELECT emp_id FROM employee WHERE emp_code = $1', [userCheck.rows[0].emp_code]);
+                    if (mappedEmpCheck.rows.length > 0) {
+                        emp_id = mappedEmpCheck.rows[0].emp_id;
+                    }
+                }
+            }
+        }
         // Allow only one active request per supervisor; if rejected, they may apply again.
         if (emp_id) {
             const existing = await pool.query(
