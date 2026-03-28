@@ -138,6 +138,11 @@ const authorize = (requiredModule, requiredAction) => {
         return next();
       }
 
+      // Supervisors inherently have dashboard view access for the mobile app
+      if (req.user?.role === "supervisor" && requiredModule.toLowerCase() === "dashboard" && requiredAction === "view") {
+         return next();
+      }
+
       const permissionPayload = await fetchUserPermissions(userId);
       const requiredKey = `${requiredModule}:${requiredAction}`.toLowerCase();
       const candidateKeys =
