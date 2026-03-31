@@ -10,42 +10,68 @@ const SUPPORTED_GROUPINGS = new Set([
   "supervisor_summary",
 ]);
 
-const csvEscapeValue = (value) => {
-  if (value === null || value === undefined) {
-    return '""';
-  }
-  const stringValue =
-    value instanceof Date ? value.toISOString() : String(value);
-  const escaped = stringValue.replace(/"/g, '""');
-  return `"${escaped}"`;
-};
+const ExcelJS = require('exceljs');
 
-const buildCsvDocument = (rows, headers) => {
+const buildExcelDocument = async (rows, headers) => {
   if (!headers?.length) {
-    throw new Error("CSV headers are required");
+    throw new Error("Headers are required");
   }
 
-  const headerLine = headers
-    .map((header) => csvEscapeValue(header.label || header.key))
-    .join(",");
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Report");
 
-  if (!rows?.length) {
-    return `${headerLine}\n`;
+  sheet.columns = headers.map(header => ({
+    header: header.label || header.key,
+    key: header.key,
+    width: Math.max((header.label || header.key).length + 2, 10)
+  }));
+
+  if (rows?.length) {
+    rows.forEach((row) => {
+      const rowData = {};
+      headers.forEach((header) => {
+        let rawValue = typeof header.formatter === "function"
+          ? header.formatter(row[header.key], row)
+          : row[header.key];
+
+        if (typeof rawValue === 'string') {
+          if (rawValue.startsWith('="') && rawValue.endsWith('"')) {
+            rawValue = rawValue.substring(2, rawValue.length - 1);
+          } else if (rawValue.startsWith('=HYPERLINK("')) {
+            const urlMatch = rawValue.match(/=HYPERLINK\("([^"]+)",\s*"([^"]+)"\)/);
+            if (urlMatch) {
+              rawValue = { text: urlMatch[2], hyperlink: urlMatch[1] };
+            }
+          }
+        }
+        rowData[header.key] = rawValue ?? "";
+      });
+      const addedRow = sheet.addRow(rowData);
+      headers.forEach((header, idx) => {
+        const cell = addedRow.getCell(idx + 1);
+        if (cell.value && cell.value.hyperlink) {
+          cell.font = { color: { argb: '0563C1' }, underline: true };
+        }
+      });
+    });
+
+    sheet.columns.forEach(column => {
+      let maxLength = column.header ? column.header.length : 10;
+      column.eachCell({ includeEmpty: false }, cell => {
+        let cellLen = 0;
+        if (cell.value && cell.value.text) cellLen = cell.value.text.length;
+        else if (cell.value) cellLen = cell.value.toString().length;
+        if (cellLen > maxLength) maxLength = cellLen;
+      });
+      column.width = Math.min(maxLength + 3, 50);
+    });
   }
 
-  const dataLines = rows.map((row) =>
-    headers
-      .map((header) => {
-        const rawValue =
-          typeof header.formatter === "function"
-            ? header.formatter(row[header.key], row)
-            : row[header.key];
-        return csvEscapeValue(rawValue ?? "");
-      })
-      .join(",")
-  );
+  const headerRow = sheet.getRow(1);
+  headerRow.font = { bold: true };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
 
-  return [headerLine, ...dataLines].join("\n");
+  return await workbook.xlsx.writeBuffer();
 };
 
 const parseIntegerParam = (value) => {
@@ -365,25 +391,20 @@ const groupingConfigs = {
     orderBy: "a.date DESC, a.attendance_id DESC",
     csvHeaders: [
       { key: "sr_no", label: "Sr No." },
-      { key: "attendance_id", label: "Attendance ID" },
       { key: "attendance_date", label: "Date" },
-      { key: "employee_name", label: "Employee Name" },
-      { key: "emp_code", label: "Employee Code" },
-      { key: "contact_no", label: "Contact" },
-      { key: "punch_in_time", label: "Punch In" },
-      { key: "punch_out_time", label: "Punch Out" },
-      { key: "duration", label: "Duration" },
-      { key: "in_address", label: "In Address" },
-      { key: "out_address", label: "Out Address" },
-      { key: "ward_name", label: "Ward" },
-      { key: "zone_name", label: "Zone" },
-      { key: "city_name", label: "City" },
-      { key: "department_name", label: "Department" },
-      { key: "designation_name", label: "Designation" },
-      { key: "supervisor_name", label: "Supervisor" },
-      { key: "punched_in_by", label: "Punched In By" },
-      { key: "punched_out_by", label: "Punched Out By" },
-      // images removed from export per request
+      { key: "zone_name", label: "Zone", formatter: (val) => val || "-" },
+      { key: "ward_name", label: "Ward", formatter: (val) => val || "-" },
+      { key: "employee_name", label: "Employee Name", formatter: (val) => val || "-" },
+      { key: "emp_code", label: "EmpCode", formatter: (val) => val ? `="${val}"` : "-" },
+      { key: "contact_no", label: "Contact No.", formatter: (val) => val ? `="${val}"` : "-" },
+      { key: "punch_in_time", label: "In Time", formatter: (val) => val || "-" },
+      { key: "punched_in_by", label: "PunchedIn By", formatter: (val, row) => row.punch_in_time ? val : "-" },
+      { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
+      { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}", "${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}")` : "-" },
+      { key: "punch_out_time", label: "Out Time", formatter: (val) => val || "-" },
+      { key: "punched_out_by", label: "PunchedOut By", formatter: (val, row) => row.punch_out_time ? val : "-" },
+      { key: "out_address", label: "Out Address", formatter: (val) => val || "-" },
+      { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}", "${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}")` : "-" },
     ],
   },
   zone: {
@@ -793,7 +814,7 @@ const createAttendanceDownloadHandler =
 
           const unifiedQuery = `
             SELECT
-              ROW_NUMBER() OVER (ORDER BY e.emp_id) AS sr_no,
+              ROW_NUMBER() OVER (ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC) AS sr_no,
               a.attendance_id,
               e.emp_id AS emp_id,
               e.name AS employee_name,
@@ -804,7 +825,11 @@ const createAttendanceDownloadHandler =
               TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
               a.duration,
               a.in_address,
+              a.latitude_in,
+              a.longitude_in,
               a.out_address,
+              a.latitude_out,
+              a.longitude_out,
               w.ward_id,
               w.ward_name,
               z.zone_id,
@@ -837,8 +862,12 @@ const createAttendanceDownloadHandler =
                 att.punch_in_time, 
                 att.punch_out_time, 
                 att.duration, 
-                att.in_address, 
+                att.in_address,
+                att.latitude_in,
+                att.longitude_in,
                 att.out_address,
+                att.latitude_out,
+                att.longitude_out,
                 att.punched_in_by,
                 att.punched_out_by
               FROM attendance att
@@ -850,7 +879,7 @@ const createAttendanceDownloadHandler =
             LEFT JOIN users u ON a.punched_in_by = u.user_id
             LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
             ${whereCombined}
-            ORDER BY a.attendance_id DESC, e.name ASC;
+            ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC;
           `;
 
           const unifiedResult = await pool.query(unifiedQuery, detailParams);
@@ -928,6 +957,11 @@ const createAttendanceDownloadHandler =
           const { rows } = await pool.query(downloadQuery, params);
           allRows = rows;
         }
+        if (allRows && allRows.length) {
+          allRows.forEach((row, idx) => {
+            row.sr_no = idx + 1;
+          });
+        }
 
         if (format === "json") {
           return res.json({
@@ -943,13 +977,13 @@ const createAttendanceDownloadHandler =
           typeof groupConfig.csvHeaders === "function"
             ? groupConfig.csvHeaders({ locationExpression })
             : groupConfig.csvHeaders;
-        const csvPayload = buildCsvDocument(allRows, headers);
+        const excelBuffer = await buildExcelDocument(allRows, headers);
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const filename = `attendance-${groupConfig.filenameSuffix}-report-${timestamp}.csv`;
+        const filename = `attendance-${groupConfig.filenameSuffix}-report-${timestamp}.xlsx`;
 
-        res.setHeader("Content-Type", "text/csv");
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-        return res.send(csvPayload);
+        return res.send(excelBuffer);
       } catch (error) {
         // Note: payload may be undefined if parsing failed earlier, so guard it.
         console.error("Error generating attendance download:", {
