@@ -25,8 +25,8 @@ const {
   fetchBackblazeStream,
 } = require("../../utils/backblaze");
 
-const bucketName =
-  process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME || null;
+const bucketName = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME || null;
+const secondaryBucketName = process.env.SECONDARY_S3_BUCKET || null;
 const DEFAULT_FACE_PREFIX = "faces/";
 
 const resolvePrefix = (rawPrefix) => {
@@ -205,13 +205,13 @@ const parseEmployeeId = (identifier) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const streamS3Object = async (key) => {
-  if (!bucketName) {
+const streamS3Object = async (key, targetBucket = bucketName) => {
+  if (!targetBucket) {
     throw new Error("S3 bucket is not configured");
   }
 
   const command = new GetObjectCommand({
-    Bucket: bucketName,
+    Bucket: targetBucket,
     Key: key,
   });
 
@@ -363,16 +363,60 @@ router.get("/image/:employeeId", async (req, res) => {
     let faceEmbedding = rows.length ? rows[0].face_embedding : null;
     const defaultName = `employee_${employeeId}_face.jpg`;
 
-    // Always attempt to locate a current object in S3; overrides stale DB values
-    if (bucketName) {
+    let objectKey = parseFaceKey(faceEmbedding);
+    let keyExists = false;
+
+    // Verify if the DB-provided S3 key actually exists on the cloud
+    if (bucketName && objectKey && !isBackblazeUrl(faceEmbedding)) {
+      try {
+        await s3.send(
+          new HeadObjectCommand({
+            Bucket: bucketName,
+            Key: objectKey,
+          })
+        );
+        keyExists = true;
+      } catch (headError) {
+        keyExists = false; // Key is stale or missing in S3
+      }
+    }
+
+    // Try to magically fetch the photo from a duplicate employee record using the same empCode
+    if ((!faceEmbedding || !keyExists) && empCode && String(empCode).trim().length > 0) {
+      try {
+        const { rows: duplicateRows } = await pool.query(
+          `SELECT face_embedding FROM employee 
+           WHERE emp_code = $1 AND face_embedding IS NOT NULL AND emp_id != $2
+           ORDER BY emp_id DESC LIMIT 1`,
+          [empCode, employeeId]
+        );
+        
+        if (duplicateRows.length > 0) {
+          faceEmbedding = duplicateRows[0].face_embedding;
+          objectKey = parseFaceKey(faceEmbedding);
+          
+          if (bucketName && objectKey && !isBackblazeUrl(faceEmbedding)) {
+            try {
+              await s3.send(
+                new HeadObjectCommand({ Bucket: bucketName, Key: objectKey })
+              );
+              keyExists = true; // Recovered from duplicate!
+            } catch (headError) {
+              keyExists = false;
+            }
+          }
+        }
+      } catch (dupError) {
+        console.warn("Error cross-referencing duplicate employee faces:", dupError);
+      }
+    }
+
+    // If key is STILL missing or stale in S3, attempt a targeted prefix scan to recover it
+    if (bucketName && (!objectKey || !keyExists) && !isBackblazeUrl(faceEmbedding)) {
       const candidatePrefixes = [
-        `faces/${employeeId}`,
-        `faces/${employeeId}/`,
-        empCode ? `faces/${empCode}` : null,
+        `faces/${employeeId}/`, // TRAILING SLASH is CRITICAL to prevent '89' from matching '8958'
         empCode ? `faces/${empCode}/` : null,
-        `${employeeId}`,
         `${employeeId}/`,
-        empCode ? `${empCode}` : null,
         empCode ? `${empCode}/` : null,
       ].filter(Boolean);
 
@@ -419,47 +463,10 @@ router.get("/image/:employeeId", async (req, res) => {
           console.warn("Face image prefix scan failed:", err?.message || err);
         }
       }
-
-      // Last-resort loose scan: look for any key under faces/ that contains the empId/empCode, pick newest
-      if (!faceEmbedding) {
-        const identifiers = [employeeId, empCode].filter(Boolean).map(String);
-        if (identifiers.length) {
-          let continuationToken = undefined;
-          let best = { key: null, ts: -1 };
-          try {
-            do {
-              const resp = await s3.send(
-                new ListObjectsV2Command({
-                  Bucket: bucketName,
-                  Prefix: "faces/",
-                  MaxKeys: 1000,
-                  ContinuationToken: continuationToken,
-                })
-              );
-              for (const obj of resp.Contents || []) {
-                const key = obj.Key || "";
-                if (
-                  identifiers.some(
-                    (id) => key.includes(`/${id}`) || key.includes(`${id}/`)
-                  )
-                ) {
-                  const lm = obj.LastModified ? new Date(obj.LastModified).getTime() : 0;
-                  if (lm > best.ts) {
-                    best = { key, ts: lm };
-                  }
-                }
-              }
-              continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
-            } while (continuationToken);
-
-            if (best.key) {
-              faceEmbedding = best.key;
-            }
-          } catch (err) {
-            console.warn("Loose face image scan failed:", err?.message || err);
-          }
-        }
-      }
+      
+      // Removed the 'loose scan' loop entirely. Scanning the root bucket for arbitrary
+      // strings was O(N) over potentially millions of keys and crashed the API process
+      // for any employee who simply didn't have a photo uploaded.
     }
 
     if (!faceEmbedding) {
@@ -570,10 +577,36 @@ router.get("/image/:employeeId", async (req, res) => {
       }
     }
 
-    const objectKey = parseFaceKey(faceEmbedding);
+    objectKey = parseFaceKey(faceEmbedding);
     if (objectKey) {
+      let finalBucket = bucketName;
+      let keyExists = false;
+
+      // Check primary bucket
       try {
-        const { stream, contentType } = await streamS3Object(objectKey);
+        await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: objectKey }));
+        keyExists = true;
+      } catch (e) {
+        // Not in primary, check secondary
+        if (secondaryBucketName) {
+          try {
+            await s3.send(new HeadObjectCommand({ Bucket: secondaryBucketName, Key: objectKey }));
+            keyExists = true;
+            finalBucket = secondaryBucketName;
+          } catch (e2) {
+            keyExists = false;
+          }
+        }
+      }
+
+      if (!keyExists) {
+        // One last try: targeted prefix search in primary bucket (already implemented in some routes but here we need it for this specific key)
+        // Actually, if we have the objectKey and it's 404 in both, it's truly missing.
+        return res.status(404).json({ error: "Face image not found in any bucket" });
+      }
+
+      try {
+        const { stream, contentType } = await streamS3Object(objectKey, finalBucket);
 
         const isThumb = req.query.thumb === '1';
         const quality = isThumb ? 70 : 85;

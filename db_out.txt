@@ -1,0 +1,70 @@
+Results for Ishika:
+[
+  {
+    "emp_id": 8956,
+    "emp_code": "EMP2025",
+    "name": "Ishika ",
+    "face_embedding": "faces/8956/1768998115456_8956-face-store-1768998115067.jpg"
+  },
+  {
+    "emp_id": 9844,
+    "emp_code": "29869",
+    "name": "Nishikant Rajendra Kadam",
+    "face_embedding": "faces/9844/1760332126841_1760332126302243.jpg"
+  },
+  {
+    "emp_id": 19846,
+    "emp_code": "29829",
+    "name": "Nishikant Mahadev Waghmare",
+    "face_embedding": "faces/19846/1765936617726_19846-face-store-1765936617434.jpg"
+  },
+  {
+    "emp_id": 6825,
+    "emp_code": "11",
+    "name": "Rishika",
+    "face_embedding": "faces/6825/1760084220986_6825-face-store-1760084220521.jpg"
+  }
+]
+---
+Results for Jaspreet:
+[
+  {
+    "emp_id": 9890,
+    "emp_code": "EMP2996",
+    "name": "Jaspreet rathore",
+    "face_embedding": "faces/9890/1774512101983_9890-face-store-1774512101655.jpg"
+  },
+  {
+    "emp_id": 10724,
+    "emp_code": "7779",
+    "name": "jaspreettttt",
+    "face_embedding": null
+  },
+  {
+    "emp_id": 6827,
+    "emp_code": "233",
+    "name": "jaspreet kaur",
+    "face_embedding": "faces/6827/1768999103900_6827-face-store-1768999103627.jpg"
+  }
+]
+---
+Results for sunpreet:
+[
+  {
+    "emp_id": 9726,
+    "emp_code": "MP1692830",
+    "name": "sunpreet sir",
+    "face_embedding": "faces/9726/1774512229039_9726-face-store-1774512228737.jpg"
+  }
+]
+---
+Results for Neeraj:
+[
+  {
+    "emp_id": 8958,
+    "emp_code": "EMP2020",
+    "name": "Neeraj verma",
+    "face_embedding": "faces/8958/1774935788881_8958-face-store-1774935775258.jpg"
+  }
+]
+---
