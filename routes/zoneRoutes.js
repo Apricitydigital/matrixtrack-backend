@@ -6,6 +6,7 @@ const { authorize, getPermissionCityFilter } = require("../middleware/permission
 const { attachCityScope, requireCityScope } = require("../middleware/cityScope");
 const { attachZoneScope } = require("../middleware/zoneScope");
 const { attachKothiScope } = require("../middleware/kothiScope");
+const { mergeZones } = require("../utils/mergeZones");
 
 // 🟢 Fetch all zones with city names
 router.get(
@@ -172,6 +173,50 @@ router.delete(
     console.error("Error deleting zone:", error);
     res.status(500).json({ error: "Database error" });
   }
+  }
+);
+
+// 🟢 Merge zones (merge duplicate zones into a single target)
+router.post(
+  "/merge",
+  authenticate,
+  authorize("master", "manage"),
+  async (req, res) => {
+    try {
+      const { targetZoneId, sourceZoneIds, rename, dryRun, force, autoResolve } = req.body || {};
+      const target = Number(targetZoneId);
+      const sources = Array.isArray(sourceZoneIds)
+        ? sourceZoneIds.map((z) => Number(z)).filter(Number.isFinite)
+        : String(sourceZoneIds || "")
+            .split(",")
+            .map((z) => Number(z.trim()))
+            .filter(Number.isFinite);
+
+      if (!target || !sources.length) {
+        return res.status(400).json({ error: "targetZoneId and sourceZoneIds are required." });
+      }
+
+      const result = await mergeZones({
+        target,
+        source: sources,
+        rename: rename || null,
+        dryRun: Boolean(dryRun),
+        force: Boolean(force),
+        autoResolve: Boolean(autoResolve),
+      });
+
+      res.json({
+        executed: result.executed,
+        plan: result.plan,
+        message: result.executed ? "Merge completed." : "Dry run only.",
+      });
+    } catch (error) {
+      console.error("Error merging zones:", error);
+      res.status(400).json({
+        error: error.message || "Unable to merge zones.",
+        details: error.details || null,
+      });
+    }
   }
 );
 
