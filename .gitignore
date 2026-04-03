@@ -1,3 +1,8 @@
 .env 
 node_modules/ 
 matrixtrack-backend/ 
+
+
+# logs
+*.log
+
