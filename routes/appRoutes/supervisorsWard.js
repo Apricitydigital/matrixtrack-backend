@@ -208,7 +208,7 @@ const resolveDateRange = (rawStart, rawEnd) => {
   return { startDate: endIso, endDate: startIso };
 };
 
-const mapRowsToWards = (rows) => {
+const mapRowsToWards = (rows, supervisorUserId = null) => {
   const wardMap = {};
 
   rows.forEach((row) => {
@@ -220,6 +220,11 @@ const mapRowsToWards = (rows) => {
         ward_name: row.ward_name,
         city: row.city_name,
         zone: row.zone_name,
+        // ✅ Stamp supervisor_id on the ward too so the mobile app's
+        //    isEmployeeAssignedToSupervisor & enforceSupervisorIntegrity can
+        //    verify ownership when the employee object lacks the field.
+        supervisor_id: supervisorUserId ?? null,
+        supervisorId: supervisorUserId ?? null,
         employees: [],
       };
     }
@@ -241,6 +246,11 @@ const mapRowsToWards = (rows) => {
         ? Number(row.face_confidence)
         : null;
 
+    const supervisorIdStr =
+      supervisorUserId !== null && supervisorUserId !== undefined
+        ? String(supervisorUserId)
+        : null;
+
     wardMap[wardId].employees.push({
       emp_id: row.emp_id,
       emp_name: row.employee_name,
@@ -249,6 +259,15 @@ const mapRowsToWards = (rows) => {
       designation: row.designation_name,
       department: row.department_name,
       supervisor_name: row.supervisor_name,
+      // ✅ Supervisor ID fields — required by mobile app's integrity check
+      //    (enforceSupervisorIntegrity in DashboardScreen.js). Without these,
+      //    getSupervisorIdentifiers returns [] → MISSING_EMPLOYEE_SUPERVISOR error.
+      supervisor_id: supervisorIdStr,
+      supervisorId: supervisorIdStr,
+      assigned_supervisor_id: supervisorIdStr,
+      assignedSupervisorId: supervisorIdStr,
+      ward_supervisor_id: supervisorIdStr,
+      wardSupervisorId: supervisorIdStr,
       attendance_status: row.attendance_status,
       days_present: Number(row.days_present ?? 0),
       days_marked: Number(row.days_marked ?? 0),
@@ -549,9 +568,9 @@ const fetchSupervisorEmployees = async (
   const rows = result.rows;
   console.log(`[DEBUG] fetchSupervisorEmployees: returned ${rows.length} rows for user ${userId} in city ${cityId}`);
 
-  // REMOVED allowCityFallback
-
-  return mapRowsToWards(rows);
+  // Pass userId so mapRowsToWards can stamp supervisor_id on every employee record.
+  // This is required by the mobile app's enforceSupervisorIntegrity check.
+  return mapRowsToWards(rows, userId);
 };
 
 const fetchCitySummary = async (
