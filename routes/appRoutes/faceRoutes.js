@@ -31,8 +31,14 @@ const DEFAULT_FACE_PREFIX = "faces/";
 
 // Simple in-memory cache for missing images to avoid recurring expensive S3 scans
 const MISSING_FACE_CACHE = new Set();
-// Clean cache every 10 minutes
-setInterval(() => MISSING_FACE_CACHE.clear(), 10 * 60 * 1000);
+// Cache for recently found keys via recovery to avoid redundant scans
+const FOUND_FACE_CACHE = new Map();
+
+// Clean caches every 10 minutes
+setInterval(() => {
+  MISSING_FACE_CACHE.clear();
+  FOUND_FACE_CACHE.clear();
+}, 10 * 60 * 1000);
 
 const resolvePrefix = (rawPrefix) => {
   const candidate = typeof rawPrefix === "string" ? rawPrefix.trim() : "";
@@ -238,6 +244,88 @@ const streamS3Object = async (key, targetBucket = bucketName) => {
     contentType: response.ContentType || "image/jpeg",
   };
 };
+
+/**
+ * 🛠️ Reconciliation Utility
+ * Scans S3 and populates missing face_embedding fields in the database.
+ */
+router.get("/reconcile-all", async (req, res) => {
+  if (!bucketName) {
+    return res.status(500).json({ error: "S3 bucket is not configured" });
+  }
+
+  try {
+    const prefix = "faces/";
+    let continuationToken = undefined;
+    let scannedCount = 0;
+    let reconciledCount = 0;
+    const errors = [];
+
+    console.log("[Reconcile] Starting bulk reconciliation...");
+
+    do {
+      const command = new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+        MaxKeys: 1000,
+      });
+
+      const response = await s3.send(command);
+      const contents = response?.Contents || [];
+
+      for (const item of contents) {
+        if (!item?.Key || item.Key.endsWith("/")) continue;
+        scannedCount++;
+
+        const identifier = extractIdentifierFromKey(item.Key, prefix);
+        const employeeId = parseEmployeeId(identifier);
+
+        if (employeeId) {
+          try {
+            // Update if face_embedding is NULL or matches but might be outdated
+            const result = await pool.query(
+              `UPDATE employee 
+               SET face_embedding = $1 
+               WHERE (emp_id = $2 OR emp_code = $3) 
+               AND (face_embedding IS NULL OR face_embedding = $4)
+               RETURNING emp_id`,
+              [item.Key, employeeId, identifier, identifier]
+            );
+
+            if (result.rowCount > 0) {
+              reconciledCount++;
+            }
+          } catch (dbError) {
+            errors.push({ key: item.Key, error: dbError.message });
+          }
+        }
+      }
+
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    console.log(`[Reconcile] Finished. Scanned: ${scannedCount}, Reconciled: ${reconciledCount}`);
+    
+    // Clear caches to reflect new data
+    MISSING_FACE_CACHE.clear();
+    FOUND_FACE_CACHE.clear();
+
+    res.json({
+      success: true,
+      message: "Bulk reconciliation completed successfully",
+      scanned: scannedCount,
+      reconciled: reconciledCount,
+      errors: errors.length > 0 ? errors.slice(0, 10) : undefined,
+    });
+  } catch (error) {
+    console.error("Bulk reconciliation failed:", error);
+    res.status(500).json({
+      error: "Reconciliation failed",
+      details: error.message,
+    });
+  }
+});
 
 router.get("/gallery", async (req, res) => {
   const supervisorId = resolveSupervisorIdFromQuery(req.query);
@@ -515,24 +603,51 @@ router.get("/image/:employeeId", async (req, res) => {
       }
 
       if (!streamResult) {
-        // If key is STILL missing or stale in S3, attempt a targeted prefix scan (Recovery logic)
-        const candidatePrefixes = [
-          `faces/${employeeId}/`,
-          empCode ? `faces/${empCode}/` : null,
-          `${employeeId}/`,
-          empCode ? `${empCode}/` : null,
-        ].filter(Boolean);
-
-        for (const prefix of candidatePrefixes) {
+        // Short-circuit if we already found this key via recovery in this session
+        if (FOUND_FACE_CACHE.has(employeeId)) {
+          const cachedKey = FOUND_FACE_CACHE.get(employeeId);
           try {
-            const resp = await s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: prefix, MaxKeys: 1 }));
-            if (resp.Contents && resp.Contents.length > 0) {
-              const bestKey = resp.Contents[0].Key;
+            streamResult = await streamS3Object(cachedKey, bucketName);
+            objectKey = cachedKey;
+          } catch (e) {}
+        }
+
+        if (!streamResult) {
+          // 🚀 Optimization: Parallelize prefix scans
+          const candidatePrefixes = [
+            `faces/${employeeId}/`,
+            empCode ? `faces/${empCode}/` : null,
+            `${employeeId}/`,
+            empCode ? `${empCode}/` : null,
+          ].filter(Boolean);
+
+          const scanResults = await Promise.all(
+            candidatePrefixes.map(async (prefix) => {
+              try {
+                const resp = await s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: prefix, MaxKeys: 1 }));
+                return resp.Contents && resp.Contents.length > 0 ? resp.Contents[0].Key : null;
+              } catch (err) {
+                return null;
+              }
+            })
+          );
+
+          const bestKey = scanResults.find(Boolean);
+          if (bestKey) {
+            try {
               streamResult = await streamS3Object(bestKey, bucketName);
-              objectKey = bestKey; // Update for filename
-              break;
-            }
-          } catch (err) {}
+              objectKey = bestKey;
+              
+              // 🛡️ Self-Healing: Backfill the database so next time is a direct hit
+              FOUND_FACE_CACHE.set(employeeId, bestKey);
+              pool.query(
+                "UPDATE employee SET face_embedding = $1 WHERE emp_id = $2",
+                [bestKey, employeeId]
+              ).catch(e => console.error(`Failed to backfill face_embedding for ${employeeId}:`, e));
+              
+              console.log(`[Self-Healing] Backfilled face_embedding for employee ${employeeId} with key: ${bestKey}`);
+            } catch (err) {}
+          }
         }
       }
 
@@ -964,7 +1079,6 @@ router.delete("/:employeeId", async (req, res) => {
       message: "Stored face removed successfully",
     });
   } catch (error) {
-    console.error("Face delete error:", error);
     res.status(500).json({ error: "Unable to delete stored face", details: error.message });
   }
 });
