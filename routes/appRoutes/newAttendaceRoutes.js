@@ -1681,7 +1681,10 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             locationPayload,
             {
               employeeId: employeeRecord.emp_id,
-              requireFaceMatch: true,
+              // Face already verified by Rekognition SearchFacesByImageCommand above.
+              // Do NOT re-run ensureFaceMatch — it loads the enrolled S3 image which
+              // may have a stale link, causing already-enrolled employees to fail.
+              requireFaceMatch: false,
               faceMatchThreshold: matchThreshold,
             }
           );

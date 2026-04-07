@@ -108,10 +108,20 @@ async function run() {
         } catch (_del) {}
       }
 
+      // Download the image ourselves and pass as Bytes.
+      // Using S3Object directly in IndexFacesCommand can fail with
+      // "Unable to get object" when Rekognition's service role doesn't
+      // have cross-bucket access. Bytes always works via our own SDK creds.
+      const { GetObjectCommand } = require("./config/awsConfig");
+      const s3Resp = await s3.send(new GetObjectCommand({ Bucket: activeBucket, Key: s3Key }));
+      const chunks = [];
+      for await (const chunk of s3Resp.Body) chunks.push(chunk);
+      const imageBytes = Buffer.concat(chunks);
+
       const indexResp = await rekognition.send(
         new IndexFacesCommand({
           CollectionId: collectionId,
-          Image: { S3Object: { Bucket: activeBucket, Name: s3Key } },
+          Image: { Bytes: imageBytes },
           ExternalImageId: row.emp_id.toString(),
           DetectionAttributes: ["DEFAULT"],
           MaxFaces: 1,
