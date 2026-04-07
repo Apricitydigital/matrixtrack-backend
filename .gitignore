@@ -6,3 +6,7 @@ matrixtrack-backend/
 # logs
 *.log
 
+*.txt
+check_*.js
+run_query.js
+

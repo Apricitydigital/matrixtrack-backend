@@ -1208,4 +1208,126 @@ router.post("/", async (req, res) => {
   }
 });
 
+// ── Top Performing Supervisors ─────────────────────────────────────────────
+router.post("/top-supervisors", async (req, res) => {
+  const { city_id, startDate: startDateRaw, endDate: endDateRaw, zoneIds, kothiIds } = req.body;
+  const { cityId, valid: cityValid } = normalizeCityIdInput(city_id);
+
+  if (!cityValid) {
+    return res.status(400).json({ error: "Invalid city ID" });
+  }
+
+  const { cityId: scopedCityId, allowed } = enforceCityScope(req, cityId ?? null);
+  if (!allowed) {
+    return res
+      .status(403)
+      .json({ error: "Forbidden: city not permitted" });
+  }
+
+  try {
+    const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
+
+    const params = [startDate, endDate];
+    let extraFilters = "";
+    if (scopedCityId !== null && scopedCityId !== undefined) {
+      params.push(scopedCityId);
+      extraFilters += ` AND c.city_id = $${params.length}`;
+    }
+    
+    if (Array.isArray(zoneIds) && zoneIds.length > 0) {
+      params.push(zoneIds);
+      extraFilters += ` AND z.zone_id = ANY($${params.length}::int[])`;
+    }
+    
+    if (Array.isArray(kothiIds) && kothiIds.length > 0) {
+      params.push(kothiIds);
+      extraFilters += ` AND w.ward_id = ANY($${params.length}::int[])`;
+    }
+
+    const query = `
+      WITH supervisor_employees AS (
+        SELECT DISTINCT
+          u.user_id       AS supervisor_id,
+          u.name          AS supervisor_name,
+          u.emp_code      AS supervisor_emp_code,
+          e.emp_id
+        FROM users u
+        JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
+        JOIN wards w            ON sw.ward_id = w.ward_id
+        JOIN zones z            ON w.zone_id  = z.zone_id
+        JOIN cities c           ON z.city_id  = c.city_id
+        JOIN employee e         ON e.ward_id  = w.ward_id
+        WHERE u.role = 'supervisor'
+          ${extraFilters}
+      ),
+      emp_status AS (
+        SELECT
+          se.supervisor_id,
+          se.supervisor_name,
+          se.supervisor_emp_code,
+          se.emp_id,
+          MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+          MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
+          MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
+        FROM supervisor_employees se
+        LEFT JOIN attendance a
+          ON a.emp_id = se.emp_id
+         AND a.date::date BETWEEN $1::date AND $2::date
+        GROUP BY se.supervisor_id, se.supervisor_name, se.supervisor_emp_code, se.emp_id
+      ),
+      supervisor_agg AS (
+        SELECT
+          supervisor_id,
+          supervisor_name,
+          supervisor_emp_code,
+          COUNT(*) AS total_employees,
+          COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
+          COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS on_leave,
+          COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
+          COALESCE(SUM(CASE WHEN has_punch_in = 0 AND has_leave = 0 THEN 1 ELSE 0 END), 0) AS absent
+        FROM emp_status
+        GROUP BY supervisor_id, supervisor_name, supervisor_emp_code
+      )
+      SELECT
+        supervisor_id,
+        supervisor_name,
+        supervisor_emp_code,
+        total_employees,
+        present,
+        on_leave,
+        fully_marked,
+        absent,
+        CASE
+          WHEN total_employees > 0
+            THEN LEAST(ROUND(((present + on_leave)::numeric / total_employees) * 100, 1), 100)
+          ELSE 0
+        END AS attendance_rate
+      FROM supervisor_agg
+      WHERE total_employees > 0
+      ORDER BY attendance_rate DESC, total_employees DESC
+      LIMIT 10;
+    `;
+
+    const result = await pool.query(query, params);
+
+    const supervisors = result.rows.map((row) => ({
+      supervisor_id: row.supervisor_id,
+      name: row.supervisor_name,
+      emp_code: row.supervisor_emp_code || "",
+      total_employees: Number(row.total_employees) || 0,
+      present: Number(row.present) || 0,
+      on_leave: Number(row.on_leave) || 0,
+      fully_marked: Number(row.fully_marked) || 0,
+      absent: Number(row.absent) || 0,
+      attendance_rate: Number(row.attendance_rate) || 0,
+    }));
+
+    res.json({ success: true, data: supervisors });
+  } catch (error) {
+    console.error("Error fetching top supervisors:", error);
+    logError("top-supervisors", error);
+    res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
 module.exports = router;
