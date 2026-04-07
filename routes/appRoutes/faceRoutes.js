@@ -29,6 +29,33 @@ const bucketName = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME || nu
 const secondaryBucketName = process.env.SECONDARY_S3_BUCKET || null;
 const DEFAULT_FACE_PREFIX = "faces/";
 
+// Simple in-memory cache for missing images to avoid recurring expensive S3 scans
+const MISSING_FACE_CACHE = new Set();
+// Cache for recently found keys via recovery to avoid redundant scans
+const FOUND_FACE_CACHE = new Map();
+
+// Clean caches every 10 minutes
+setInterval(() => {
+  MISSING_FACE_CACHE.clear();
+  FOUND_FACE_CACHE.clear();
+}, 10 * 60 * 1000);
+
+const resetFaceCaches = () => {
+  MISSING_FACE_CACHE.clear();
+  FOUND_FACE_CACHE.clear();
+};
+
+// ðŸ”€ Admin utility: clear face caches on demand (no data is deleted)
+router.post("/clear-cache", (req, res) => {
+  const missingSize = MISSING_FACE_CACHE.size;
+  const foundSize = FOUND_FACE_CACHE.size;
+  resetFaceCaches();
+  res.json({
+    success: true,
+    cleared: { missing: missingSize, found: foundSize },
+  });
+});
+
 const resolvePrefix = (rawPrefix) => {
   const candidate = typeof rawPrefix === "string" ? rawPrefix.trim() : "";
   if (candidate.length === 0) {
@@ -64,6 +91,14 @@ const resolveSupervisorIdFromQuery = (query = {}) => {
 const buildFaceImageUrlFromEmbedding = (embedding, empId) => {
   if (!embedding) return null;
 
+  // If it's already an absolute URL (S3, CloudFront, or Backblaze), use it directly
+  // to bypass backend overhead (HeadObject, Sharp, etc.) and improve speed.
+  if (typeof embedding === "string" && embedding.startsWith("http")) {
+    return embedding;
+  }
+
+  // If empId is provided, we can use the backend proxy which handles
+  // Sharp compression, secondary bucket failover, and prefix recovery.
   if (empId) {
     return `app/attendance/employee/faceRoutes/image/${empId}`;
   }
@@ -226,7 +261,332 @@ const streamS3Object = async (key, targetBucket = bucketName) => {
   };
 };
 
+/**
+ * 🛠️ Reconciliation Utility
+ * Scans S3 and populates missing face_embedding fields in the database.
+ */
+router.get("/reconcile-all", async (req, res) => {
+  if (!bucketName) {
+    return res.status(500).json({ error: "S3 bucket is not configured" });
+  }
+
+  try {
+    const prefix = "faces/";
+    let continuationToken = undefined;
+    let scannedCount = 0;
+    let reconciledCount = 0;
+    const errors = [];
+
+    console.log("[Reconcile] Starting bulk reconciliation...");
+
+    do {
+      const command = new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+        MaxKeys: 1000,
+      });
+
+      const response = await s3.send(command);
+      const contents = response?.Contents || [];
+
+      for (const item of contents) {
+        if (!item?.Key || item.Key.endsWith("/")) continue;
+        scannedCount++;
+
+        const identifier = extractIdentifierFromKey(item.Key, prefix);
+        const employeeId = parseEmployeeId(identifier);
+
+        if (employeeId) {
+          try {
+            // Update if face_embedding is NULL or matches but might be outdated
+            const result = await pool.query(
+              `UPDATE employee 
+               SET face_embedding = $1 
+               WHERE (emp_id = $2 OR emp_code = $3) 
+               AND (face_embedding IS NULL OR face_embedding = $4)
+               RETURNING emp_id`,
+              [item.Key, employeeId, identifier, identifier]
+            );
+
+            if (result.rowCount > 0) {
+              reconciledCount++;
+            }
+          } catch (dbError) {
+            errors.push({ key: item.Key, error: dbError.message });
+          }
+        }
+      }
+
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    console.log(`[Reconcile] Finished. Scanned: ${scannedCount}, Reconciled: ${reconciledCount}`);
+    
+    // Clear caches to reflect new data
+    MISSING_FACE_CACHE.clear();
+    FOUND_FACE_CACHE.clear();
+
+    res.json({
+      success: true,
+      message: "Bulk reconciliation completed successfully",
+      scanned: scannedCount,
+      reconciled: reconciledCount,
+      errors: errors.length > 0 ? errors.slice(0, 10) : undefined,
+    });
+  } catch (error) {
+    console.error("Bulk reconciliation failed:", error);
+    res.status(500).json({
+      error: "Reconciliation failed",
+      details: error.message,
+    });
+  }
+});
+
+/**
+ * 🔧 Auto-heal face embeddings for all employees:
+ * - Verifies the stored key exists in S3 (primary or secondary).
+ * - If missing or stored under a different identifier folder, picks the newest key under
+ *   faces/{emp_id}/ or faces/{emp_code}/ and updates employee.face_embedding.
+ * - Skips already-valid rows to keep it fast.
+ *
+ * This lets us fix mismatched face gallery tiles without re-capturing 40k users.
+ */
+router.post("/auto-heal", async (req, res) => {
+  if (!bucketName) {
+    return res.status(500).json({ error: "S3 bucket is not configured" });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT emp_id, emp_code, face_embedding
+         FROM employee
+        WHERE face_embedding IS NOT NULL`
+    );
+
+    let checked = 0;
+    let healed = 0;
+    let missing = 0;
+    const errors = [];
+
+    const buckets = [bucketName, secondaryBucketName].filter(Boolean);
+
+    const headKey = async (key) => {
+      for (const b of buckets) {
+        try {
+          await s3.send(new HeadObjectCommand({ Bucket: b, Key: key }));
+          return b;
+        } catch (_e) {}
+      }
+      return null;
+    };
+
+    const findNewestInPrefixes = async (empId, empCode) => {
+      const prefixes = [
+        `faces/${empId}/`,
+        empCode ? `faces/${empCode}/` : null,
+        `${empId}/`,
+        empCode ? `${empCode}/` : null,
+      ].filter(Boolean);
+
+      for (const prefix of prefixes) {
+        for (const b of buckets) {
+          try {
+            const resp = await s3.send(
+              new ListObjectsV2Command({
+                Bucket: b,
+                Prefix: prefix,
+                MaxKeys: 50,
+              })
+            );
+            const contents = resp?.Contents || [];
+            if (!contents.length) continue;
+            contents.sort(
+              (a, b2) =>
+                new Date(b2.LastModified || 0) -
+                new Date(a.LastModified || 0)
+            );
+            return { key: contents[0].Key, bucket: b };
+          } catch (_e) {}
+        }
+      }
+      return null;
+    };
+
+    for (const row of rows) {
+      checked += 1;
+      const empId = row.emp_id;
+      const empCode = row.emp_code;
+      const storedKey = parseFaceKey(row.face_embedding);
+
+      // Fast path: key exists where it is
+      if (storedKey && (await headKey(storedKey))) {
+        continue;
+      }
+
+      const replacement = await findNewestInPrefixes(empId, empCode);
+      if (!replacement) {
+        missing += 1;
+        continue;
+      }
+
+      try {
+        await pool.query(
+          "UPDATE employee SET face_embedding = $1 WHERE emp_id = $2",
+          [replacement.key, empId]
+        );
+        healed += 1;
+      } catch (e) {
+        errors.push({ empId, error: e.message });
+      }
+    }
+
+    // Clear caches so downstream requests see fresh keys
+    MISSING_FACE_CACHE.clear();
+    FOUND_FACE_CACHE.clear();
+
+    res.json({
+      success: true,
+      employees_checked: checked,
+      healed,
+      missing_after_scan: missing,
+      errors: errors.slice(0, 10),
+    });
+  } catch (error) {
+    console.error("Auto-heal faces failed:", error);
+    res.status(500).json({
+      error: "Auto-heal failed",
+      details: error.message,
+    });
+  }
+});
+
+/**
+ * 🔄 Reindex-All: Re-indexes every employee's existing S3 face image into
+ * the Rekognition collection.  Use this to fix "group punch unrecognized"
+ * for employees whose face_id is stale or orphaned in the collection.
+ * Safe to run repeatedly — it skips employees with no face_embedding.
+ */
+router.post("/reindex-all", async (req, res) => {
+  if (!bucketName) {
+    return res.status(500).json({ error: "S3 bucket is not configured" });
+  }
+
+  const collectionId = resolveCollectionId();
+  if (!collectionId) {
+    return res.status(500).json({ error: "Rekognition collection is not configured" });
+  }
+
+  try {
+    await ensureCollectionExists(collectionId);
+
+    // Fetch all employees who have an S3 face key
+    const { rows } = await pool.query(
+      `SELECT emp_id, emp_code, face_embedding, face_id FROM employee WHERE face_embedding IS NOT NULL`
+    );
+
+    let indexed = 0;
+    let skipped = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const row of rows) {
+      const { parseFaceKey: _parseFaceKey } = require("../../utils/faceImage");
+      const s3Key = _parseFaceKey(row.face_embedding);
+
+      if (!s3Key) {
+        skipped++;
+        continue;
+      }
+
+      // Verify the S3 key exists
+      try {
+        await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: s3Key }));
+      } catch (_e) {
+        // Try with secondary bucket
+        let foundInSecondary = false;
+        if (secondaryBucketName) {
+          try {
+            await s3.send(new HeadObjectCommand({ Bucket: secondaryBucketName, Key: s3Key }));
+            foundInSecondary = true;
+          } catch (_e2) {}
+        }
+        if (!foundInSecondary) {
+          skipped++;
+          continue; // S3 key doesn't exist in any bucket, skip
+        }
+      }
+
+      try {
+        // Remove old face_id from collection to avoid duplicates
+        if (row.face_id) {
+          try {
+            await rekognition.send(
+              new DeleteFacesCommand({ CollectionId: collectionId, FaceIds: [row.face_id] })
+            );
+          } catch (_del) { /* ignore - may already be gone */ }
+        }
+
+        // Re-index the face
+        const indexResp = await rekognition.send(
+          new IndexFacesCommand({
+            CollectionId: collectionId,
+            Image: { S3Object: { Bucket: bucketName, Name: s3Key } },
+            ExternalImageId: row.emp_id.toString(),
+            DetectionAttributes: ["DEFAULT"],
+            MaxFaces: 1,
+            QualityFilter: "NONE", // Use NONE so lower-quality legacy images still get indexed
+          })
+        );
+
+        const newFaceRecord = indexResp.FaceRecords?.[0];
+        if (!newFaceRecord) {
+          errors.push({ empId: row.emp_id, error: "No face detected in stored image" });
+          failed++;
+          continue;
+        }
+
+        const newFaceId = newFaceRecord.Face.FaceId;
+        const newConfidence = newFaceRecord.Face.Confidence;
+
+        // Update DB with new face_id
+        await pool.query(
+          `UPDATE employee SET face_id = $1, face_confidence = $2 WHERE emp_id = $3`,
+          [newFaceId, newConfidence, row.emp_id]
+        );
+
+        MISSING_FACE_CACHE.delete(row.emp_id);
+        FOUND_FACE_CACHE.delete(row.emp_id);
+        indexed++;
+      } catch (rekErr) {
+        errors.push({ empId: row.emp_id, error: rekErr.message });
+        failed++;
+      }
+    }
+
+    console.log(`[ReindexAll] Total: ${rows.length}, Indexed: ${indexed}, Skipped: ${skipped}, Failed: ${failed}`);
+
+    res.json({
+      success: true,
+      message: "Reindex completed",
+      total: rows.length,
+      indexed,
+      skipped,
+      failed,
+      errors: errors.slice(0, 20),
+    });
+  } catch (error) {
+    console.error("[ReindexAll] Fatal error:", error);
+    res.status(500).json({ error: "Reindex failed", details: error.message });
+  }
+});
+
 router.get("/gallery", async (req, res) => {
+  // Never let an HTTP cache serve a stale gallery list
+  res.set("Cache-Control", "no-store");
+  // Treat gallery refresh as a cache flush to avoid stale/mismatched thumbs
+  resetFaceCaches();
+
   const supervisorId = resolveSupervisorIdFromQuery(req.query);
   const wardId = normalizeId(req.query?.ward_id ?? req.query?.wardId ?? null);
 
@@ -352,6 +712,11 @@ router.get("/image/:employeeId", async (req, res) => {
       return res.status(400).json({ error: "Valid employee ID is required" });
     }
 
+    // Short-circuit if we recently confirmed this employee has no photo
+    if (MISSING_FACE_CACHE.has(employeeId) && !req.query.force) {
+      return res.status(404).json({ error: "Face image not found (cached)" });
+    }
+
     const { rows } = await pool.query(
       `SELECT face_embedding, emp_code
          FROM employee
@@ -366,110 +731,9 @@ router.get("/image/:employeeId", async (req, res) => {
     let objectKey = parseFaceKey(faceEmbedding);
     let keyExists = false;
 
-    // Verify if the DB-provided S3 key actually exists on the cloud
-    if (bucketName && objectKey && !isBackblazeUrl(faceEmbedding)) {
-      try {
-        await s3.send(
-          new HeadObjectCommand({
-            Bucket: bucketName,
-            Key: objectKey,
-          })
-        );
-        keyExists = true;
-      } catch (headError) {
-        keyExists = false; // Key is stale or missing in S3
-      }
-    }
-
-    // Try to magically fetch the photo from a duplicate employee record using the same empCode
-    if ((!faceEmbedding || !keyExists) && empCode && String(empCode).trim().length > 0) {
-      try {
-        const { rows: duplicateRows } = await pool.query(
-          `SELECT face_embedding FROM employee 
-           WHERE emp_code = $1 AND face_embedding IS NOT NULL AND emp_id != $2
-           ORDER BY emp_id DESC LIMIT 1`,
-          [empCode, employeeId]
-        );
-        
-        if (duplicateRows.length > 0) {
-          faceEmbedding = duplicateRows[0].face_embedding;
-          objectKey = parseFaceKey(faceEmbedding);
-          
-          if (bucketName && objectKey && !isBackblazeUrl(faceEmbedding)) {
-            try {
-              await s3.send(
-                new HeadObjectCommand({ Bucket: bucketName, Key: objectKey })
-              );
-              keyExists = true; // Recovered from duplicate!
-            } catch (headError) {
-              keyExists = false;
-            }
-          }
-        }
-      } catch (dupError) {
-        console.warn("Error cross-referencing duplicate employee faces:", dupError);
-      }
-    }
-
-    // If key is STILL missing or stale in S3, attempt a targeted prefix scan to recover it
-    if (bucketName && (!objectKey || !keyExists) && !isBackblazeUrl(faceEmbedding)) {
-      const candidatePrefixes = [
-        `faces/${employeeId}/`, // TRAILING SLASH is CRITICAL to prevent '89' from matching '8958'
-        empCode ? `faces/${empCode}/` : null,
-        `${employeeId}/`,
-        empCode ? `${empCode}/` : null,
-      ].filter(Boolean);
-
-      const pickLatest = (contents = []) => {
-        return contents.reduce(
-          (best, obj) => {
-            if (!obj?.Key) return best;
-            const lm = obj.LastModified ? new Date(obj.LastModified).getTime() : 0;
-            if (!best.key || lm > best.ts) {
-              return { key: obj.Key, ts: lm };
-            }
-            return best;
-          },
-          { key: null, ts: -1 }
-        );
-      };
-
-      // Try specific prefixes and pick the newest object per prefix
-      for (const prefix of candidatePrefixes) {
-        try {
-          let continuationToken = undefined;
-          let best = { key: null, ts: -1 };
-          do {
-            const resp = await s3.send(
-              new ListObjectsV2Command({
-                Bucket: bucketName,
-                Prefix: prefix,
-                MaxKeys: 1000,
-                ContinuationToken: continuationToken,
-              })
-            );
-            const candidate = pickLatest(resp.Contents);
-            if (candidate.key && candidate.ts > best.ts) {
-              best = candidate;
-            }
-            continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
-          } while (continuationToken);
-
-          if (best.key) {
-            faceEmbedding = best.key;
-            break;
-          }
-        } catch (err) {
-          console.warn("Face image prefix scan failed:", err?.message || err);
-        }
-      }
-      
-      // Removed the 'loose scan' loop entirely. Scanning the root bucket for arbitrary
-      // strings was O(N) over potentially millions of keys and crashed the API process
-      // for any employee who simply didn't have a photo uploaded.
-    }
 
     if (!faceEmbedding) {
+      MISSING_FACE_CACHE.add(employeeId);
       return res.status(404).json({ error: "Face image not stored for this employee" });
     }
 
@@ -482,7 +746,7 @@ router.get("/image/:employeeId", async (req, res) => {
       res.set({
         "Content-Type": imageResponse.headers["content-type"] || "image/jpeg",
         "Content-Disposition": `inline; filename="${path.basename(name) || defaultName}"`,
-        "Cache-Control": "public, max-age=3600, must-revalidate",
+        "Cache-Control": "no-store",
       });
 
       // 🖼 Compression Proxy using Sharp
@@ -522,7 +786,7 @@ router.get("/image/:employeeId", async (req, res) => {
           res.set({
             "Content-Type": "image/jpeg",
             "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
-            "Cache-Control": "public, max-age=3600, must-revalidate",
+            "Cache-Control": "no-store",
           });
 
           return stream.pipe(transformer).pipe(res);
@@ -557,7 +821,7 @@ router.get("/image/:employeeId", async (req, res) => {
         res.set({
           "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
-          "Cache-Control": "public, max-age=3600, must-revalidate",
+          "Cache-Control": "no-store",
         });
 
         return imageResponse.data.pipe(transformer).pipe(res);
@@ -580,33 +844,79 @@ router.get("/image/:employeeId", async (req, res) => {
     objectKey = parseFaceKey(faceEmbedding);
     if (objectKey) {
       let finalBucket = bucketName;
-      let keyExists = false;
+      let streamResult = null;
 
-      // Check primary bucket
+      // Try primary bucket first
       try {
-        await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: objectKey }));
-        keyExists = true;
+        streamResult = await streamS3Object(objectKey, bucketName);
       } catch (e) {
-        // Not in primary, check secondary
+        // If fail in primary, try secondary bucket
         if (secondaryBucketName) {
           try {
-            await s3.send(new HeadObjectCommand({ Bucket: secondaryBucketName, Key: objectKey }));
-            keyExists = true;
+            streamResult = await streamS3Object(objectKey, secondaryBucketName);
             finalBucket = secondaryBucketName;
           } catch (e2) {
-            keyExists = false;
+            streamResult = null;
           }
         }
       }
 
-      if (!keyExists) {
-        // One last try: targeted prefix search in primary bucket (already implemented in some routes but here we need it for this specific key)
-        // Actually, if we have the objectKey and it's 404 in both, it's truly missing.
+      if (!streamResult) {
+        // Short-circuit if we already found this key via recovery in this session
+        if (FOUND_FACE_CACHE.has(employeeId)) {
+          const cachedKey = FOUND_FACE_CACHE.get(employeeId);
+          try {
+            streamResult = await streamS3Object(cachedKey, bucketName);
+            objectKey = cachedKey;
+          } catch (e) {}
+        }
+
+        if (!streamResult) {
+          // 🚀 Optimization: Parallelize prefix scans
+          const candidatePrefixes = [
+            `faces/${employeeId}/`,
+            empCode ? `faces/${empCode}/` : null,
+            `${employeeId}/`,
+            empCode ? `${empCode}/` : null,
+          ].filter(Boolean);
+
+          const scanResults = await Promise.all(
+            candidatePrefixes.map(async (prefix) => {
+              try {
+                const resp = await s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: prefix, MaxKeys: 1 }));
+                return resp.Contents && resp.Contents.length > 0 ? resp.Contents[0].Key : null;
+              } catch (err) {
+                return null;
+              }
+            })
+          );
+
+          const bestKey = scanResults.find(Boolean);
+          if (bestKey) {
+            try {
+              streamResult = await streamS3Object(bestKey, bucketName);
+              objectKey = bestKey;
+              
+              // 🛡️ Self-Healing: Backfill the database so next time is a direct hit
+              FOUND_FACE_CACHE.set(employeeId, bestKey);
+              pool.query(
+                "UPDATE employee SET face_embedding = $1 WHERE emp_id = $2",
+                [bestKey, employeeId]
+              ).catch(e => console.error(`Failed to backfill face_embedding for ${employeeId}:`, e));
+              
+              console.log(`[Self-Healing] Backfilled face_embedding for employee ${employeeId} with key: ${bestKey}`);
+            } catch (err) {}
+          }
+        }
+      }
+
+      if (!streamResult) {
+        MISSING_FACE_CACHE.add(employeeId);
         return res.status(404).json({ error: "Face image not found in any bucket" });
       }
 
       try {
-        const { stream, contentType } = await streamS3Object(objectKey, finalBucket);
+        const { stream, contentType } = streamResult;
 
         const isThumb = req.query.thumb === '1';
         const quality = isThumb ? 70 : 85;
@@ -619,7 +929,7 @@ router.get("/image/:employeeId", async (req, res) => {
         res.set({
           "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(objectKey) || defaultName}"`,
-          "Cache-Control": "public, max-age=3600, must-revalidate",
+          "Cache-Control": "no-store",
         });
 
         return stream.pipe(transformer).pipe(res);
@@ -674,7 +984,7 @@ router.get("/image/:employeeId", async (req, res) => {
           res.set({
             "Content-Type": contentType || "image/jpeg",
             "Content-Disposition": `inline; filename="${path.basename(objectKeyFromUrl) || defaultName}"`,
-            "Cache-Control": "public, max-age=3600, must-revalidate",
+            "Cache-Control": "no-store",
           });
 
           return stream.pipe(transformer).pipe(res);
@@ -775,17 +1085,69 @@ router.post("/store-face", upload.single("image"), async (req, res) => {
       });
     }
 
+
+    // ---------------------------------------------------------------
+    // If the employee already has a face enrolled, replace it.
+    // This auto-replace strategy avoids forcing the user to manually
+    // delete first, and also fixes the "group punch unrecognized" bug
+    // where face_id in the DB is stale (not present in the Rekognition
+    // collection).  We clean up the old artefacts before indexing.
+    // ---------------------------------------------------------------
     if (employeeRecord?.face_embedding) {
-      return res.status(409).json({
-        error: "Face already exists",
-        details: "Delete the existing face before uploading a new one.",
-        face: {
-          key: employeeRecord.face_embedding,
-          faceId: employeeRecord.face_id,
-          confidence: employeeRecord.face_confidence,
-          imageUrl: buildPublicFaceUrl(employeeRecord.face_embedding),
-        },
-      });
+      console.log(`[StoreFace] emp_id=${targetEmployeeId} already has face_embedding; replacing...`);
+
+      // Remove old Rekognition face_id from collection
+      const _collectionId = resolveCollectionId();
+      if (_collectionId && employeeRecord.face_id) {
+        try {
+          await ensureCollectionExists(_collectionId);
+          await rekognition.send(
+            new DeleteFacesCommand({
+              CollectionId: _collectionId,
+              FaceIds: [employeeRecord.face_id],
+            })
+          );
+          console.log(`[StoreFace] Removed stale face_id ${employeeRecord.face_id} from collection.`);
+        } catch (rekErr) {
+          // Non-fatal: may already be gone
+          console.warn(`[StoreFace] Could not remove old face_id ${employeeRecord.face_id}:`, rekErr.message);
+        }
+      }
+
+      // Delete old S3 objects for this employee
+      const _buckets = [bucketName, secondaryBucketName].filter(Boolean);
+      const _oldKey = parseFaceKey(employeeRecord.face_embedding);
+      const _prefixes = [
+        `faces/${targetEmployeeId}/`,
+        employeeRecord.emp_code ? `faces/${employeeRecord.emp_code}/` : null,
+      ].filter(Boolean);
+
+      for (const _bucket of _buckets) {
+        // Delete by prefix scan
+        for (const _prefix of _prefixes) {
+          try {
+            const _listed = await s3.send(new ListObjectsV2Command({ Bucket: _bucket, Prefix: _prefix }));
+            for (const _obj of _listed?.Contents || []) {
+              if (_obj.Key && _obj.Key !== objectKey) { // don't delete the new upload
+                await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _obj.Key })).catch(() => {});
+              }
+            }
+          } catch (_) {}
+        }
+        // Also explicitly delete the stored key
+        if (_oldKey && _oldKey !== objectKey) {
+          await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _oldKey })).catch(() => {});
+        }
+      }
+
+      // Clear DB face fields so re-index proceeds cleanly
+      await pool.query(
+        `UPDATE employee SET face_embedding = NULL, face_confidence = NULL, face_id = NULL WHERE emp_id = $1`,
+        [targetEmployeeId]
+      );
+
+      MISSING_FACE_CACHE.delete(targetEmployeeId);
+      FOUND_FACE_CACHE.delete(targetEmployeeId);
     }
 
     const collectionId = resolveCollectionId();
@@ -853,6 +1215,10 @@ router.post("/store-face", upload.single("image"), async (req, res) => {
       throw new Error("Unable to update employee face metadata");
     }
 
+    // Clear any stale cache entries for this employee so new image is served immediately
+    MISSING_FACE_CACHE.delete(targetEmployeeId);
+    FOUND_FACE_CACHE.delete(targetEmployeeId);
+
     res.json({
       success: true,
       faceId,
@@ -876,6 +1242,12 @@ router.post("/store-face", upload.single("image"), async (req, res) => {
       } catch (cleanupError) {
         console.error("Cleanup error:", cleanupError);
       }
+    }
+
+    // Clear cache so a re-upload can take effect immediately after an error/retry
+    if (normalizedEmpId) {
+      MISSING_FACE_CACHE.delete(normalizedEmpId);
+      FOUND_FACE_CACHE.delete(normalizedEmpId);
     }
 
     res.status(500).json({
@@ -968,7 +1340,7 @@ router.delete("/:employeeId", async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT emp_id, face_embedding, face_id
+      `SELECT emp_id, emp_code, face_embedding, face_id
          FROM employee
          WHERE emp_id = $1`,
       [employeeId]
@@ -984,21 +1356,80 @@ router.delete("/:employeeId", async (req, res) => {
       return res.status(404).json({ error: "No face stored for this employee" });
     }
 
-    const objectKey = parseFaceKey(record.face_embedding);
+    // ---------------------------------------------------------------
+    // 1. Collect every S3 prefix where this employee's files might live
+    // ---------------------------------------------------------------
+    const buckets = [bucketName, secondaryBucketName].filter(Boolean);
+    const prefixes = [
+      `faces/${employeeId}/`,
+      record.emp_code ? `faces/${record.emp_code}/` : null,
+      // Legacy flat prefixes (without 'faces/' parent)
+      `${employeeId}/`,
+      record.emp_code ? `${record.emp_code}/` : null,
+    ].filter(Boolean);
 
-    if (objectKey) {
-      try {
-        await s3.send(
-          new DeleteObjectCommand({
-            Bucket: bucketName,
-            Key: objectKey,
-          })
-        );
-      } catch (s3Error) {
-        console.error("Face delete S3 error:", s3Error);
+    // Keys we will delete (de-duplicated)
+    const keysToDelete = new Map(); // "bucket::key" -> { bucket, key }
+
+    // ---------------------------------------------------------------
+    // 2. List all objects under every prefix in every bucket
+    // ---------------------------------------------------------------
+    for (const bucket of buckets) {
+      for (const prefix of prefixes) {
+        try {
+          let continuationToken = undefined;
+          do {
+            const listed = await s3.send(
+              new ListObjectsV2Command({
+                Bucket: bucket,
+                Prefix: prefix,
+                ContinuationToken: continuationToken,
+              })
+            );
+            for (const obj of listed?.Contents || []) {
+              if (obj.Key && !obj.Key.endsWith("/")) {
+                keysToDelete.set(`${bucket}::${obj.Key}`, { bucket, key: obj.Key });
+              }
+            }
+            continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+          } while (continuationToken);
+        } catch (listErr) {
+          console.error(`[DeleteFace] List error (${bucket}/${prefix}):`, listErr.message);
+        }
       }
     }
 
+    // ---------------------------------------------------------------
+    // 3. Also delete the exact key stored in face_embedding
+    //    (it might live under a prefix not covered above)
+    // ---------------------------------------------------------------
+    const { parseFaceKey: _parseFaceKey } = require("../../utils/faceImage");
+    const storedKey = _parseFaceKey(record.face_embedding);
+    if (storedKey) {
+      for (const bucket of buckets) {
+        keysToDelete.set(`${bucket}::${storedKey}`, { bucket, key: storedKey });
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // 4. Delete everything we found
+    // ---------------------------------------------------------------
+    for (const { bucket, key } of keysToDelete.values()) {
+      try {
+        await s3.send(
+          new DeleteObjectCommand({ Bucket: bucket, Key: key })
+        );
+        console.log(`[DeleteFace] Deleted s3://${bucket}/${key}`);
+      } catch (delErr) {
+        console.error(`[DeleteFace] S3 delete error (${bucket}/${key}):`, delErr.message);
+      }
+    }
+
+    console.log(`[DeleteFace] emp_id=${employeeId}: deleted ${keysToDelete.size} S3 object(s).`);
+
+    // ---------------------------------------------------------------
+    // 5. Remove face from Rekognition collection
+    // ---------------------------------------------------------------
     const collectionId = resolveCollectionId();
     if (collectionId && record.face_id) {
       try {
@@ -1009,11 +1440,15 @@ router.delete("/:employeeId", async (req, res) => {
             FaceIds: [record.face_id],
           })
         );
+        console.log(`[DeleteFace] Removed face_id=${record.face_id} from Rekognition collection.`);
       } catch (rekognitionError) {
-        console.error("Rekognition face delete error:", rekognitionError);
+        console.error("[DeleteFace] Rekognition face delete error:", rekognitionError.message);
       }
     }
 
+    // ---------------------------------------------------------------
+    // 6. Clear the database record
+    // ---------------------------------------------------------------
     await pool.query(
       `UPDATE employee
          SET face_embedding = NULL,
@@ -1023,12 +1458,19 @@ router.delete("/:employeeId", async (req, res) => {
       [employeeId]
     );
 
+    // ---------------------------------------------------------------
+    // 7. Flush in-memory caches so the next upload is treated as new
+    // ---------------------------------------------------------------
+    MISSING_FACE_CACHE.delete(employeeId);
+    FOUND_FACE_CACHE.delete(employeeId);
+
     return res.json({
       success: true,
       message: "Stored face removed successfully",
+      deletedObjects: keysToDelete.size,
     });
   } catch (error) {
-    console.error("Face delete error:", error);
+    console.error("[DeleteFace] Unexpected error:", error);
     res.status(500).json({ error: "Unable to delete stored face", details: error.message });
   }
 });

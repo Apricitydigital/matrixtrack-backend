@@ -7,6 +7,7 @@ const cron = require("node-cron");
 const { sendDailyWhatsAppReport } = require("./utils/msg91WhatsApp");
 const pool = require("./config/db");
 const fs = require("fs");
+const { spawn } = require("child_process");
 
 
 process.on("unhandledRejection", (reason) => {
@@ -99,6 +100,25 @@ const parseOrigins = (value) =>
 
 const envOrigins = parseOrigins(process.env.FRONTEND_ORIGINS) || [];
 const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
+
+// Nightly auto-heal for face embeddings (defaults ON; set AUTO_HEAL_CRON_ENABLED=false to disable)
+const AUTO_HEAL_CRON_ENABLED = process.env.AUTO_HEAL_CRON_ENABLED !== "false";
+if (AUTO_HEAL_CRON_ENABLED) {
+  cron.schedule(
+    "10 3 * * *", // 03:10 IST daily
+    () => {
+      const scriptPath = path.join(__dirname, "auto_heal_faces.js");
+      const child = spawn(process.execPath, [scriptPath], {
+        stdio: "inherit",
+        env: process.env,
+      });
+      child.on("exit", (code) => {
+        console.log(`[AutoHealCron] auto_heal_faces.js exited with code ${code}`);
+      });
+    },
+    { timezone: "Asia/Kolkata" }
+  );
+}
 
 app.use(
   cors({

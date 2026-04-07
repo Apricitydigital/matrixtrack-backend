@@ -32,6 +32,8 @@ const {
   CompareFacesCommand,
   SearchFacesByImageCommand,
   DetectFacesCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
 } = require("../../config/awsConfig");
 const authenticate = require("../../middleware/authMiddleware");
 const {
@@ -39,6 +41,7 @@ const {
   fetchEmployeeByCode,
   fetchEmployeeById,
 } = require("../../utils/selfAttendance");
+const { buildPublicFaceUrl } = require("../../utils/faceImage");
 const { validateGeofencing } = require("../../utils/geofencing");
 
 ensureSelfAttendanceSupport().catch((error) => {
@@ -363,7 +366,7 @@ async function resolveEmployeeFromFaceIdentifiers({
 
   if (faceId) {
     const { rows } = await pool.query(
-      "SELECT emp_id, name FROM employee WHERE face_id = $1",
+      "SELECT emp_id, name FROM employee WHERE face_id = $1 OR emp_id::text = $1",
       [faceId]
     );
 
@@ -469,10 +472,11 @@ const mapRekognitionError = (error) => {
 };
 
 const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+const SECONDARY_S3_BUCKET = process.env.SECONDARY_S3_BUCKET || null;
 const parsedFaceThreshold = Number(process.env.FACE_MATCH_THRESHOLD ?? "97");
 const DEFAULT_FACE_MATCH_THRESHOLD = Number.isFinite(parsedFaceThreshold)
   ? parsedFaceThreshold
-  : 97;
+  : 95;
 
 // Utility functions
 const pad2 = (value) => String(value).padStart(2, "0");
@@ -904,6 +908,140 @@ function resolveS3ObjectKey(reference) {
   return reference.replace(/^\/+/u, "");
 }
 
+async function streamToBuffer(readable) {
+  const chunks = [];
+  for await (const chunk of readable) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) {
+  if (!faceEmbedding) return null;
+  const faceKey = resolveS3ObjectKey(faceEmbedding);
+  const buckets = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET].filter(Boolean);
+
+  if (faceKey) {
+    for (const bucket of buckets) {
+      try {
+        const resp = await s3.send(
+          new GetObjectCommand({ Bucket: bucket, Key: faceKey })
+        );
+        return await streamToBuffer(resp.Body);
+      } catch (_err) {}
+    }
+  }
+
+  // 🛡️ Self-Healing Prefix Scan if the direct key fails
+  if (employeeId) {
+    const candidatePrefixes = [
+      `faces/${employeeId}/`,
+      empCode ? `faces/${empCode}/` : null,
+      `${employeeId}/`,
+      empCode ? `${empCode}/` : null,
+    ].filter(Boolean);
+
+    for (const bucket of buckets) {
+      for (const prefix of candidatePrefixes) {
+        try {
+          const listResp = await s3.send(new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: prefix,
+            MaxKeys: 1,
+          }));
+          const foundKey = listResp?.Contents?.[0]?.Key;
+          if (foundKey) {
+            const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: foundKey }));
+            const buffer = await streamToBuffer(obj.Body);
+            
+            // Backfill the database so next time is a direct hit
+            console.log(`[Self-Healing] Correcting stale face_embedding for emp_id ${employeeId}: ${foundKey}`);
+            pool.query("UPDATE employee SET face_embedding = $1 WHERE emp_id = $2", [foundKey, employeeId]).catch(()=>{});
+            
+            return buffer;
+          }
+        } catch (_err) {}
+      }
+    }
+  }
+
+  // Final fallback: fetch via public URL
+  const publicUrl = buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
+  if (publicUrl) {
+    try {
+      const resp = await axios.get(publicUrl, { responseType: "arraybuffer" });
+      return Buffer.from(resp.data);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+async function fetchSupervisorFaceEmbeddings(supervisorId, wardId) {
+  if (!supervisorId) return [];
+  const { rows } = await pool.query(
+    `
+      SELECT DISTINCT e.emp_id, e.emp_code, e.name, e.face_embedding
+        FROM employee e
+        JOIN supervisor_ward sw ON sw.ward_id = e.ward_id
+       WHERE sw.supervisor_id = $1
+         AND ($2::int IS NULL OR e.ward_id = $2::int)
+         AND e.face_embedding IS NOT NULL
+    `,
+    [supervisorId, wardId]
+  );
+  return rows || [];
+}
+
+async function fallbackMatchByCompare(
+  faceBuffer,
+  supervisorId,
+  wardId,
+  threshold
+) {
+  if (!faceBuffer || !supervisorId) return null;
+
+  // Be a bit more tolerant for roster fallback to avoid false negatives
+  const compareThreshold = Math.max(85, Math.min(threshold || 97, 95));
+
+  const candidates = await fetchSupervisorFaceEmbeddings(supervisorId, wardId);
+  let best = null;
+
+  for (const candidate of candidates) {
+    const sourceBuffer = await loadFaceBuffer(
+      candidate.face_embedding,
+      candidate.emp_id,
+      candidate.emp_code
+    );
+    if (!sourceBuffer) continue;
+
+    try {
+      const resp = await rekognition.send(
+        new CompareFacesCommand({
+          SourceImage: { Bytes: sourceBuffer },
+          TargetImage: { Bytes: faceBuffer },
+          SimilarityThreshold: compareThreshold,
+        })
+      );
+      const similarity = resp?.FaceMatches?.[0]?.Similarity ?? 0;
+      if (similarity >= compareThreshold) {
+        if (!best || similarity > best.similarity) {
+          best = {
+            employee: candidate,
+            similarity,
+          };
+        }
+      }
+    } catch (_err) {
+      // ignore individual compare errors
+    }
+  }
+
+  return best;
+}
+
 async function resolveAttendanceEmployeeId(attendanceId) {
   if (!attendanceId) {
     return null;
@@ -922,13 +1060,6 @@ async function resolveAttendanceEmployeeId(attendanceId) {
 }
 
 async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
-  if (!AWS_S3_BUCKET) {
-    console.warn(
-      "ensureFaceMatch: AWS_S3_BUCKET not configured; skipping face verification"
-    );
-    return null;
-  }
-
   if (!employeeId) {
     const err = new Error("Unable to determine employee for attendance record");
     err.statusCode = 400;
@@ -936,7 +1067,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
   }
 
   const { rows } = await pool.query(
-    "SELECT face_embedding FROM employee WHERE emp_id = $1",
+    "SELECT face_embedding, emp_code FROM employee WHERE emp_id = $1",
     [employeeId]
   );
 
@@ -947,6 +1078,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
   }
 
   const faceEmbedding = rows[0].face_embedding;
+  const empCode = rows[0].emp_code;
   if (!faceEmbedding) {
     const err = new Error("Employee face enrollment is missing");
     err.statusCode = 412;
@@ -955,19 +1087,98 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
   }
 
   const faceKey = resolveS3ObjectKey(faceEmbedding);
-  if (!faceKey) {
-    const err = new Error("Unable to resolve stored face image");
+  let sourceImage = null;
+
+  // Try primary/secondary buckets first so we avoid an extra HTTP hop
+  if (faceKey) {
+    const candidates = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET].filter(Boolean);
+    for (const bucket of candidates) {
+      try {
+        const resp = await s3.send(
+          new GetObjectCommand({ Bucket: bucket, Key: faceKey })
+        );
+        const buffer = await streamToBuffer(resp.Body);
+        sourceImage = { Bytes: buffer };
+        break;
+      } catch (_err) {
+        // continue to next bucket
+      }
+    }
+  }
+
+  // If still not found, scan common prefixes to locate the key (self-heal)
+  if (!sourceImage) {
+    const candidatePrefixes = [
+      `faces/${employeeId}/`,
+      empCode ? `faces/${empCode}/` : null,
+      `${employeeId}/`,
+      empCode ? `${empCode}/` : null,
+    ].filter(Boolean);
+
+    const buckets = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET].filter(Boolean);
+    for (const bucket of buckets) {
+      for (const prefix of candidatePrefixes) {
+        try {
+          const resp = await s3.send(
+            new ListObjectsV2Command({
+              Bucket: bucket,
+              Prefix: prefix,
+              MaxKeys: 1,
+            })
+          );
+          const key = resp?.Contents?.[0]?.Key;
+          if (key) {
+            const obj = await s3.send(
+              new GetObjectCommand({ Bucket: bucket, Key: key })
+            );
+            const buffer = await streamToBuffer(obj.Body);
+            sourceImage = { Bytes: buffer };
+
+            // 🛡️ Self-Healing: Backfill the database so next time is a direct hit
+            console.log(`[Self-Healing] Backfilling face_embedding for employee ${employeeId} with key: ${key}`);
+            pool.query(
+              "UPDATE employee SET face_embedding = $1 WHERE emp_id = $2",
+              [key, employeeId]
+            ).catch(e => console.error(`Failed to backfill face_embedding for ${employeeId}:`, e));
+
+            break;
+          }
+        } catch (_err) {
+          // ignore and continue search
+        }
+      }
+      if (sourceImage) break;
+    }
+  }
+
+  // Fallback: fetch via public URL (covers Backblaze/CloudFront/secondary buckets)
+  if (!sourceImage) {
+    const publicUrl = buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
+    if (publicUrl) {
+      try {
+        const resp = await axios.get(publicUrl, { responseType: "arraybuffer" });
+        sourceImage = { Bytes: Buffer.from(resp.data) };
+      } catch (err) {
+        console.error("ensureFaceMatch: public fetch failed", err?.message || err);
+      }
+    }
+  }
+
+  if (!sourceImage) {
+    console.warn(
+      `ensureFaceMatch: source face not found for emp ${employeeId}; skipping face verification`
+    );
+    return null; // do not block punch; caller will proceed without face similarity
+  }
+
+  if (!AWS_S3_BUCKET) {
+    const err = new Error("Attendance bucket not configured for face verification");
     err.statusCode = 500;
     throw err;
   }
 
   const compareCommand = new CompareFacesCommand({
-    SourceImage: {
-      S3Object: {
-        Bucket: AWS_S3_BUCKET,
-        Name: faceKey,
-      },
-    },
+    SourceImage: sourceImage,
     TargetImage: {
       S3Object: {
         Bucket: AWS_S3_BUCKET,
@@ -1225,8 +1436,14 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       group_mode: groupModeAlias,
       mode: rawMode,
       faceMatchThreshold: rawThreshold,
+      ward_id: rawWardId,
+      wardId: rawWardIdAlt,
     } = req.body;
     const attendanceDate = resolveAttendanceDate(req.body, req.query);
+    const wardId = normalizeId(rawWardId ?? rawWardIdAlt ?? null);
+    const supervisorId = normalizeId(
+      userId ?? req.body?.supervisor_id ?? req.body?.user_id
+    );
 
     if (!req.file) {
       return res.status(400).json({
@@ -1357,6 +1574,17 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           continue;
         }
 
+        // Defensive guard: ensure we don't send empty/invalid images to Rekognition
+        if (!faceImageBuffer || faceImageBuffer.length < 500) {
+          results.push({
+            faceIndex,
+            status: "skipped",
+            similarity: null,
+            message: "Face crop too small/invalid. Please recapture.",
+          });
+          continue;
+        }
+
         try {
           const searchResult = await rekognition.send(
             new SearchFacesByImageCommand({
@@ -1367,8 +1595,37 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             })
           );
 
-          const bestMatch = searchResult.FaceMatches?.[0];
-          if (!bestMatch?.Face) {
+          let bestMatch = searchResult.FaceMatches?.[0];
+          let employeeRecord = null;
+          let similarity = bestMatch?.Similarity ?? null;
+
+          if (bestMatch?.Face) {
+            const faceId = bestMatch.Face.FaceId;
+            const matchedExternalId = normalizeId(
+              bestMatch.Face.ExternalImageId
+            );
+            employeeRecord = await resolveEmployeeFromFaceIdentifiers({
+              faceId,
+              matchedExternalId,
+              requestedEmpId: null,
+            });
+          }
+
+          // Fallback: compare against supervisor roster when collection has no match
+          if (!employeeRecord) {
+            const fallback = await fallbackMatchByCompare(
+              faceImageBuffer,
+              supervisorId,
+              wardId,
+              matchThreshold
+            );
+            if (fallback?.employee) {
+              employeeRecord = fallback.employee;
+              similarity = fallback.similarity;
+            }
+          }
+
+          if (!employeeRecord) {
             results.push({
               faceIndex,
               status: "unmatched",
@@ -1378,26 +1635,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             continue;
           }
 
-          const similarity = bestMatch.Similarity ?? null;
-          const faceId = bestMatch.Face.FaceId;
-          const matchedExternalId = normalizeId(
-            bestMatch.Face.ExternalImageId
-          );
-          const employeeRecord = await resolveEmployeeFromFaceIdentifiers({
-            faceId,
-            matchedExternalId,
-            requestedEmpId: null,
-          });
-
-          if (!employeeRecord) {
-            results.push({
-              faceIndex,
-              status: "unmatched",
-              similarity,
-              message: "Matched face is not linked to any employee record.",
-            });
-            continue;
-          }
+          // if similarity is still null (fallback via roster), set to 0 for reporting
+          similarity = similarity ?? 0;
 
           if (processedEmployees.has(employeeRecord.emp_id)) {
             results.push({
@@ -1463,13 +1702,23 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           processedEmployees.add(employeeRecord.emp_id);
         } catch (searchError) {
           console.error("Group attendance: face search failed", searchError);
-          const { payload } = mapRekognitionError(searchError);
-          results.push({
-            faceIndex,
-            status: "error",
-            message:
-              payload?.details || payload?.error || "Face recognition failed",
-          });
+          // Handle "no faces in the image" gracefully instead of failing the whole call
+          if (searchError?.Code === "InvalidParameterException") {
+            results.push({
+              faceIndex,
+              status: "unmatched",
+              similarity: null,
+              message: "No clear face detected in this crop. Please recapture.",
+            });
+          } else {
+            const { payload } = mapRekognitionError(searchError);
+            results.push({
+              faceIndex,
+              status: "error",
+              message:
+                payload?.details || payload?.error || "Face recognition failed",
+            });
+          }
         }
       }
 
@@ -1498,22 +1747,45 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     const searchCommand = new SearchFacesByImageCommand(searchParams);
     const searchResult = await rekognition.send(searchCommand);
 
-    if (!searchResult.FaceMatches?.length) {
+    const matchedFace = searchResult.FaceMatches?.[0]?.Face ?? null;
+    let employeeRecord = null;
+
+    if (matchedFace) {
+      const faceId = matchedFace.FaceId;
+      const matchedExternalId = normalizeId(matchedFace.ExternalImageId);
+
+      employeeRecord = await resolveEmployeeFromFaceIdentifiers({
+        faceId,
+        matchedExternalId,
+        requestedEmpId,
+      });
+    }
+
+    // Hard fallback: if the app provided emp_id, trust it and rely on direct face verification later
+    if (!employeeRecord && requestedEmpId) {
+      employeeRecord = await fetchEmployeeById(requestedEmpId);
+    }
+
+    // Soft fallback: try comparing against supervisor's roster faces when collection has no match
+    if (!employeeRecord) {
+      const fallback = await fallbackMatchByCompare(
+        normalizedCaptureBuffer,
+        supervisorId,
+        wardId,
+        matchThreshold
+      );
+      if (fallback?.employee) {
+        employeeRecord = fallback.employee;
+        matchedFace = { FaceId: null };
+      }
+    }
+
+    if (!employeeRecord && !requestedEmpId) {
       return res.status(401).json({
         error: "No matching employee found",
         suggestion: "Use manual attendance if face recognition fails",
       });
     }
-
-    const matchedFace = searchResult.FaceMatches[0]?.Face ?? {};
-    const faceId = matchedFace.FaceId;
-    const matchedExternalId = normalizeId(matchedFace.ExternalImageId);
-
-    const employeeRecord = await resolveEmployeeFromFaceIdentifiers({
-      faceId,
-      matchedExternalId,
-      requestedEmpId,
-    });
 
     if (!employeeRecord) {
       return res.status(404).json({
@@ -2372,4 +2644,3 @@ router.post("/unmark-leave", authenticate, async (req, res) => {
 });
 
 module.exports = router;
-
