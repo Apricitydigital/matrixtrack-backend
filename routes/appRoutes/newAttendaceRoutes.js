@@ -1598,6 +1598,210 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
   }
 });
 
+// Face attendance with AWS liveness pre-check (single employee)
+router.post("/face-liveness", upload.single("image"), async (req, res) => {
+  try {
+    const {
+      punch_type: rawPunchType,
+      latitude: rawLatitude,
+      longitude: rawLongitude,
+      userId,
+      address,
+      emp_id: rawEmpId,
+      employeeId: rawEmployeeId,
+      faceMatchThreshold: rawThreshold,
+    } = req.body;
+    const attendanceDate = resolveAttendanceDate(req.body, req.query);
+
+    if (!req.file) {
+      return res.status(400).json({ error: "Face image is required" });
+    }
+    await ensureNormalizedCaptureFile(req.file);
+
+    const collectionId = resolveCollectionId();
+    if (!collectionId) {
+      return res.status(500).json({
+        error: "Rekognition collection is not configured",
+        details:
+          "Set REKOGNITION_COLLECTION or REKOGNITION_COLLECTION_ID in the backend .env file.",
+      });
+    }
+    await ensureCollectionExists(collectionId);
+
+    const normalizedPunchType = (rawPunchType || "")
+      .toString()
+      .trim()
+      .toUpperCase();
+    const punchType =
+      normalizedPunchType === PUNCH_TYPES.OUT
+        ? PUNCH_TYPES.OUT
+        : PUNCH_TYPES.IN;
+
+    const thresholdCandidate = Number(rawThreshold);
+    const matchThreshold = Number.isFinite(thresholdCandidate)
+      ? thresholdCandidate
+      : DEFAULT_FACE_MATCH_THRESHOLD;
+
+    const locationPayload = {
+      latitude:
+        rawLatitude !== undefined && rawLatitude !== null && rawLatitude !== ""
+          ? rawLatitude
+          : "0",
+      longitude:
+        rawLongitude !== undefined &&
+          rawLongitude !== null &&
+          rawLongitude !== ""
+          ? rawLongitude
+          : "0",
+      address: address ?? "",
+    };
+
+    // Liveness: ensure exactly one good-quality face
+    const detectResult = await rekognition.send(
+      new DetectFacesCommand({
+        Image: { Bytes: req.file.buffer },
+        Attributes: ["ALL"],
+      })
+    );
+    const faces = detectResult?.FaceDetails ?? [];
+    if (faces.length !== 1) {
+      return res.status(422).json({
+        error: "Liveness failed",
+        details: `Expected exactly one face, detected ${faces.length}.`,
+        suggestion: "Hold the camera steady with only the employee in frame.",
+      });
+    }
+
+    const [face] = faces;
+    const brightness = face?.Quality?.Brightness ?? 0;
+    const sharpness = face?.Quality?.Sharpness ?? 0;
+    const confidence = face?.Confidence ?? 0;
+    const pose = face?.Pose || {};
+    const poseOk =
+      Math.abs(pose.Roll ?? 0) <= 25 && Math.abs(pose.Yaw ?? 0) <= 25;
+    const qualityOk = brightness >= 35 && sharpness >= 35 && confidence >= 80;
+
+    if (!poseOk || !qualityOk) {
+      return res.status(422).json({
+        error: "Liveness failed",
+        details:
+          "Face must be centered, upright, and well lit (eye level, good brightness/sharpness).",
+        metrics: { brightness, sharpness, confidence, pose },
+        suggestion: "Reposition closer to the camera with good lighting and retry.",
+      });
+    }
+
+    const requestedEmpId = normalizeId(rawEmpId ?? rawEmployeeId);
+    const searchResult = await rekognition.send(
+      new SearchFacesByImageCommand({
+        CollectionId: collectionId,
+        Image: { Bytes: req.file.buffer },
+        MaxFaces: 1,
+        FaceMatchThreshold: matchThreshold,
+      })
+    );
+
+    if (!searchResult.FaceMatches?.length) {
+      return res.status(401).json({
+        error: "No matching employee found",
+        suggestion: "Use manual attendance if face recognition fails",
+      });
+    }
+
+    const matchedFace = searchResult.FaceMatches[0]?.Face ?? {};
+    const faceId = matchedFace.FaceId;
+    const matchedExternalId = normalizeId(matchedFace.ExternalImageId);
+
+    const employeeRecord = await resolveEmployeeFromFaceIdentifiers({
+      faceId,
+      matchedExternalId,
+      requestedEmpId,
+    });
+
+    if (!employeeRecord) {
+      return res.status(404).json({
+        error: "Employee not registered in system",
+        solution: "Register face first via /store-face",
+      });
+    }
+
+    const empId = employeeRecord.emp_id;
+    const attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
+      punchType,
+      createIfMissing: punchType !== PUNCH_TYPES.OUT,
+    });
+
+    const validation = validatePunchAttempt(attendance, punchType);
+    if (validation) {
+      return res.status(validation.status).json({
+        error: validation.error,
+      });
+    }
+
+    const geoCheck = await validateGeofencing(empId, locationPayload.latitude, locationPayload.longitude);
+    if (!geoCheck.allowed) {
+      if (geoCheck.notConfigured) {
+        return res.status(403).json({
+          error: "Your geofencing location is not mapped yet",
+          notConfigured: true,
+          details: geoCheck.message || "Please contact admin to configure your zone boundaries.",
+        });
+      }
+      return res.status(403).json({
+        error: "Out of Zone",
+        notConfigured: false,
+        details: geoCheck.message || "You are outside the allowed geo-fence zone.",
+      });
+    }
+
+    const updated = await processPunch(
+      attendance.attendance_id,
+      punchType,
+      req.file,
+      userId,
+      locationPayload,
+      {
+        employeeId: empId,
+        requireFaceMatch: true,
+        faceMatchThreshold: matchThreshold,
+      }
+    );
+
+    return res.json({
+      success: true,
+      mode: "single",
+      liveness: {
+        faceCount: faces.length,
+        brightness,
+        sharpness,
+        confidence,
+        pose,
+      },
+      employee: employeeRecord.name,
+      punch_type: punchType,
+      face_similarity: updated.face_similarity ?? null,
+      face_match_threshold: updated.face_match_threshold ?? matchThreshold,
+      attendance_id: attendance.attendance_id,
+      time:
+        punchType === PUNCH_TYPES.IN
+          ? updated.punch_in_time
+          : updated.punch_out_time,
+    });
+  } catch (error) {
+    console.error("Face liveness error:", error);
+
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        ...(error.details ? { details: error.details } : {}),
+      });
+    }
+
+    const { status, payload } = mapRekognitionError(error);
+    res.status(status).json(payload);
+  }
+});
+
 router.get("/self/status", authenticate, async (req, res) => {
   try {
     await ensureSelfAttendanceSupport();
@@ -2125,4 +2329,47 @@ router.post("/mark-leave", authenticate, async (req, res) => {
   }
 });
 
+router.post("/unmark-leave", authenticate, async (req, res) => {
+  try {
+    const user = req.user || {};
+    const role = (user.role || "").toLowerCase();
+    const empId = Number(req.body.emp_id ?? req.body.employeeId);
+    const targetDate = resolveIsoDateInput(req.body.date);
+
+    if (!empId) {
+      return res.status(400).json({ error: "emp_id is required" });
+    }
+
+    if (role !== "admin") {
+      const wardCheck = await pool.query(
+        `SELECT 1
+         FROM supervisor_ward sw
+         JOIN employee e ON e.ward_id = sw.ward_id
+         WHERE sw.supervisor_id = $1 AND e.emp_id = $2
+         LIMIT 1`,
+        [user.user_id, empId]
+      );
+      if (wardCheck.rowCount === 0) {
+        return res.status(403).json({ error: "Employee not assigned to this supervisor." });
+      }
+    }
+
+    const result = await pool.query(
+      `UPDATE attendance
+       SET leave_type = NULL,
+           leave_marked_by = NULL,
+           leave_marked_at = NULL
+       WHERE emp_id = $1 AND date = $2::date
+       RETURNING *`,
+      [empId, targetDate]
+    );
+
+    res.json({ success: true, attendance: result.rows[0] });
+  } catch (error) {
+    console.error("Unmark leave error:", error);
+    res.status(500).json({ error: "Unable to unmark leave", message: error.message });
+  }
+});
+
 module.exports = router;
+

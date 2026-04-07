@@ -121,7 +121,11 @@ const fetchUserPermissions = async (userId) => {
 const authorize = (requiredModule, requiredAction) => {
   return async (req, res, next) => {
     try {
-      const userId = req.user?.user_id;
+      const userId =
+        req.user?.user_id ??
+        req.user?.id ??
+        req.user?.userId ??
+        null;
 
       if (!userId) {
         return res
@@ -132,6 +136,11 @@ const authorize = (requiredModule, requiredAction) => {
       // Admins always pass
       if (req.user?.role === "admin") {
         return next();
+      }
+
+      // Supervisors inherently have dashboard view access for the mobile app
+      if (req.user?.role === "supervisor" && requiredModule.toLowerCase() === "dashboard" && requiredAction === "view") {
+         return next();
       }
 
       const permissionPayload = await fetchUserPermissions(userId);

@@ -5,6 +5,7 @@ const cookieParser = require("cookie-parser");
 const path = require("path");
 const cron = require("node-cron");
 const { sendDailyWhatsAppReport } = require("./utils/msg91WhatsApp");
+const pool = require("./config/db");
 const fs = require("fs");
 
 
@@ -19,7 +20,9 @@ process.on("uncaughtException", (error) => {
 // =======================
 // 🧪 TEST MODE CONFIG
 // =======================
-const parseRecipients = (value) => String(value || "").split(",").map(v => v.trim()).filter(Boolean);
+// Dedup recipients so accidental repeats in env don't trigger multiple sends
+const parseRecipients = (value) =>
+  [...new Set(String(value || "").split(",").map((v) => v.trim()).filter(Boolean))];
 const DEFAULT_RECIPIENTS = ["9131042937", "8319776925", "8982622996", "9111899909", "9371222202", "9229499999", "9340553792", "8007773301", "83088541510", "9730779278", "9689931759", "7620661125", "7722004567", "9013990014", "8349733213"];
 const TEST_RECIPIENTS = parseRecipients(process.env.WHATSAPP_RECIPIENTS).length ? parseRecipients(process.env.WHATSAPP_RECIPIENTS) : DEFAULT_RECIPIENTS;
 
@@ -41,6 +44,16 @@ const markSentToday = (key) => {
   } catch (err) {
     console.error("Unable to record WhatsApp send date:", err.message);
   }
+};
+
+// DB-based lock so cron runs once even when multiple instances are up
+const WHATSAPP_CRON_LOCK_ID = 812345; // arbitrary unique key
+const acquireCronLock = async (client) => {
+  const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [WHATSAPP_CRON_LOCK_ID]);
+  return Boolean(rows[0]?.locked);
+};
+const releaseCronLock = async (client) => {
+  await client.query("SELECT pg_advisory_unlock($1)", [WHATSAPP_CRON_LOCK_ID]);
 };
 
 
@@ -78,6 +91,7 @@ const defaultOrigins = [
   "http://10.205.83.56:8082",
   "http://10.205.83.56:19000",
   "https://portal.matrixtrack.in",
+  "https://api.matrixtrack.in",
 ];
 
 const parseOrigins = (value) =>
@@ -106,33 +120,59 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // 🔔 REPORT / WHATSAPP CRON
 // ⏰ 9:30 AM IST
 // =======================
-cron.schedule(
-  "30 09 * * *",
-  async () => {
-    console.log('[WhatsApp Cron] Daily attendance report triggered');
-    const runKey = todayKey();
-    if (hasSentToday(runKey)) {
-      console.log("[WhatsApp Cron] Already sent today, skipping.");
-      return;
-    }
+const isPrimaryCronInstance =
+  !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === "0";
 
-    for (const mobile of TEST_RECIPIENTS) {
+if (isPrimaryCronInstance) {
+  cron.schedule(
+    "30 09 * * *",
+    async () => {
+      console.log('[WhatsApp Cron] Daily attendance report triggered');
+      const client = await pool.connect();
+      let lockAcquired = false;
       try {
-        const { reportData } = await sendDailyWhatsAppReport({
-          phoneNumber: mobile,
-        });
-        console.log('[WhatsApp Cron] Sent to:', mobile, reportData.date);
-      } catch (error) {
-        console.error('[WhatsApp Cron] Failed for:', mobile, error.message);
-      }
-    }
+        lockAcquired = await acquireCronLock(client);
+        if (!lockAcquired) {
+          console.log("[WhatsApp Cron] Another instance is handling send; skipping.");
+          return;
+        }
 
-    markSentToday(runKey);
-  },
-  {
-    timezone: "Asia/Kolkata",
-  }
-);
+        const runKey = todayKey();
+        if (hasSentToday(runKey)) {
+          console.log("[WhatsApp Cron] Already sent today, skipping.");
+          return;
+        }
+
+        for (const mobile of TEST_RECIPIENTS) {
+          try {
+            const { reportData } = await sendDailyWhatsAppReport({
+              phoneNumber: mobile,
+            });
+            console.log('[WhatsApp Cron] Sent to:', mobile, reportData.date);
+          } catch (error) {
+            console.error('[WhatsApp Cron] Failed for:', mobile, error.message);
+          }
+        }
+
+        markSentToday(runKey);
+      } catch (err) {
+        console.error('[WhatsApp Cron] Cron error:', err.message);
+      } finally {
+        if (lockAcquired) {
+          await releaseCronLock(client);
+        }
+        client.release();
+      }
+    },
+    {
+      timezone: "Asia/Kolkata",
+    }
+  );
+} else {
+  console.log(
+    `[WhatsApp Cron] Skipping cron registration on cluster instance ${process.env.NODE_APP_INSTANCE}`
+  );
+}
 
 // General API Route
 app.get("/", (req, res) => {
@@ -154,4 +194,3 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });
-

@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 const { invalidateCityAccessCache } = require("../utils/userCityAccess");
+const { invalidateKothiAccessCache } = require("../utils/userKothiAccess");
 
 // Get assignment record
 router.get("/", async (req, res) => {
@@ -34,6 +35,7 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ error: "AssignedID not found" });
     }
     invalidateCityAccessCache();
+    invalidateKothiAccessCache();
     res.json(result.rows[0]); // Send the updated record as a response
   } catch (error) {
     console.error("Error updating Assigned ward: ", error);
@@ -63,12 +65,14 @@ router.post("/", async (req, res) => {
         [user_id, ward_id]
       );
       invalidateCityAccessCache();
+    invalidateKothiAccessCache();
       return res
         .status(200)
         .json(existing.rows[0] || { message: "Record exists, skipping" });
     }
 
     invalidateCityAccessCache();
+    invalidateKothiAccessCache();
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error("Error Adding Assignment: ", error);
@@ -88,6 +92,7 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ error: "AssignedID not found" });
     }
     invalidateCityAccessCache();
+    invalidateKothiAccessCache();
     res.json({ message: "Assignment deleted successfully" });
   } catch (error) {
     console.error("Error deleting assignment: ", error);

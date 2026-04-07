@@ -1,0 +1,3 @@
+Server running on port 5000
+[HTTP] POST /api/auth/login
+[HTTP] GET /api/app/supervisor/wards?startDate=2026-03-23&endDate=2026-03-23

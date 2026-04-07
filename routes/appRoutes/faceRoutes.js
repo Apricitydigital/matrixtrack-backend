@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 const path = require("path");
+const sharp = require("sharp");
 const { Readable } = require("stream");
 const {
   rekognition,
@@ -24,8 +25,8 @@ const {
   fetchBackblazeStream,
 } = require("../../utils/backblaze");
 
-const bucketName =
-  process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME || null;
+const bucketName = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME || null;
+const secondaryBucketName = process.env.SECONDARY_S3_BUCKET || null;
 const DEFAULT_FACE_PREFIX = "faces/";
 
 const resolvePrefix = (rawPrefix) => {
@@ -61,18 +62,14 @@ const resolveSupervisorIdFromQuery = (query = {}) => {
 };
 
 const buildFaceImageUrlFromEmbedding = (embedding, empId) => {
-  if (!embedding) {
-    return null;
+  if (!embedding) return null;
+
+  if (empId) {
+    return `app/attendance/employee/faceRoutes/image/${empId}`;
   }
 
-  let faceImageUrl = buildPublicFaceUrl(embedding);
-  if (!faceImageUrl && isBackblazeUrl(embedding) && empId) {
-    faceImageUrl = `app/attendance/employee/faceRoutes/image/${empId}`;
-  } else if (!faceImageUrl && typeof embedding === "string") {
-    faceImageUrl = embedding;
-  }
-
-  return faceImageUrl;
+  const faceImageUrl = buildPublicFaceUrl(embedding);
+  return faceImageUrl || embedding || null;
 };
 
 async function fetchSupervisorFaceGallery(supervisorId, wardId) {
@@ -208,13 +205,13 @@ const parseEmployeeId = (identifier) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const streamS3Object = async (key) => {
-  if (!bucketName) {
+const streamS3Object = async (key, targetBucket = bucketName) => {
+  if (!targetBucket) {
     throw new Error("S3 bucket is not configured");
   }
 
   const command = new GetObjectCommand({
-    Bucket: bucketName,
+    Bucket: targetBucket,
     Key: key,
   });
 
@@ -295,7 +292,9 @@ router.get("/gallery", async (req, res) => {
           employeeId,
           size: item.Size ?? null,
           lastModified: item.LastModified ?? null,
-          url: buildPublicFaceUrl(item.Key),
+          url: employeeId 
+            ? `app/attendance/employee/faceRoutes/image/${employeeId}`
+            : buildPublicFaceUrl(item.Key),
         });
       });
 
@@ -354,18 +353,125 @@ router.get("/image/:employeeId", async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT face_embedding
+      `SELECT face_embedding, emp_code
          FROM employee
          WHERE emp_id = $1`,
       [employeeId]
     );
 
-    if (!rows.length || !rows[0].face_embedding) {
-      return res.status(404).json({ error: "Face image not stored for this employee" });
+    const empCode = rows.length ? rows[0].emp_code : null;
+    let faceEmbedding = rows.length ? rows[0].face_embedding : null;
+    const defaultName = `employee_${employeeId}_face.jpg`;
+
+    let objectKey = parseFaceKey(faceEmbedding);
+    let keyExists = false;
+
+    // Verify if the DB-provided S3 key actually exists on the cloud
+    if (bucketName && objectKey && !isBackblazeUrl(faceEmbedding)) {
+      try {
+        await s3.send(
+          new HeadObjectCommand({
+            Bucket: bucketName,
+            Key: objectKey,
+          })
+        );
+        keyExists = true;
+      } catch (headError) {
+        keyExists = false; // Key is stale or missing in S3
+      }
     }
 
-    const faceEmbedding = rows[0].face_embedding;
-    const defaultName = `employee_${employeeId}_face.jpg`;
+    // Try to magically fetch the photo from a duplicate employee record using the same empCode
+    if ((!faceEmbedding || !keyExists) && empCode && String(empCode).trim().length > 0) {
+      try {
+        const { rows: duplicateRows } = await pool.query(
+          `SELECT face_embedding FROM employee 
+           WHERE emp_code = $1 AND face_embedding IS NOT NULL AND emp_id != $2
+           ORDER BY emp_id DESC LIMIT 1`,
+          [empCode, employeeId]
+        );
+        
+        if (duplicateRows.length > 0) {
+          faceEmbedding = duplicateRows[0].face_embedding;
+          objectKey = parseFaceKey(faceEmbedding);
+          
+          if (bucketName && objectKey && !isBackblazeUrl(faceEmbedding)) {
+            try {
+              await s3.send(
+                new HeadObjectCommand({ Bucket: bucketName, Key: objectKey })
+              );
+              keyExists = true; // Recovered from duplicate!
+            } catch (headError) {
+              keyExists = false;
+            }
+          }
+        }
+      } catch (dupError) {
+        console.warn("Error cross-referencing duplicate employee faces:", dupError);
+      }
+    }
+
+    // If key is STILL missing or stale in S3, attempt a targeted prefix scan to recover it
+    if (bucketName && (!objectKey || !keyExists) && !isBackblazeUrl(faceEmbedding)) {
+      const candidatePrefixes = [
+        `faces/${employeeId}/`, // TRAILING SLASH is CRITICAL to prevent '89' from matching '8958'
+        empCode ? `faces/${empCode}/` : null,
+        `${employeeId}/`,
+        empCode ? `${empCode}/` : null,
+      ].filter(Boolean);
+
+      const pickLatest = (contents = []) => {
+        return contents.reduce(
+          (best, obj) => {
+            if (!obj?.Key) return best;
+            const lm = obj.LastModified ? new Date(obj.LastModified).getTime() : 0;
+            if (!best.key || lm > best.ts) {
+              return { key: obj.Key, ts: lm };
+            }
+            return best;
+          },
+          { key: null, ts: -1 }
+        );
+      };
+
+      // Try specific prefixes and pick the newest object per prefix
+      for (const prefix of candidatePrefixes) {
+        try {
+          let continuationToken = undefined;
+          let best = { key: null, ts: -1 };
+          do {
+            const resp = await s3.send(
+              new ListObjectsV2Command({
+                Bucket: bucketName,
+                Prefix: prefix,
+                MaxKeys: 1000,
+                ContinuationToken: continuationToken,
+              })
+            );
+            const candidate = pickLatest(resp.Contents);
+            if (candidate.key && candidate.ts > best.ts) {
+              best = candidate;
+            }
+            continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+          } while (continuationToken);
+
+          if (best.key) {
+            faceEmbedding = best.key;
+            break;
+          }
+        } catch (err) {
+          console.warn("Face image prefix scan failed:", err?.message || err);
+        }
+      }
+      
+      // Removed the 'loose scan' loop entirely. Scanning the root bucket for arbitrary
+      // strings was O(N) over potentially millions of keys and crashed the API process
+      // for any employee who simply didn't have a photo uploaded.
+    }
+
+    if (!faceEmbedding) {
+      return res.status(404).json({ error: "Face image not stored for this employee" });
+    }
 
     const tryProxyHttp = async (url, name = defaultName) => {
       if (!url) return false;
@@ -376,9 +482,19 @@ router.get("/image/:employeeId", async (req, res) => {
       res.set({
         "Content-Type": imageResponse.headers["content-type"] || "image/jpeg",
         "Content-Disposition": `inline; filename="${path.basename(name) || defaultName}"`,
+        "Cache-Control": "public, max-age=3600, must-revalidate",
       });
 
-      imageResponse.data.pipe(res);
+      // 🖼 Compression Proxy using Sharp
+      const isThumb = req.query.thumb === '1';
+      const quality = isThumb ? 70 : 85;
+      const width = isThumb ? 300 : 800;
+
+      const transformer = sharp()
+        .resize(width, null, { withoutEnlargement: true })
+        .jpeg({ quality, progressive: true });
+
+      imageResponse.data.pipe(transformer).pipe(res);
       return true;
     };
 
@@ -395,12 +511,21 @@ router.get("/image/:employeeId", async (req, res) => {
             reference.key
           );
 
+          const isThumb = req.query.thumb === '1';
+          const quality = isThumb ? 70 : 85;
+          const width = isThumb ? 300 : 800;
+
+          const transformer = sharp()
+            .resize(width, null, { withoutEnlargement: true })
+            .jpeg({ quality, progressive: true });
+
           res.set({
-            "Content-Type": contentType,
+            "Content-Type": "image/jpeg",
             "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
+            "Cache-Control": "public, max-age=3600, must-revalidate",
           });
 
-          return stream.pipe(res);
+          return stream.pipe(transformer).pipe(res);
         } catch (error) {
           if (error?.response?.status === 404) {
             return res.status(404).json({ error: "Face image not found" });
@@ -421,13 +546,21 @@ router.get("/image/:employeeId", async (req, res) => {
           responseType: "stream",
         });
 
+        const isThumb = req.query.thumb === '1';
+        const quality = isThumb ? 70 : 85;
+        const width = isThumb ? 300 : 800;
+
+        const transformer = sharp()
+          .resize(width, null, { withoutEnlargement: true })
+          .jpeg({ quality, progressive: true });
+
         res.set({
-          "Content-Type":
-            imageResponse.headers["content-type"] || "image/jpeg",
+          "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
+          "Cache-Control": "public, max-age=3600, must-revalidate",
         });
 
-        return imageResponse.data.pipe(res);
+        return imageResponse.data.pipe(transformer).pipe(res);
       } catch (error) {
         console.error("Error proxying Backblaze face image:", error);
         const publicFallback =
@@ -444,19 +577,62 @@ router.get("/image/:employeeId", async (req, res) => {
       }
     }
 
-    const objectKey = parseFaceKey(faceEmbedding);
+    objectKey = parseFaceKey(faceEmbedding);
     if (objectKey) {
+      let finalBucket = bucketName;
+      let keyExists = false;
+
+      // Check primary bucket
       try {
-        const { stream, contentType } = await streamS3Object(objectKey);
+        await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: objectKey }));
+        keyExists = true;
+      } catch (e) {
+        // Not in primary, check secondary
+        if (secondaryBucketName) {
+          try {
+            await s3.send(new HeadObjectCommand({ Bucket: secondaryBucketName, Key: objectKey }));
+            keyExists = true;
+            finalBucket = secondaryBucketName;
+          } catch (e2) {
+            keyExists = false;
+          }
+        }
+      }
+
+      if (!keyExists) {
+        // One last try: targeted prefix search in primary bucket (already implemented in some routes but here we need it for this specific key)
+        // Actually, if we have the objectKey and it's 404 in both, it's truly missing.
+        return res.status(404).json({ error: "Face image not found in any bucket" });
+      }
+
+      try {
+        const { stream, contentType } = await streamS3Object(objectKey, finalBucket);
+
+        const isThumb = req.query.thumb === '1';
+        const quality = isThumb ? 70 : 85;
+        const width = isThumb ? 300 : 800;
+
+        const transformer = sharp()
+          .resize(width, null, { withoutEnlargement: true })
+          .jpeg({ quality, progressive: true });
 
         res.set({
-          "Content-Type": contentType,
+          "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(objectKey) || defaultName}"`,
+          "Cache-Control": "public, max-age=3600, must-revalidate",
         });
 
-        return stream.pipe(res);
+        return stream.pipe(transformer).pipe(res);
       } catch (error) {
         console.error("Error streaming S3 face image:", error);
+        const isOurBucketUrl =
+          typeof faceEmbedding === "string" &&
+          bucketName &&
+          faceEmbedding.includes(bucketName);
+        // If this is our private bucket, avoid proxying a public request that will 403.
+        if (isOurBucketUrl) {
+          return res.status(404).json({ error: "Face image not found" });
+        }
         const publicFallback =
           buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
         try {
@@ -478,6 +654,39 @@ router.get("/image/:employeeId", async (req, res) => {
     }
 
     if (typeof faceEmbedding === "string" && faceEmbedding.startsWith("http")) {
+      const objectKeyFromUrl = parseFaceKey(faceEmbedding);
+      const isOurBucketUrl =
+        bucketName && objectKeyFromUrl && faceEmbedding.includes(bucketName);
+
+      // Try credentialed S3 fetch first whenever we can resolve a key
+      if (bucketName && objectKeyFromUrl) {
+        try {
+          const { stream, contentType } = await streamS3Object(objectKeyFromUrl);
+
+          const isThumb = req.query.thumb === '1';
+          const quality = isThumb ? 70 : 85;
+          const width = isThumb ? 300 : 800;
+
+          const transformer = sharp()
+            .resize(width, null, { withoutEnlargement: true })
+            .jpeg({ quality, progressive: true });
+
+          res.set({
+            "Content-Type": contentType || "image/jpeg",
+            "Content-Disposition": `inline; filename="${path.basename(objectKeyFromUrl) || defaultName}"`,
+            "Cache-Control": "public, max-age=3600, must-revalidate",
+          });
+
+          return stream.pipe(transformer).pipe(res);
+        } catch (error) {
+          console.error("Direct S3 stream failed for HTTP face URL:", error);
+          if (isOurBucketUrl) {
+            return res.status(404).json({ error: "Face image not found" });
+          }
+          // else fall through to proxy fallback
+        }
+      }
+
       try {
         const proxied = await tryProxyHttp(faceEmbedding);
         if (proxied) return;

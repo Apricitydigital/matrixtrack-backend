@@ -4,9 +4,9 @@ const jwt = require("jsonwebtoken");
 const BASE_URL =
   (process.env.MSG91_WHATSAPP_BASE_URL ||
     "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk").replace(
-    /\/+$/,
-    ""
-  );
+      /\/+$/,
+      ""
+    );
 const AUTH_KEY =
   process.env.MSG91_WHATSAPP_AUTH_KEY || process.env.MSG91_AUTH_KEY;
 const TEMPLATE_NAMESPACE = process.env.MSG91_WHATSAPP_TEMPLATE_NAMESPACE;
@@ -102,8 +102,8 @@ const fetchCityAndZones = async (headers) => {
   const cityList = Array.isArray(citiesPayload?.cities)
     ? citiesPayload.cities
     : Array.isArray(citiesPayload)
-    ? citiesPayload
-    : [];
+      ? citiesPayload
+      : [];
 
   const targetCity = cityList.find(
     (city) =>
@@ -153,6 +153,21 @@ const normalizeDepartmentName = (name = "") =>
 const EXCLUDED_DEPARTMENTS = ["janwani workers", "unassigned"].map(
   normalizeDepartmentName
 );
+
+// Maps any allowed department name → one of the 4 canonical bucket names used
+// in the WhatsApp template.  This ensures every employee is counted and the
+// department sums always add up to the All Zone totals.
+const CANONICAL_BUCKETS = [
+  { name: "Ramp", regex: /ramp/i },
+  { name: "Road Sweeping Staff- PMC", regex: /pmc/i },
+  { name: "Road Sweeping Staff-Outsource", regex: /outsource/i },
+];
+const canonicalizeDept = (dept) => {
+  for (const bucket of CANONICAL_BUCKETS) {
+    if (bucket.regex.test(dept)) return bucket.name;
+  }
+  return "Swach Employees"; // HMS, Swach, anything else → here
+};
 
 const shouldIncludeRow = (row) => {
   const departments = extractDepartments(row.departments || row.department);
@@ -231,7 +246,7 @@ const buildReportData = async () => {
   const zoneSummaries = [];
   const cityPresentSet = new Set();
   const cityRegisteredSet = new Set();
-   const cityLeaveSet = new Set();
+  const cityLeaveSet = new Set();
 
   for (const zone of cityZones) {
     const response = await fetchShortReportRows({
@@ -274,15 +289,16 @@ const buildReportData = async () => {
       });
 
       const allowedDepartments = getAllowedDepartments(row);
+      // Canonicalize so every employee lands in one of the 4 known buckets
       const deptsForAlloc =
         allowedDepartments.length > 0
-          ? allowedDepartments
-          : ["Swach Employees"]; // fallback so unassigned counts show up
+          ? [...new Set(allowedDepartments.map(canonicalizeDept))]
+          : ["Swach Employees"];
 
       const totalPresent = presentIds.length || 0;
-      const totalLeave = leaveIds.length || 0;
       const totalRegistered = registeredIds.length || 0;
-      const absent = Math.max(totalRegistered - totalPresent - totalLeave, 0);
+      // Absent = everyone not present (incl. on-leave) so dept sums match All Zone
+      const absent = Math.max(totalRegistered - totalPresent, 0);
 
       deptsForAlloc.forEach((dept) => departmentSet.add(dept));
       allocateCountsToMap(
@@ -308,23 +324,25 @@ const buildReportData = async () => {
     });
   }
 
-  const totalRegisteredAcrossZones = cityRegisteredSet.size;
+  // Raw unique employee count (kept for reference; the message uses category sums below)
+  const cityTotalRegistered = cityRegisteredSet.size;
 
   const departmentCounts = new Map();
   allRows.forEach((row) => {
     const allowedDepartments = getAllowedDepartments(row);
+    // Canonicalize so every employee lands in one of the 4 known buckets
     const deptsForAlloc =
-      allowedDepartments.length > 0 ? allowedDepartments : ["Swach Employees"];
+      allowedDepartments.length > 0
+        ? [...new Set(allowedDepartments.map(canonicalizeDept))]
+        : ["Swach Employees"];
     const totalPresent = Array.isArray(row.present_emp_ids)
       ? row.present_emp_ids.length
       : Number(row.total_present_employees) || 0;
-    const totalLeave = Array.isArray(row.leave_emp_ids)
-      ? row.leave_emp_ids.length
-      : Number(row.total_leave_employees) || 0;
     const totalRegistered = Array.isArray(row.registered_emp_ids)
       ? row.registered_emp_ids.length
       : Number(row.total_registered_employees) || 0;
-    const absent = Math.max(totalRegistered - totalPresent - totalLeave, 0);
+    // Absent = everyone not present (incl. on-leave) so dept sums match All Zone
+    const absent = Math.max(totalRegistered - totalPresent, 0);
 
     allocateCountsToMap(departmentCounts, deptsForAlloc, totalPresent, absent);
   });
@@ -340,17 +358,22 @@ const buildReportData = async () => {
   );
   const swach = getDepartmentCounts(departmentCounts, "Swach Employees");
 
-  // Force category sum to align with message total
+  // All Zone totals
+  // Present  = sum of the 4 canonical department buckets (all employees are
+  //            now mapped into one of these, so no one is missed).
+  // Absent   = actual total registered − present  (everyone not present,
+  //            incl. on-leave, which mirrors how dept-row absent is computed).
+  // Registered = actual unique employee count.
+  // This guarantees: dept Present sums == All Zone Present
+  //                  dept Absent  sums == All Zone Absent
+  //                  Registered        == Present + Absent
   const categoryPresentSum =
     ramp.present + pmc.present + outsource.present + swach.present;
-  const categoryAbsentSum =
-    ramp.absent + pmc.absent + outsource.absent + swach.absent;
 
+  const totalRegisteredAcrossZones = cityTotalRegistered;
   const totalPresentAcrossZones = categoryPresentSum;
-  const totalLeaveAcrossZones = cityLeaveSet.size;
   const totalAbsentAcrossZones = Math.max(
-    totalRegisteredAcrossZones - totalPresentAcrossZones - totalLeaveAcrossZones,
-    0
+    totalRegisteredAcrossZones - totalPresentAcrossZones, 0
   );
 
   return {
@@ -406,7 +429,9 @@ const buildPayload = (phoneNumber, reportData) => ({
             },
             body_12: {
               type: "text",
-              value: `Present ${reportData.swachPresent}, Absent ${reportData.swachAbsent}`,
+              // The MSG91 template already contains the word "Present" for this
+              // field, so we must NOT include it here to avoid "Present Present".
+              value: `${reportData.swachPresent}, Absent ${reportData.swachAbsent}`,
             },
           },
         },

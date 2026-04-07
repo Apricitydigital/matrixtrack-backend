@@ -1,7 +1,13 @@
 const { fetchUserCityAccess } = require("../utils/userCityAccess");
 
 const buildCityScopeForUser = async (user) => {
-  if (!user || !user.user_id) {
+  const userId =
+    user?.user_id ??
+    user?.id ??
+    user?.userId ??
+    (typeof user === "number" ? user : null);
+
+  if (!user || !userId) {
     return { all: false, ids: [] };
   }
 
@@ -9,11 +15,10 @@ const buildCityScopeForUser = async (user) => {
     return { all: true, ids: [] };
   }
 
-  const scope = await fetchUserCityAccess(user);
-  return {
-    all: Boolean(scope.all),
-    ids: Array.isArray(scope.ids) ? scope.ids : [],
-  };
+  const scope = await fetchUserCityAccess({ ...user, user_id: userId });
+  const ids = Array.isArray(scope.ids) ? scope.ids : [];
+  // If nothing is assigned, leave scope empty (handled downstream).
+  return { all: Boolean(scope.all), ids };
 };
 
 const attachCityScope = async (req, res, next) => {
@@ -27,21 +32,37 @@ const attachCityScope = async (req, res, next) => {
   }
 };
 
-const requireCityScope = (allowEmptyForAdmin = false) => (req, res, next) => {
-  const scope = req.cityScope || { all: false, ids: [] };
-  if (scope.all) {
+const requireCityScope =
+  (allowEmptyForAdmin = false, allowEmptyForAll = false) =>
+  (req, res, next) => {
+    const scope = req.cityScope || { all: false, ids: [] };
+
+    // Admins always allowed
+    if (req.user?.role?.toLowerCase() === "admin") {
+      return next();
+    }
+
+    // Explicit access present
+    if (scope.all || (Array.isArray(scope.ids) && scope.ids.length > 0)) {
+      return next();
+    }
+
+    // Configured bypasses
+    if (allowEmptyForAdmin || allowEmptyForAll) {
+      console.warn(
+        "City scope empty, bypassing check for user",
+        req.user?.user_id || req.user?.id || "unknown"
+      );
+      return next();
+    }
+
+    // Soft-fail: allow request but annotate scope for downstream to return empty data
+    console.warn(
+      "City scope empty; continuing with no-access scope for user",
+      req.user?.user_id || req.user?.id || "unknown"
+    );
     return next();
-  }
-  if (Array.isArray(scope.ids) && scope.ids.length > 0) {
-    return next();
-  }
-  if (allowEmptyForAdmin && req.user?.role?.toLowerCase() === "admin") {
-    return next();
-  }
-  return res
-    .status(403)
-    .json({ error: "No city access assigned. Please contact admin." });
-};
+  };
 
 const assertCityAccess = (scope, cityId) => {
   if (!scope || scope.all) {
@@ -59,7 +80,8 @@ const buildCityFilterClause = (scope, alias, params) => {
     return { clause: "", params };
   }
   if (!scope.ids || scope.ids.length === 0) {
-    return { clause: "WHERE 1=0", params };
+    const clausePrefix = params.length > 0 ? "AND" : "WHERE";
+    return { clause: `${clausePrefix} 1=0`, params };
   }
   const nextParams = [...params, scope.ids];
   const placeholder = `$${nextParams.length}`;

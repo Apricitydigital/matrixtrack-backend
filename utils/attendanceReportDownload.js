@@ -10,42 +10,68 @@ const SUPPORTED_GROUPINGS = new Set([
   "supervisor_summary",
 ]);
 
-const csvEscapeValue = (value) => {
-  if (value === null || value === undefined) {
-    return '""';
-  }
-  const stringValue =
-    value instanceof Date ? value.toISOString() : String(value);
-  const escaped = stringValue.replace(/"/g, '""');
-  return `"${escaped}"`;
-};
+const ExcelJS = require('exceljs');
 
-const buildCsvDocument = (rows, headers) => {
+const buildExcelDocument = async (rows, headers) => {
   if (!headers?.length) {
-    throw new Error("CSV headers are required");
+    throw new Error("Headers are required");
   }
 
-  const headerLine = headers
-    .map((header) => csvEscapeValue(header.label || header.key))
-    .join(",");
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Report");
 
-  if (!rows?.length) {
-    return `${headerLine}\n`;
+  sheet.columns = headers.map(header => ({
+    header: header.label || header.key,
+    key: header.key,
+    width: Math.max((header.label || header.key).length + 2, 10)
+  }));
+
+  if (rows?.length) {
+    rows.forEach((row) => {
+      const rowData = {};
+      headers.forEach((header) => {
+        let rawValue = typeof header.formatter === "function"
+          ? header.formatter(row[header.key], row)
+          : row[header.key];
+
+        if (typeof rawValue === 'string') {
+          if (rawValue.startsWith('="') && rawValue.endsWith('"')) {
+            rawValue = rawValue.substring(2, rawValue.length - 1);
+          } else if (rawValue.startsWith('=HYPERLINK("')) {
+            const urlMatch = rawValue.match(/=HYPERLINK\("([^"]+)",\s*"([^"]+)"\)/);
+            if (urlMatch) {
+              rawValue = { text: urlMatch[2], hyperlink: urlMatch[1] };
+            }
+          }
+        }
+        rowData[header.key] = rawValue ?? "";
+      });
+      const addedRow = sheet.addRow(rowData);
+      headers.forEach((header, idx) => {
+        const cell = addedRow.getCell(idx + 1);
+        if (cell.value && cell.value.hyperlink) {
+          cell.font = { color: { argb: '0563C1' }, underline: true };
+        }
+      });
+    });
+
+    sheet.columns.forEach(column => {
+      let maxLength = column.header ? column.header.length : 10;
+      column.eachCell({ includeEmpty: false }, cell => {
+        let cellLen = 0;
+        if (cell.value && cell.value.text) cellLen = cell.value.text.length;
+        else if (cell.value) cellLen = cell.value.toString().length;
+        if (cellLen > maxLength) maxLength = cellLen;
+      });
+      column.width = Math.min(maxLength + 3, 50);
+    });
   }
 
-  const dataLines = rows.map((row) =>
-    headers
-      .map((header) => {
-        const rawValue =
-          typeof header.formatter === "function"
-            ? header.formatter(row[header.key], row)
-            : row[header.key];
-        return csvEscapeValue(rawValue ?? "");
-      })
-      .join(",")
-  );
+  const headerRow = sheet.getRow(1);
+  headerRow.font = { bold: true };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
 
-  return [headerLine, ...dataLines].join("\n");
+  return await workbook.xlsx.writeBuffer();
 };
 
 const parseIntegerParam = (value) => {
@@ -89,7 +115,7 @@ const getLocationExpression = (locationType = "both") => {
   }
 };
 
-const buildAttendanceFilters = (query, { locationExpression, cityScope }) => {
+const buildAttendanceFilters = (query, { locationExpression, cityScope, kothiScope }) => {
   const filters = [];
   const params = [];
   const metadata = {};
@@ -149,12 +175,10 @@ const buildAttendanceFilters = (query, { locationExpression, cityScope }) => {
   addNumericFilter(query.zone_id, (ph) => `z.zone_id = ${ph}`, "zone_id");
   addNumericFilter(query.ward_id, (ph) => `w.ward_id = ${ph}`, "ward_id");
   addNumericFilter(query.city_id, (ph) => `c.city_id = ${ph}`, "city_id");
-  addNumericFilter(
-    query.supervisor_id,
-    (ph) => `supervisor.user_id = ${ph}`,
-    "supervisor_id"
-  );
+  addNumericFilter(query.supervisor_id, (ph) => `supervisor.user_id = ${ph}`, "supervisor_id");
   addNumericFilter(query.employee_id, (ph) => `a.emp_id = ${ph}`, "employee_id");
+  addNumericFilter(query.department_id, (ph) => `dept.department_id = ${ph}`, "department_id");
+  addNumericFilter(query.designation_id, (ph) => `des.designation_id = ${ph}`, "designation_id");
 
   addTextFilter(query.emp_code, (ph) => `e.emp_code = ${ph}`, "emp_code");
   addTextFilter(
@@ -239,6 +263,17 @@ const buildAttendanceFilters = (query, { locationExpression, cityScope }) => {
     }
   }
 
+  if (kothiScope && !kothiScope.all) {
+    if (!kothiScope.ids || kothiScope.ids.length === 0) {
+      filters.push("1 = 0");
+    } else {
+      params.push(kothiScope.ids);
+      const placeholder = `$${params.length}`;
+      filters.push(`w.ward_id = ANY(${placeholder})`);
+      metadata.kothi_scope = kothiScope.ids;
+    }
+  }
+
   return {
     whereClause: filters.length ? `WHERE ${filters.join(" AND ")}` : "",
     params,
@@ -246,7 +281,7 @@ const buildAttendanceFilters = (query, { locationExpression, cityScope }) => {
   };
 };
 
-const buildSupervisorSummaryFilters = (query, { cityScope }) => {
+const buildSupervisorSummaryFilters = (query, { cityScope, kothiScope }) => {
   const filters = [];
   const params = [];
   const metadata = {};
@@ -302,6 +337,17 @@ const buildSupervisorSummaryFilters = (query, { cityScope }) => {
     }
   }
 
+  if (kothiScope && !kothiScope.all) {
+    if (!kothiScope.ids || kothiScope.ids.length === 0) {
+      filters.push("1 = 0");
+    } else {
+      params.push(kothiScope.ids);
+      const placeholder = `$${params.length}`;
+      filters.push(`w.ward_id = ANY(${placeholder})`);
+      metadata.kothi_scope = kothiScope.ids;
+    }
+  }
+
   return {
     whereClause: filters.length ? `WHERE ${filters.join(" AND ")}` : "",
     params,
@@ -334,33 +380,31 @@ const groupingConfigs = {
       w.ward_name,
       z.zone_id,
       z.zone_name,
-      c.city_id,
       c.city_name,
-      COALESCE(supervisor.user_id, 0) AS supervisor_id,
-      COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+      dept.department_name,
+      des.designation_name,
+      0 AS supervisor_id,
+      COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
       COALESCE(u.name, 'Self') AS punched_in_by,
       COALESCE(u1.name, 'Self') AS punched_out_by
     `,
     orderBy: "a.date DESC, a.attendance_id DESC",
     csvHeaders: [
       { key: "sr_no", label: "Sr No." },
-      { key: "attendance_id", label: "Attendance ID" },
       { key: "attendance_date", label: "Date" },
-      { key: "employee_name", label: "Employee Name" },
-      { key: "emp_code", label: "Employee Code" },
-      { key: "contact_no", label: "Contact" },
-      { key: "punch_in_time", label: "Punch In" },
-      { key: "punch_out_time", label: "Punch Out" },
-      { key: "duration", label: "Duration" },
-      { key: "in_address", label: "In Address" },
-      { key: "out_address", label: "Out Address" },
-      { key: "ward_name", label: "Ward" },
-      { key: "zone_name", label: "Zone" },
-      { key: "city_name", label: "City" },
-      { key: "supervisor_name", label: "Supervisor" },
-      { key: "punched_in_by", label: "Punched In By" },
-      { key: "punched_out_by", label: "Punched Out By" },
-      // images removed from export per request
+      { key: "zone_name", label: "Zone", formatter: (val) => val || "-" },
+      { key: "ward_name", label: "Ward", formatter: (val) => val || "-" },
+      { key: "employee_name", label: "Employee Name", formatter: (val) => val || "-" },
+      { key: "emp_code", label: "EmpCode", formatter: (val) => val ? `="${val}"` : "-" },
+      { key: "contact_no", label: "Contact No.", formatter: (val) => val ? `="${val}"` : "-" },
+      { key: "punch_in_time", label: "In Time", formatter: (val) => val || "-" },
+      { key: "punched_in_by", label: "PunchedIn By", formatter: (val, row) => row.punch_in_time ? val : "-" },
+      { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
+      { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}", "${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}")` : "-" },
+      { key: "punch_out_time", label: "Out Time", formatter: (val) => val || "-" },
+      { key: "punched_out_by", label: "PunchedOut By", formatter: (val, row) => row.punch_out_time ? val : "-" },
+      { key: "out_address", label: "Out Address", formatter: (val) => val || "-" },
+      { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}", "${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}")` : "-" },
     ],
   },
   zone: {
@@ -371,7 +415,7 @@ const groupingConfigs = {
       z.zone_name,
       c.city_id,
       c.city_name,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -408,7 +452,7 @@ const groupingConfigs = {
       c.city_id,
       c.city_name,
       COALESCE(array_to_string(array_agg(DISTINCT COALESCE(supervisor.name, 'Unassigned')), ', '), 'Unassigned') AS supervisors,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -441,7 +485,7 @@ const groupingConfigs = {
       c.city_id,
       c.city_name,
       COALESCE(array_to_string(array_agg(DISTINCT z.zone_name), ', '), 'N/A') AS zones,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -554,7 +598,7 @@ const groupingConfigs = {
       COALESCE(array_to_string(array_agg(DISTINCT w.ward_name), ', '), 'N/A') AS wards,
       COALESCE(array_to_string(array_agg(DISTINCT z.zone_name), ', '), 'N/A') AS zones,
       COALESCE(array_to_string(array_agg(DISTINCT c.city_name), ', '), 'N/A') AS cities,
-      COUNT(*) AS total_records,
+      COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
@@ -583,11 +627,11 @@ const groupingConfigs = {
       c.city_name AS city_name,
       z.zone_name AS zone_name,
       w.ward_name AS kothi_name,
-      COALESCE(supervisor.name, 'Unassigned') AS supervisor_name,
+      COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
       (SELECT COUNT(*) FROM employee reg WHERE reg.ward_id = w.ward_id) AS total_registered,
       COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN a.emp_id END) AS total_present
     `,
-    groupBy: `c.city_name, z.zone_name, w.ward_name, COALESCE(supervisor.name, 'Unassigned')`,
+    groupBy: `c.city_name, z.zone_name, w.ward_name, supervisor_agg.supervisor_names`,
     orderBy: "c.city_name, z.zone_name, w.ward_name",
     csvHeaders: [
       { key: "city_name", label: "City" },
@@ -601,10 +645,12 @@ const groupingConfigs = {
 };
 
 const createAttendanceDownloadHandler =
-  ({ pool, defaultFormat = "csv", resolveCityScope } = {}) =>
+  ({ pool, defaultFormat = "csv", resolveCityScope, resolveKothiScope } = {}) =>
     async (req, res) => {
+      let payload = null;
       try {
-        const format = (req.query.format || defaultFormat).toString().toLowerCase();
+        payload = { ...req.query, ...req.body };
+        const format = (payload.format || defaultFormat).toString().toLowerCase();
 
         if (!SUPPORTED_FORMATS.has(format)) {
           return res.status(400).json({
@@ -614,19 +660,19 @@ const createAttendanceDownloadHandler =
           });
         }
 
-        const requestedGrouping = (req.query.group_by || "detail")
+        const requestedGrouping = (payload.group_by || "detail")
           .toString()
           .toLowerCase();
         if (!SUPPORTED_GROUPINGS.has(requestedGrouping)) {
           return res.status(400).json({
-            error: `Invalid group_by "${req.query.group_by}". Supported values: ${[
+            error: `Invalid group_by "${payload.group_by}". Supported values: ${[
               ...SUPPORTED_GROUPINGS,
             ].join(", ")}`,
           });
         }
 
         const groupConfig = groupingConfigs[requestedGrouping];
-        const rawLocationType = (req.query.location_type || "both")
+        const rawLocationType = (payload.location_type || "both")
           .toString()
           .trim()
           .toLowerCase();
@@ -635,7 +681,8 @@ const createAttendanceDownloadHandler =
           : "both";
         const locationExpression = getLocationExpression(locationType);
         const cityScope = resolveCityScope?.(req) || { all: false, ids: [] };
-        const requestedCityId = parseIntegerParam(req.query.city_id);
+        const kothiScope = resolveKothiScope?.(req) || { all: true, ids: [] };
+        const requestedCityId = parseIntegerParam(payload.city_id);
 
         if (!cityScope.all) {
           const allowedIds = (cityScope.ids || []).map((id) => Number(id));
@@ -656,12 +703,14 @@ const createAttendanceDownloadHandler =
 
         const filterResult =
           requestedGrouping === "supervisor_summary"
-            ? buildSupervisorSummaryFilters(req.query, {
+            ? buildSupervisorSummaryFilters(payload, {
               cityScope,
+              kothiScope,
             })
-            : buildAttendanceFilters(req.query, {
+            : buildAttendanceFilters(payload, {
               locationExpression,
               cityScope,
+              kothiScope,
             });
 
         const { whereClause, params, metadata } = filterResult;
@@ -669,32 +718,194 @@ const createAttendanceDownloadHandler =
         metadata.group_by = requestedGrouping;
         metadata.location_type = locationType;
         metadata.format = format;
-        const absOnlyFlag = parseBooleanFlag(req.query.absentees_only);
-        if (requestedGrouping === "supervisor_summary" && absOnlyFlag !== null) {
+        const absOnlyFlag = parseBooleanFlag(payload.absentees_only);
+        if (absOnlyFlag !== null) {
           metadata.absentees_only = absOnlyFlag;
         }
 
-        const selectClause =
-          typeof groupConfig.select === "function"
-            ? groupConfig.select({ locationExpression })
-            : groupConfig.select;
-        const groupByClauseRaw =
-          typeof groupConfig.groupBy === "function"
-            ? groupConfig.groupBy({ locationExpression })
-            : groupConfig.groupBy;
-        const orderByClauseRaw =
-          typeof groupConfig.orderBy === "function"
-            ? groupConfig.orderBy({ locationExpression })
-            : groupConfig.orderBy;
+        let allRows;
 
-        const groupByClause = groupByClauseRaw
-          ? `GROUP BY ${groupByClauseRaw}`
-          : "";
-        const orderByClause = orderByClauseRaw
-          ? `ORDER BY ${orderByClauseRaw}`
-          : "";
+        if (requestedGrouping === "detail") {
+          // Single unified query: start from employee and left-join attendance for the target date.
+          const targetDate =
+            payload.date ||
+            payload.start_date ||
+            payload.date_from ||
+            new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
-        const defaultFromClause = `
+          const detailParams = [targetDate];
+          const filters = [];
+          const hasPunchInFlag = parseBooleanFlag(payload.has_punch_in);
+          const hasPunchOutFlag = parseBooleanFlag(payload.has_punch_out);
+          const absOnlyFlag = parseBooleanFlag(payload.absentees_only);
+
+          // City scope
+          if (!cityScope.all) {
+            detailParams.push(cityScope.ids);
+            filters.push(`c.city_id = ANY($${detailParams.length}::int[])`);
+          } else if (requestedCityId !== null) {
+            detailParams.push(requestedCityId);
+            filters.push(`c.city_id = $${detailParams.length}`);
+          }
+
+          // Kothi scope
+          if (!kothiScope.all) {
+            detailParams.push(kothiScope.ids);
+            filters.push(`w.ward_id = ANY($${detailParams.length}::int[])`);
+          }
+
+          // Optional filters
+          const zoneId = parseIntegerParam(payload.zone_id);
+          if (zoneId !== null) {
+            detailParams.push(zoneId);
+            filters.push(`z.zone_id = $${detailParams.length}`);
+          }
+          const wardId = parseIntegerParam(payload.ward_id || payload.kothi_id);
+          if (wardId !== null) {
+            detailParams.push(wardId);
+            filters.push(`w.ward_id = $${detailParams.length}`);
+          }
+          const supervisorId = parseIntegerParam(payload.supervisor_id);
+          if (supervisorId !== null) {
+            detailParams.push(supervisorId);
+            filters.push(
+              `EXISTS (SELECT 1 FROM supervisor_ward sw2 WHERE sw2.ward_id = w.ward_id AND sw2.supervisor_id = $${detailParams.length})`
+            );
+          }
+          const employeeId = parseIntegerParam(payload.employee_id);
+          if (employeeId !== null) {
+            detailParams.push(employeeId);
+            filters.push(`e.emp_id = $${detailParams.length}`);
+          }
+          const empCode = (payload.emp_code || "").toString().trim();
+          if (empCode) {
+            detailParams.push(empCode);
+            filters.push(`e.emp_code = $${detailParams.length}`);
+          }
+          const departmentId = parseIntegerParam(payload.department_id);
+          if (departmentId !== null) {
+            detailParams.push(departmentId);
+            filters.push(`dept.department_id = $${detailParams.length}`);
+          }
+          const designationId = parseIntegerParam(payload.designation_id);
+          if (designationId !== null) {
+            detailParams.push(designationId);
+            filters.push(`des.designation_id = $${detailParams.length}`);
+          }
+          if (absOnlyFlag === true) {
+            filters.push("a.punch_in_time IS NULL");
+          }
+          if (hasPunchInFlag !== null) {
+            filters.push(
+              hasPunchInFlag
+                ? "a.punch_in_time IS NOT NULL"
+                : "a.punch_in_time IS NULL"
+            );
+          }
+          if (hasPunchOutFlag !== null) {
+            filters.push(
+              hasPunchOutFlag
+                ? "a.punch_out_time IS NOT NULL"
+                : "a.punch_out_time IS NULL"
+            );
+          }
+
+          const whereCombined = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+
+          const unifiedQuery = `
+            SELECT
+              ROW_NUMBER() OVER (ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC) AS sr_no,
+              a.attendance_id,
+              e.emp_id AS emp_id,
+              e.name AS employee_name,
+              e.emp_code,
+              e.phone AS contact_no,
+              TO_CHAR($1::date, 'DD-MM-YYYY') AS attendance_date,
+              TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
+              TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
+              a.duration,
+              a.in_address,
+              a.latitude_in,
+              a.longitude_in,
+              a.out_address,
+              a.latitude_out,
+              a.longitude_out,
+              w.ward_id,
+              w.ward_name,
+              z.zone_id,
+              z.zone_name,
+              c.city_id,
+              c.city_name,
+              dept.department_name,
+              des.designation_name,
+              0 AS supervisor_id,
+              COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
+              COALESCE(u.name, 'Self') AS punched_in_by,
+              COALESCE(u1.name, 'Self') AS punched_out_by
+            FROM employee e
+            JOIN wards w ON e.ward_id = w.ward_id
+            JOIN zones z ON w.zone_id = z.zone_id
+            JOIN cities c ON z.city_id = c.city_id
+            LEFT JOIN (
+              SELECT sw_agg.ward_id, STRING_AGG(su_agg.name, ', ' ORDER BY su_agg.name) AS supervisor_names
+              FROM supervisor_ward sw_agg
+              JOIN users su_agg ON sw_agg.supervisor_id = su_agg.user_id
+              GROUP BY sw_agg.ward_id
+            ) supervisor_agg ON w.ward_id = supervisor_agg.ward_id
+            LEFT JOIN designation des ON e.designation_id = des.designation_id
+            LEFT JOIN department dept ON des.department_id = dept.department_id
+            -- Removed direct supervisor join to prevent row duplication.
+            -- Using correlate subquery instead for supervisor_name.
+            LEFT JOIN LATERAL (
+              SELECT 
+                att.attendance_id, 
+                att.punch_in_time, 
+                att.punch_out_time, 
+                att.duration, 
+                att.in_address,
+                att.latitude_in,
+                att.longitude_in,
+                att.out_address,
+                att.latitude_out,
+                att.longitude_out,
+                att.punched_in_by,
+                att.punched_out_by
+              FROM attendance att
+              WHERE att.emp_id = e.emp_id 
+                AND (att.date = $1::date OR att.date = $1)
+              ORDER BY att.attendance_id DESC
+              LIMIT 1
+            ) a ON TRUE
+            LEFT JOIN users u ON a.punched_in_by = u.user_id
+            LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
+            ${whereCombined}
+            ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC;
+          `;
+
+          const unifiedResult = await pool.query(unifiedQuery, detailParams);
+          allRows = unifiedResult.rows;
+        } else {
+          const selectClause =
+            typeof groupConfig.select === "function"
+              ? groupConfig.select({ locationExpression })
+              : groupConfig.select;
+          const groupByClauseRaw =
+            typeof groupConfig.groupBy === "function"
+              ? groupConfig.groupBy({ locationExpression })
+              : groupConfig.groupBy;
+          const orderByClauseRaw =
+            typeof groupConfig.orderBy === "function"
+              ? groupConfig.orderBy({ locationExpression })
+              : groupConfig.orderBy;
+
+          const groupByClause = groupByClauseRaw
+            ? `GROUP BY ${groupByClauseRaw}`
+            : "";
+          const orderByClause = orderByClauseRaw
+            ? `ORDER BY ${orderByClauseRaw}`
+            : "";
+
+          const defaultFromClause = `
         FROM attendance a
         JOIN employee e ON a.emp_id = e.emp_id
         JOIN wards w ON a.ward_id = w.ward_id
@@ -702,33 +913,37 @@ const createAttendanceDownloadHandler =
         JOIN cities c ON z.city_id = c.city_id
       `;
 
-        const defaultJoinClause = `
-        LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
-        LEFT JOIN users supervisor ON sw.supervisor_id = supervisor.user_id
+          const defaultJoinClause = `
+        LEFT JOIN (
+          SELECT sw_agg.ward_id, STRING_AGG(su_agg.name, ', ' ORDER BY su_agg.name) AS supervisor_names
+          FROM supervisor_ward sw_agg
+          JOIN users su_agg ON sw_agg.supervisor_id = su_agg.user_id
+          GROUP BY sw_agg.ward_id
+        ) supervisor_agg ON w.ward_id = supervisor_agg.ward_id
         LEFT JOIN users u ON a.punched_in_by = u.user_id
         LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
       `;
 
-        const fromClause =
-          typeof groupConfig.fromOverride === "string"
-            ? groupConfig.fromOverride
-            : defaultFromClause;
+          const fromClause =
+            typeof groupConfig.fromOverride === "string"
+              ? groupConfig.fromOverride
+              : defaultFromClause;
 
-        const joinClause =
-          typeof groupConfig.joinOverride === "string"
-            ? groupConfig.joinOverride
-            : groupConfig.fromOverride
-              ? ""
-              : defaultJoinClause;
+          const joinClause =
+            typeof groupConfig.joinOverride === "string"
+              ? groupConfig.joinOverride
+              : groupConfig.fromOverride
+                ? ""
+                : defaultJoinClause;
 
-        const havingClause =
-          typeof groupConfig.havingClauseBuilder === "function"
-            ? groupConfig.havingClauseBuilder({
-              query: req.query,
-            })
-            : "";
+          const havingClause =
+            typeof groupConfig.havingClauseBuilder === "function"
+              ? groupConfig.havingClauseBuilder({
+                query: payload,
+              })
+              : "";
 
-        const downloadQuery = `
+          const downloadQuery = `
       SELECT
         ${selectClause}
         ${fromClause}
@@ -739,15 +954,22 @@ const createAttendanceDownloadHandler =
       ${orderByClause}
     `;
 
-        const { rows } = await pool.query(downloadQuery, params);
+          const { rows } = await pool.query(downloadQuery, params);
+          allRows = rows;
+        }
+        if (allRows && allRows.length) {
+          allRows.forEach((row, idx) => {
+            row.sr_no = idx + 1;
+          });
+        }
 
         if (format === "json") {
           return res.json({
             group_by: requestedGrouping,
             location_type: locationType,
             filters: metadata,
-            count: rows.length,
-            data: rows,
+            count: allRows.length,
+            data: allRows,
           });
         }
 
@@ -755,15 +977,21 @@ const createAttendanceDownloadHandler =
           typeof groupConfig.csvHeaders === "function"
             ? groupConfig.csvHeaders({ locationExpression })
             : groupConfig.csvHeaders;
-        const csvPayload = buildCsvDocument(rows, headers);
+        const excelBuffer = await buildExcelDocument(allRows, headers);
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const filename = `attendance-${groupConfig.filenameSuffix}-report-${timestamp}.csv`;
+        const filename = `attendance-${groupConfig.filenameSuffix}-report-${timestamp}.xlsx`;
 
-        res.setHeader("Content-Type", "text/csv");
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-        return res.send(csvPayload);
+        return res.send(excelBuffer);
       } catch (error) {
-        console.error("Error generating attendance download:", error);
+        // Note: payload may be undefined if parsing failed earlier, so guard it.
+        console.error("Error generating attendance download:", {
+          message: error?.message,
+          stack: error?.stack,
+          payload: payload || req.body || req.query,
+          user: req.user,
+        });
         return res.status(500).json({
           error: "Unable to generate filtered attendance report",
           details: error?.message || "Unknown error",

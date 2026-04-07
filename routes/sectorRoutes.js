@@ -8,18 +8,22 @@ const {
     requireCityScope,
     buildCityFilterClause,
 } = require("../middleware/cityScope");
+const { attachKothiScope, buildKothiFilterClause } = require("../middleware/kothiScope");
 
 // Get all sectors (Wards) with associated Kothis, filtered by city scope
 router.get(
     "/",
     authenticate,
+    attachKothiScope,
     attachCityScope,
     requireCityScope(),
-    authorize("master", "view"),
     async (req, res) => {
         try {
             const scope = req.cityScope || { all: false, ids: [] };
+            const kothiScope = req.kothiScope || { all: true, ids: [] };
+            
             const cityFilter = buildCityFilterClause(scope, "c", []);
+            const kothiFilter = buildKothiFilterClause(kothiScope, "w", cityFilter.params);
 
             const result = await pool.query(
                 `SELECT 
@@ -31,9 +35,9 @@ router.get(
          JOIN zones z ON s.zone_id = z.zone_id
          JOIN cities c ON z.city_id = c.city_id
          LEFT JOIN wards w ON w.sector_id = s.sector_id
-         ${cityFilter.clause}
+         ${cityFilter.clause} ${kothiFilter.clause}
          ORDER BY c.city_name, z.zone_name, s.sector_name, w.ward_name`,
-                cityFilter.params
+                kothiFilter.params
             );
 
             const groupedData = {};

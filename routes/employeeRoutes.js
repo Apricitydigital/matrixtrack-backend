@@ -3,6 +3,9 @@ const router = express.Router();
 const pool = require("../config/db");
 const { buildPublicFaceUrl } = require("../utils/faceImage");
 const { isBackblazeUrl } = require("../utils/backblaze");
+const authenticate = require("../middleware/authMiddleware");
+const { attachCityScope, requireCityScope, buildCityFilterClause } = require("../middleware/cityScope");
+const { attachKothiScope, buildKothiFilterClause } = require("../middleware/kothiScope");
 
 const resolveFaceImageUrl = (faceEmbedding, empId) => {
   if (!faceEmbedding) {
@@ -39,10 +42,22 @@ const formatEmployeeRow = (row = {}) => {
 };
 
 // 🟢 Fetch all employees with city, zone, ward, department, and designation
-router.get("/", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT 
+router.get(
+  "/",
+  authenticate,
+  attachKothiScope,
+  attachCityScope,
+  requireCityScope(),
+  async (req, res) => {
+    try {
+      const scope = req.cityScope || { all: false, ids: [] };
+      const kothiScope = req.kothiScope || { all: true, ids: [] };
+      
+      const cityFilter = buildCityFilterClause(scope, "c", []);
+      const kothiFilter = buildKothiFilterClause(kothiScope, "w", cityFilter.params);
+
+      const result = await pool.query(
+        `SELECT 
         e.emp_id, 
         e.name, 
         e.emp_code, 
@@ -58,8 +73,10 @@ router.get("/", async (req, res) => {
       LEFT JOIN zones z ON w.zone_id = z.zone_id
       LEFT JOIN cities c ON z.city_id = c.city_id
       LEFT JOIN designation ds ON e.designation_id = ds.designation_id
-      LEFT JOIN department d ON ds.department_id = d.department_id;`
-    );
+      LEFT JOIN department d ON ds.department_id = d.department_id
+      ${cityFilter.clause} ${kothiFilter.clause};`,
+        kothiFilter.params
+      );
     res.json(result.rows.map(formatEmployeeRow));
   } catch (error) {
     console.error("Error fetching employees:", error);

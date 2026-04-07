@@ -9,7 +9,7 @@ const buildZoneScopeForUser = async (user) => {
     return { all: true, ids: [] };
   }
 
-  const scope = await fetchUserZoneAccess(user);
+  const scope = await fetchUserZoneAccess(user, { allowCityFallback: false });
   const ids = Array.isArray(scope.ids)
     ? scope.ids
         .map((zoneId) => Number(zoneId))

@@ -1,0 +1,3 @@
+Total punched in today (attendance table): 4898
+Punched in AND properly linked to Pune (INNER JOINs): 4865
+Total employees properly linked to Pune (INNER JOINs): 14067

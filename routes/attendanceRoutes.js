@@ -5,7 +5,8 @@ const {
   createAttendanceDownloadHandler,
 } = require("../utils/attendanceReportDownload");
 const authenticate = require("../middleware/authMiddleware");
-const { attachCityScope, requireCityScope } = require("../middleware/cityScope");
+const { attachCityScope, requireCityScope, buildCityFilterClause } = require("../middleware/cityScope");
+const { attachKothiScope, buildKothiFilterClause } = require("../middleware/kothiScope");
 
 // 🛠 IST Date Formatter
 const formatDateIST = (date = new Date()) => {
@@ -14,13 +15,18 @@ const formatDateIST = (date = new Date()) => {
   });
 };
 
-router.use(authenticate, attachCityScope, requireCityScope());
+router.use(authenticate, attachKothiScope, attachCityScope, requireCityScope());
 
-// 🟢 Fetch attendance report for a specific date (current date or selected date)
+// 🟢 Fetch attendance report for a specific date or date range
 router.post("/", async (req, res) => {
-  // Get the date from query parameters, if available; otherwise, default to IST date
-  const date = req.query.date || formatDateIST(); // IST Date in YYYY-MM-DD format
+  // Exhaustive check for all possible date param names from query or body
+  const startDate = req.query.startDate || req.body.startDate || req.query.start_date || req.body.start_date;
+  const endDate = req.query.endDate || req.body.endDate || req.query.end_date || req.body.end_date;
+  const singleDate = req.query.date || req.body.date || req.query.singleDate || req.body.singleDate;
+
   const scope = req.cityScope || { all: false, ids: [] };
+  const kothiScope = req.kothiScope || { all: true, ids: [] };
+
   if (!scope.all && (!scope.ids || scope.ids.length === 0)) {
     return res
       .status(403)
@@ -28,16 +34,23 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    const params = [date];
-    let cityClause = "";
-    if (!scope.all) {
-      params.push(scope.ids);
-      cityClause = `AND c.city_id = ANY($${params.length})`;
+    let dateFilter;
+    let params;
+
+    if (startDate && endDate && startDate !== "undefined" && endDate !== "undefined") {
+      dateFilter = "a.date::date BETWEEN $1 AND $2";
+      params = [startDate, endDate];
+    } else {
+      dateFilter = "a.date::date = $1";
+      params = [singleDate || formatDateIST()];
     }
+
+    const cityFilter = buildCityFilterClause(scope, "c", params);
+    const kothiFilter = buildKothiFilterClause(kothiScope, "w", cityFilter.params);
 
     const result = await pool.query(
       `SELECT 
-        ROW_NUMBER() OVER (ORDER BY a.date DESC, a.attendance_id) AS sr_no,
+        ROW_NUMBER() OVER (ORDER BY a.date ASC, a.attendance_id ASC) AS sr_no,
         e.emp_id,
         attendance_id,
         e.name, 
@@ -46,12 +59,18 @@ router.post("/", async (req, res) => {
         w.ward_name AS ward, 
         z.zone_name AS zone, 
         c.city_name AS city, 
+        dept.department_name AS department,
+        des.designation_name AS designation,
         e.phone AS contact_no, 
         TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in, 
-        a.in_address, 
+        a.in_address,
+        a.latitude_in,
+        a.longitude_in,
         a.punch_in_image, 
         TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out, 
-        a.out_address, 
+        a.out_address,
+        a.latitude_out,
+        a.longitude_out,
         a.punch_out_image, 
         a.duration,
         a.leave_type,
@@ -62,28 +81,32 @@ router.post("/", async (req, res) => {
       JOIN wards w ON a.ward_id = w.ward_id
       JOIN zones z ON w.zone_id = z.zone_id
       JOIN cities c ON z.city_id = c.city_id
+      LEFT JOIN designation des ON e.designation_id = des.designation_id
+      LEFT JOIN department dept ON des.department_id = dept.department_id
       LEFT JOIN users u ON a.punched_in_by = u.user_id
       LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
-      WHERE a.date = $1
-        ${cityClause}
-      ORDER BY a.date DESC, a.attendance_id;`,
-      params
+      WHERE ${dateFilter}
+        ${cityFilter.clause} ${kothiFilter.clause}
+      ORDER BY a.date ASC, a.attendance_id ASC;`,
+      kothiFilter.params
     );
 
     res.json(result.rows);
   } catch (error) {
     console.error("Error fetching attendance report:", error);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: "Database error", details: error.message });
   }
 });
 
 const handleAttendanceDownload = createAttendanceDownloadHandler({
   pool,
   resolveCityScope: (req) => req.cityScope,
+  resolveKothiScope: (req) => req.kothiScope,
 });
 
 // Download attendance reports with flexible grouping & filters
 router.get("/download", handleAttendanceDownload);
+router.post("/download", handleAttendanceDownload);
 
 // Short Attendance summarized report - supports optional wardId (sector) and kothiId filters
 router.get("/short-report", async (req, res) => {
