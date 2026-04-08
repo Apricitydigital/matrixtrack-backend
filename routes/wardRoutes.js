@@ -123,7 +123,7 @@ router.post(
   authenticate,
   authorize("master", "manage"),
   async (req, res) => {
-    const { ward_name, zone_id } = req.body;
+    const { ward_name, zone_id, sector_id } = req.body;
     if (!ward_name || !zone_id) {
       return res
         .status(400)
@@ -132,11 +132,11 @@ router.post(
 
     try {
       const result = await pool.query(
-        `INSERT INTO wards (ward_name, zone_id) 
-       VALUES ($1, $2) 
+        `INSERT INTO wards (ward_name, zone_id, sector_id) 
+       VALUES ($1, $2, $3) 
        ON CONFLICT ON CONSTRAINT unique_ward_per_zone DO NOTHING
        RETURNING *`,
-        [ward_name, zone_id]
+        [ward_name, zone_id, sector_id]
       );
 
       if (result.rowCount === 0) {
@@ -165,14 +165,14 @@ router.put(
   authorize("master", "manage"),
   async (req, res) => {
     const { id } = req.params;
-    const { ward_name, zone_id } = req.body;
+    const { ward_name, zone_id, sector_id } = req.body;
 
     try {
       const result = await pool.query(
-        `UPDATE wards SET ward_name = $1, zone_id = $2 
-       WHERE ward_id = $3 
+        `UPDATE wards SET ward_name = $1, zone_id = $2, sector_id = $3 
+       WHERE ward_id = $4 
        RETURNING *`,
-        [ward_name, zone_id, id]
+        [ward_name, zone_id, sector_id, id]
       );
       if (result.rows.length === 0) {
         return res.status(404).json({ error: "Ward not found" });
