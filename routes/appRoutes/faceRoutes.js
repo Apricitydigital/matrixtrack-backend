@@ -322,7 +322,7 @@ router.get("/reconcile-all", async (req, res) => {
     } while (continuationToken);
 
     console.log(`[Reconcile] Finished. Scanned: ${scannedCount}, Reconciled: ${reconciledCount}`);
-    
+
     // Clear caches to reflect new data
     MISSING_FACE_CACHE.clear();
     FOUND_FACE_CACHE.clear();
@@ -376,7 +376,7 @@ router.post("/auto-heal", async (req, res) => {
         try {
           await s3.send(new HeadObjectCommand({ Bucket: b, Key: key }));
           return b;
-        } catch (_e) {}
+        } catch (_e) { }
       }
       return null;
     };
@@ -407,7 +407,7 @@ router.post("/auto-heal", async (req, res) => {
                 new Date(a.LastModified || 0)
             );
             return { key: contents[0].Key, bucket: b };
-          } catch (_e) {}
+          } catch (_e) { }
         }
       }
       return null;
@@ -509,7 +509,7 @@ router.post("/reindex-all", async (req, res) => {
           try {
             await s3.send(new HeadObjectCommand({ Bucket: secondaryBucketName, Key: s3Key }));
             foundInSecondary = true;
-          } catch (_e2) {}
+          } catch (_e2) { }
         }
         if (!foundInSecondary) {
           skipped++;
@@ -652,7 +652,7 @@ router.get("/gallery", async (req, res) => {
           employeeId,
           size: item.Size ?? null,
           lastModified: item.LastModified ?? null,
-          url: employeeId 
+          url: employeeId
             ? `app/attendance/employee/faceRoutes/image/${employeeId}`
             : buildPublicFaceUrl(item.Key),
         });
@@ -669,8 +669,8 @@ router.get("/gallery", async (req, res) => {
         item.employeeId !== null && item.employeeId !== undefined
           ? String(item.employeeId)
           : item.identifier
-          ? String(item.identifier)
-          : item.key;
+            ? String(item.identifier)
+            : item.key;
       const dedupKey = identifier ? identifier.toLowerCase() : item.key;
       const existing = dedupMap.get(dedupKey);
 
@@ -868,7 +868,7 @@ router.get("/image/:employeeId", async (req, res) => {
           try {
             streamResult = await streamS3Object(cachedKey, bucketName);
             objectKey = cachedKey;
-          } catch (e) {}
+          } catch (e) { }
         }
 
         if (!streamResult) {
@@ -896,16 +896,16 @@ router.get("/image/:employeeId", async (req, res) => {
             try {
               streamResult = await streamS3Object(bestKey, bucketName);
               objectKey = bestKey;
-              
+
               // 🛡️ Self-Healing: Backfill the database so next time is a direct hit
               FOUND_FACE_CACHE.set(employeeId, bestKey);
               pool.query(
                 "UPDATE employee SET face_embedding = $1 WHERE emp_id = $2",
                 [bestKey, employeeId]
               ).catch(e => console.error(`Failed to backfill face_embedding for ${employeeId}:`, e));
-              
+
               console.log(`[Self-Healing] Backfilled face_embedding for employee ${employeeId} with key: ${bestKey}`);
-            } catch (err) {}
+            } catch (err) { }
           }
         }
       }
@@ -1129,14 +1129,14 @@ router.post("/store-face", upload.single("image"), async (req, res) => {
             const _listed = await s3.send(new ListObjectsV2Command({ Bucket: _bucket, Prefix: _prefix }));
             for (const _obj of _listed?.Contents || []) {
               if (_obj.Key && _obj.Key !== objectKey) { // don't delete the new upload
-                await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _obj.Key })).catch(() => {});
+                await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _obj.Key })).catch(() => { });
               }
             }
-          } catch (_) {}
+          } catch (_) { }
         }
         // Also explicitly delete the stored key
         if (_oldKey && _oldKey !== objectKey) {
-          await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _oldKey })).catch(() => {});
+          await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _oldKey })).catch(() => { });
         }
       }
 

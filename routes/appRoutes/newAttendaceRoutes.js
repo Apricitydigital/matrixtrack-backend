@@ -400,13 +400,14 @@ async function resolveEmployeeFromFaceIdentifiers({
   return employeeRecord;
 }
 
+// Legacy sync check — used only as last-resort guard on the attendance object itself
 function validatePunchAttempt(attendance, punchType) {
   if (!attendance) {
     return {
       status: punchType === PUNCH_TYPES.OUT ? 400 : 404,
       error:
         punchType === PUNCH_TYPES.OUT
-          ? "Must punch in first"
+          ? "Pehle punch in karein"
           : "Attendance record not found",
     };
   }
@@ -414,25 +415,82 @@ function validatePunchAttempt(attendance, punchType) {
   if (punchType === PUNCH_TYPES.IN && attendance.punch_in_time) {
     return {
       status: 400,
-      error: "Already punched in today",
+      error: "Aap abhi bhi punched in hain. Pehle punch out karein.",
     };
   }
 
   if (punchType === PUNCH_TYPES.OUT && attendance.punch_out_time) {
     return {
       status: 400,
-      error: "Already punched out today",
+      error: "Aap pehle se punch out kar chuke hain.",
     };
   }
 
   if (punchType === PUNCH_TYPES.OUT && !attendance.punch_in_time) {
     return {
       status: 400,
-      error: "Must punch in first",
+      error: "Pehle punch in karein",
     };
   }
 
   return null;
+}
+
+/**
+ * 🔒 SESSION-AWARE PUNCH VALIDATION (Night-Shift + Re-Punch-In Guard)
+ *
+ * PUNCH IN allowed only if:
+ *   1. No OPEN session exists (already punched in but not out)
+ *   2. No CLOSED session exists for this attendance_date (already done for the day)
+ *
+ * PUNCH OUT allowed only if:
+ *   1. An OPEN session exists
+ *
+ * Night shift is handled automatically:
+ *   - 11 PM punch-in → attendance_date = Day1 (formatDate uses NIGHT_SHIFT_ROLLOVER_HOUR)
+ *   - 4 AM punch-out → finds the open session from Day1, closes it correctly
+ *   - Re-punch-in on Day2 morning is blocked because Day1 session is now CLOSED
+ */
+async function validatePunchSession(empId, attendanceDate, punchType) {
+  if (!empId || !attendanceDate) {
+    return { status: 400, error: "Employee ID aur date zaroori hain" };
+  }
+
+  // Check for any OPEN session within the last day window (handles night-shift carry-forward)
+  const openSession = await fetchRecentOpenAttendance(empId, attendanceDate);
+
+  if (punchType === PUNCH_TYPES.IN) {
+    // Block re-punch-in if already punched in but not out
+    if (openSession) {
+      return {
+        status: 400,
+        error: "Aap abhi bhi punched in hain. Pehle punch out karein.",
+        code: "ALREADY_PUNCHED_IN",
+      };
+    }
+
+    // Block re-punch-in if today's session is already complete (punch-in + punch-out done)
+    const closedSession = await fetchClosedSessionForDate(empId, attendanceDate);
+    if (closedSession) {
+      return {
+        status: 400,
+        error: "Aapka aaj ka attendance pehle se complete ho chuka hai.",
+        code: "SESSION_ALREADY_COMPLETE",
+      };
+    }
+  }
+
+  if (punchType === PUNCH_TYPES.OUT) {
+    if (!openSession) {
+      return {
+        status: 400,
+        error: "Pehle punch in karein",
+        code: "NOT_PUNCHED_IN",
+      };
+    }
+  }
+
+  return null; // ✅ OK to proceed
 }
 
 const mapRekognitionError = (error) => {
@@ -648,6 +706,25 @@ async function fetchRecentOpenAttendance(empId, date) {
       AND a.date <= $2::date
       AND a.punch_in_time IS NOT NULL
       AND a.punch_out_time IS NULL
+    `,
+    [empId, date]
+  );
+}
+
+// 🔒 Check if a CLOSED session already exists for the given attendance_date
+// (handles night-shift: session started on date-1 but punch_out on date)
+async function fetchClosedSessionForDate(empId, date) {
+  if (!empId || !date) {
+    return null;
+  }
+
+  return fetchAttendanceRecord(
+    `
+      a.emp_id = $1
+      AND a.date >= ($2::date - INTERVAL '1 day')
+      AND a.date <= $2::date
+      AND a.punch_in_time IS NOT NULL
+      AND a.punch_out_time IS NOT NULL
     `,
     [empId, date]
   );
@@ -1238,32 +1315,42 @@ router.put("/", upload.single("image"), async (req, res) => {
   }
 
   try {
-    // Validate punch conditions
-    const attendance = await pool.query(
-      `SELECT emp_id, punch_in_time, punch_out_time FROM attendance WHERE attendance_id = $1`,
+    // Fetch the attendance record to get emp_id
+    const attendanceResult = await pool.query(
+      `SELECT emp_id, date FROM attendance WHERE attendance_id = $1`,
       [attendance_id]
     );
 
-    if (attendance.rows.length === 0) {
+    if (attendanceResult.rows.length === 0) {
       return res.status(404).json({ error: "Attendance record not found" });
     }
 
-    const { emp_id: attendanceEmpId, punch_in_time, punch_out_time } =
-      attendance.rows[0];
+    const { emp_id: attendanceEmpId, date: recordDate } = attendanceResult.rows[0];
+    const attendanceDate = formatDate(new Date(recordDate));
+    const normalizedPunchType = (punch_type || "").toString().trim().toUpperCase();
+    const punchType = normalizedPunchType === PUNCH_TYPES.OUT ? PUNCH_TYPES.OUT : PUNCH_TYPES.IN;
 
-    if (punch_type === PUNCH_TYPES.IN && punch_in_time) {
-      return res.status(400).json({ error: "Already punched in today" });
+    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    const sessionError = await validatePunchSession(attendanceEmpId, attendanceDate, punchType);
+    if (sessionError) {
+      return res.status(sessionError.status).json({
+        error: sessionError.error,
+        code: sessionError.code,
+      });
     }
-    if (punch_type === PUNCH_TYPES.OUT && punch_out_time) {
-      return res.status(400).json({ error: "Already punched out today" });
-    }
-    if (punch_type === PUNCH_TYPES.OUT && !punch_in_time) {
-      return res.status(400).json({ error: "Must punch in first" });
+
+    // For punch-out: use the OPEN session's attendance_id (night-shift carry-forward)
+    let targetAttendanceId = attendance_id;
+    if (punchType === PUNCH_TYPES.OUT) {
+      const openSession = await fetchRecentOpenAttendance(attendanceEmpId, attendanceDate);
+      if (openSession && openSession.attendance_id !== attendance_id) {
+        targetAttendanceId = openSession.attendance_id;
+      }
     }
 
     const updated = await processPunch(
-      attendance_id,
-      punch_type,
+      targetAttendanceId,
+      punchType,
       req.file,
       userId,
       {
@@ -1278,7 +1365,7 @@ router.put("/", upload.single("image"), async (req, res) => {
     );
 
     res.json({
-      message: `Punch ${punch_type} updated successfully`,
+      message: `Punch ${punchType} updated successfully`,
       attendance: updated,
     });
   } catch (error) {
@@ -1650,27 +1737,50 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             continue;
           }
 
-          const attendance = await getOrCreateAttendanceRecord(
+          // 🔒 Session-aware validation per employee in group (prevents re-punch-in)
+          const sessionError = await validatePunchSession(
             employeeRecord.emp_id,
             attendanceDate,
-            {
-              punchType,
-              createIfMissing: punchType !== PUNCH_TYPES.OUT,
-            }
+            punchType
           );
-          const validation = validatePunchAttempt(attendance, punchType);
 
-          if (validation) {
+          if (sessionError) {
             results.push({
               faceIndex,
               status: "skipped",
               employeeId: employeeRecord.emp_id,
               employeeName: employeeRecord.name,
               similarity,
-              message: validation.error,
+              message: sessionError.error,
+              code: sessionError.code,
             });
             processedEmployees.add(employeeRecord.emp_id);
             continue;
+          }
+
+          // For punch-out: use the OPEN session (handles night-shift carry-forward)
+          let attendance;
+          if (punchType === PUNCH_TYPES.OUT) {
+            attendance = await fetchRecentOpenAttendance(employeeRecord.emp_id, attendanceDate);
+            if (!attendance) {
+              results.push({
+                faceIndex,
+                status: "skipped",
+                employeeId: employeeRecord.emp_id,
+                employeeName: employeeRecord.name,
+                similarity,
+                message: "Pehle punch in karein",
+                code: "NOT_PUNCHED_IN",
+              });
+              processedEmployees.add(employeeRecord.emp_id);
+              continue;
+            }
+          } else {
+            attendance = await getOrCreateAttendanceRecord(
+              employeeRecord.emp_id,
+              attendanceDate,
+              { punchType, createIfMissing: true }
+            );
           }
 
           const updated = await processPunch(
@@ -1798,19 +1908,27 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     }
 
     const empId = employeeRecord.emp_id;
-    const attendance = await getOrCreateAttendanceRecord(
-      empId,
-      attendanceDate,
-      {
-        punchType,
-        createIfMissing: punchType !== PUNCH_TYPES.OUT,
-      }
-    );
 
-    const validation = validatePunchAttempt(attendance, punchType);
-    if (validation) {
-      return res.status(validation.status).json({
-        error: validation.error,
+    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    const sessionError = await validatePunchSession(empId, attendanceDate, punchType);
+    if (sessionError) {
+      return res.status(sessionError.status).json({
+        error: sessionError.error,
+        code: sessionError.code,
+      });
+    }
+
+    // For punch-out: use open session's record (handles night-shift carry-forward)
+    let attendance;
+    if (punchType === PUNCH_TYPES.OUT) {
+      attendance = await fetchRecentOpenAttendance(empId, attendanceDate);
+      if (!attendance) {
+        return res.status(400).json({ error: "Pehle punch in karein", code: "NOT_PUNCHED_IN" });
+      }
+    } else {
+      attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
+        punchType,
+        createIfMissing: true,
       });
     }
 
@@ -2001,15 +2119,27 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
     }
 
     const empId = employeeRecord.emp_id;
-    const attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
-      punchType,
-      createIfMissing: punchType !== PUNCH_TYPES.OUT,
-    });
 
-    const validation = validatePunchAttempt(attendance, punchType);
-    if (validation) {
-      return res.status(validation.status).json({
-        error: validation.error,
+    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    const sessionError = await validatePunchSession(empId, attendanceDate, punchType);
+    if (sessionError) {
+      return res.status(sessionError.status).json({
+        error: sessionError.error,
+        code: sessionError.code,
+      });
+    }
+
+    // For punch-out: use open session's record (handles night-shift carry-forward)
+    let attendance;
+    if (punchType === PUNCH_TYPES.OUT) {
+      attendance = await fetchRecentOpenAttendance(empId, attendanceDate);
+      if (!attendance) {
+        return res.status(400).json({ error: "Pehle punch in karein", code: "NOT_PUNCHED_IN" });
+      }
+    } else {
+      attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
+        punchType,
+        createIfMissing: true,
       });
     }
 
@@ -2451,15 +2581,29 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
         : PUNCH_TYPES.IN;
 
     const attendanceDate = resolveAttendanceDate(req.body, req.query);
-    const attendance = await getOrCreateAttendanceRecord(
-      resolved.employee.emp_id,
-      attendanceDate,
-      { punchType }
-    );
 
-    const validation = validatePunchAttempt(attendance, punchType);
-    if (validation) {
-      return res.status(validation.status).json({ error: validation.error });
+    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    const sessionError = await validatePunchSession(resolved.employee.emp_id, attendanceDate, punchType);
+    if (sessionError) {
+      return res.status(sessionError.status).json({
+        error: sessionError.error,
+        code: sessionError.code,
+      });
+    }
+
+    // For punch-out: use open session's attendance_id (night-shift carry-forward)
+    let attendance;
+    if (punchType === PUNCH_TYPES.OUT) {
+      attendance = await fetchRecentOpenAttendance(resolved.employee.emp_id, attendanceDate);
+      if (!attendance) {
+        return res.status(400).json({ error: "Pehle punch in karein", code: "NOT_PUNCHED_IN" });
+      }
+    } else {
+      attendance = await getOrCreateAttendanceRecord(
+        resolved.employee.emp_id,
+        attendanceDate,
+        { punchType }
+      );
     }
 
     const updated = await processPunch(
