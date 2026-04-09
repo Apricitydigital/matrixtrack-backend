@@ -65,12 +65,12 @@ async function validateGeofencing(empId, latitude, longitude) {
             );
         }
 
-        // 3. If no rules are defined → BLOCK — geofencing is not configured yet
+        // 3. If no rules are defined → ALLOW (Geofencing is optional/not yet mandatory for this ward)
         if (rulesResult.rows.length === 0) {
             return {
-                allowed: false,
+                allowed: true,
                 notConfigured: true,
-                message: "Your geofencing location is not mapped yet"
+                message: "Geofencing not configured for this ward (Auto-allowed)"
             };
         }
 
