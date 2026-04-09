@@ -91,7 +91,7 @@ router.get(
   }
 });
 
-// 🟢 Insert or update an employee (idempotent)
+// 🟢 Insert or update an employee
 router.post("/", async (req, res) => {
   const { name, emp_code, phone, ward_id, designation_id } = req.body;
 
@@ -99,20 +99,14 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "emp_code is required" });
   }
 
-  const upsertEmployeeQuery = `
+  const insertEmployeeQuery = `
     INSERT INTO employee (emp_code, name, phone, ward_id, designation_id)
     VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (emp_code)
-    DO UPDATE SET
-      name = EXCLUDED.name,
-      phone = EXCLUDED.phone,
-      ward_id = EXCLUDED.ward_id,
-      designation_id = EXCLUDED.designation_id
     RETURNING *;
   `;
 
   try {
-    const result = await pool.query(upsertEmployeeQuery, [
+    const result = await pool.query(insertEmployeeQuery, [
       emp_code,
       name,
       phone,
@@ -123,7 +117,7 @@ router.post("/", async (req, res) => {
   } catch (error) {
     if (error.code === "23505") {
       return res.status(409).json({
-        message: "Employee already exists",
+        message: "This employee assignment already exists (same code and kothi).",
         emp_code,
       });
     }
@@ -134,22 +128,57 @@ router.post("/", async (req, res) => {
 
 // 🟢 Update an existing employee and return updated details
 router.put("/:id", async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { name, emp_code, phone, ward_id, designation_id } = req.body;
-    const result = await pool.query(
-      `UPDATE employee 
-       SET name = $1, emp_code = $2, phone = $3, ward_id = $4, designation_id = $5 
-       WHERE emp_id = $6 
-       RETURNING *`,
-      [name, emp_code, phone, parseId(ward_id), parseId(designation_id), id]
-    );
+    let { name, emp_code, phone, ward_id, designation_id, updateAllWithCode } = req.body;
 
-    if (result.rowCount === 0) {
+    // Normalize inputs
+    name = (name || "").trim();
+    emp_code = (emp_code || "").trim();
+
+    await client.query('BEGIN');
+
+    // 1. Fetch current details to get the original emp_code
+    const currentRes = await client.query('SELECT emp_code FROM employee WHERE emp_id = $1', [id]);
+    if (currentRes.rowCount === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: "Employee not found" });
     }
+    const originalCode = (currentRes.rows[0].emp_code || "").trim();
 
-    // Fetch the updated details
+    let result;
+    if (updateAllWithCode && originalCode) {
+      // Update Name, Phone, and Designation for ALL records with the ORIGINAL code
+      // We also update their emp_code in case it was changed in the form
+      result = await client.query(
+        `UPDATE employee 
+         SET name = $1, phone = $2, designation_id = $3, emp_code = $4
+         WHERE TRIM(emp_code) = TRIM($5) OR TRIM(emp_code) = TRIM($4)
+         RETURNING *`,
+        [name, phone, parseId(designation_id), emp_code, originalCode]
+      );
+      
+      // Update the specific record's ward_id (location is record-specific)
+      await client.query(
+        `UPDATE employee 
+         SET ward_id = $1 
+         WHERE emp_id = $2`,
+        [parseId(ward_id), id]
+      );
+    } else {
+      result = await client.query(
+        `UPDATE employee 
+         SET name = $1, emp_code = $2, phone = $3, ward_id = $4, designation_id = $5 
+         WHERE emp_id = $6 
+         RETURNING *`,
+        [name, emp_code, phone, parseId(ward_id), parseId(designation_id), id]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    // Fetch the updated details for the specific ID to return it
     const updatedEmployee = await pool.query(
       `SELECT 
           e.emp_id, 
@@ -174,6 +203,7 @@ router.put("/:id", async (req, res) => {
 
     res.json(formatEmployeeRow(updatedEmployee.rows[0]));
   } catch (error) {
+    if (client) await client.query('ROLLBACK');
     console.error("Error updating employee:", error);
     if (error.code === "23505") {
       return res.status(409).json({
@@ -181,6 +211,8 @@ router.put("/:id", async (req, res) => {
       });
     }
     res.status(500).json({ error: "Database error" });
+  } finally {
+    client.release();
   }
 });
 

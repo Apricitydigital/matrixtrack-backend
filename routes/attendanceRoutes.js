@@ -110,7 +110,8 @@ router.post("/download", handleAttendanceDownload);
 
 // Short Attendance summarized report - supports optional wardId (sector) and kothiId filters
 router.get("/short-report", async (req, res) => {
-  const { cityName, zoneName, wardId, kothiId, date } = req.query;
+  const { cityName, zoneName, wardId, sectorId, sector_id, kothiId, date } = req.query;
+  const effectiveWardId = wardId || sectorId || sector_id;
   if (!cityName || !zoneName) {
     return res
       .status(400)
@@ -142,8 +143,8 @@ router.get("/short-report", async (req, res) => {
     const params = [cityName, zoneName, targetDate];
     let extraClause = "";
 
-    if (wardId && wardId !== "all") {
-      params.push(Number(wardId));
+    if (effectiveWardId && effectiveWardId !== "all") {
+      params.push(Number(effectiveWardId));
       extraClause += ` AND w.sector_id = $${params.length}`;
     }
 
@@ -178,7 +179,7 @@ router.get("/short-report", async (req, res) => {
         COUNT(DISTINCT e.emp_id)                         AS total_registered_employees,
         COUNT(
           DISTINCT CASE
-            WHEN a.date::date = $3::date AND a.punch_in_time IS NOT NULL THEN e.emp_id
+            WHEN a.punch_in_time IS NOT NULL THEN e.emp_id
           END
         )                                                AS total_present_employees,
         COUNT(
@@ -189,7 +190,7 @@ router.get("/short-report", async (req, res) => {
         ARRAY_REMOVE(ARRAY_AGG(DISTINCT e.emp_id), NULL) AS registered_emp_ids,
         ARRAY_REMOVE(
           ARRAY_AGG(DISTINCT CASE
-            WHEN a.date::date = $3::date AND a.punch_in_time IS NOT NULL THEN e.emp_id
+            WHEN a.punch_in_time IS NOT NULL THEN e.emp_id
           END),
           NULL
         )                                                AS present_emp_ids,
@@ -208,7 +209,7 @@ router.get("/short-report", async (req, res) => {
       LEFT JOIN public.department  dept ON des.department_id = dept.department_id
       LEFT JOIN public.supervisor_ward sw ON sw.ward_id = w.ward_id
       LEFT JOIN public.users       u    ON u.user_id   = sw.supervisor_id
-      LEFT JOIN public.attendance  a    ON a.emp_id    = e.emp_id
+      LEFT JOIN public.attendance  a    ON a.emp_id    = e.emp_id AND a.date::date = $3::date
       WHERE c.city_name = $1
         AND z.zone_name = $2
         ${extraClause}
