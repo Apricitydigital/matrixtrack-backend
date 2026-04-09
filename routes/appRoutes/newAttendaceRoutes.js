@@ -456,40 +456,8 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
     return { status: 400, error: "Employee ID aur date zaroori hain" };
   }
 
-  // Check for any OPEN session within the last day window (handles night-shift carry-forward)
-  const openSession = await fetchRecentOpenAttendance(empId, attendanceDate);
-
-  if (punchType === PUNCH_TYPES.IN) {
-    // Block re-punch-in if already punched in but not out
-    if (openSession) {
-      return {
-        status: 400,
-        error: "Aap abhi bhi punched in hain. Pehle punch out karein.",
-        code: "ALREADY_PUNCHED_IN",
-      };
-    }
-
-    // Block re-punch-in if today's session is already complete (punch-in + punch-out done)
-    const closedSession = await fetchClosedSessionForDate(empId, attendanceDate);
-    if (closedSession) {
-      return {
-        status: 400,
-        error: "Aapka aaj ka attendance pehle se complete ho chuka hai.",
-        code: "SESSION_ALREADY_COMPLETE",
-      };
-    }
-  }
-
-  if (punchType === PUNCH_TYPES.OUT) {
-    if (!openSession) {
-      return {
-        status: 400,
-        error: "Pehle punch in karein",
-        code: "NOT_PUNCHED_IN",
-      };
-    }
-  }
-
+  // Multi-punch allowed: we no longer block re-punch-in or re-punch-out.
+  // The system will update the existing record for the day.
   return null; // ✅ OK to proceed
 }
 
@@ -911,14 +879,21 @@ async function processPunch(
   }
 
   const isPunchIn = punchType === PUNCH_TYPES.IN;
+  const targetTimeField = isPunchIn ? "punch_in_time" : "punch_out_time";
+  const targetLatField = isPunchIn ? "latitude_in" : "latitude_out";
+  const targetLngField = isPunchIn ? "longitude_in" : "longitude_out";
+  const targetAddrField = isPunchIn ? "in_address" : "out_address";
+  const targetImgField = isPunchIn ? "punch_in_image" : "punch_out_image";
+  const targetByField = isPunchIn ? "punched_in_by" : "punched_out_by";
+
   const updateQuery = `
     UPDATE attendance SET 
-      ${isPunchIn ? "punch_in_time" : "punch_out_time"} = NOW(),
-      ${isPunchIn ? "latitude_in" : "latitude_out"} = $1,
-      ${isPunchIn ? "longitude_in" : "longitude_out"} = $2,
-      ${isPunchIn ? "in_address" : "out_address"} = $3,
-      ${isPunchIn ? "punch_in_image" : "punch_out_image"} = $4,
-      ${isPunchIn ? "punched_in_by" : "punched_out_by"} = $5
+      ${targetTimeField} = COALESCE(${targetTimeField}, NOW()),
+      ${targetLatField} = COALESCE(${targetLatField}, $1),
+      ${targetLngField} = COALESCE(${targetLngField}, $2),
+      ${targetAddrField} = COALESCE(${targetAddrField}, $3),
+      ${targetImgField} = COALESCE(${targetImgField}, $4),
+      ${targetByField} = COALESCE(${targetByField}, $5)
     WHERE attendance_id = $6
     RETURNING *
   `;
@@ -1673,12 +1648,18 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         }
 
         try {
+          // 🔒 Group mode uses a HIGHER threshold than individual mode to reduce
+          // false positives from low-quality group photo crops.
+          // Floor at 90% — lower quality crops can't reliably hit 95%.
+          // The double-verify CompareFaces step (Layer 2) provides the extra accuracy.
+          const groupThreshold = Math.max(90, matchThreshold);
+
           const searchResult = await rekognition.send(
             new SearchFacesByImageCommand({
               CollectionId: collectionId,
               Image: { Bytes: faceImageBuffer },
-              MaxFaces: 3,
-              FaceMatchThreshold: matchThreshold,
+              MaxFaces: 1,
+              FaceMatchThreshold: groupThreshold,
             })
           );
 
@@ -1698,32 +1679,89 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             });
           }
 
-          // Fallback: compare against supervisor roster when collection has no match
-          if (!employeeRecord) {
-            const fallback = await fallbackMatchByCompare(
-              faceImageBuffer,
-              supervisorId,
-              wardId,
-              matchThreshold
-            );
-            if (fallback?.employee) {
-              employeeRecord = fallback.employee;
-              similarity = fallback.similarity;
-            }
-          }
+          // ⚠️ REMOVED: fallbackMatchByCompare in group mode.
+          // The roster-level CompareFaces fallback was causing wrong employee matches
+          // because group photo crops are low quality and can falsely match similar-
+          // looking people in the same ward. If Rekognition collection search returns
+          // no confident match (>= 95%), we report "unmatched" — do NOT guess.
 
           if (!employeeRecord) {
             results.push({
               faceIndex,
               status: "unmatched",
               similarity: null,
-              message: "No matching employee found.",
+              message: "Face not registered in gallery. Please enroll employee face first.",
+              hint: "Ensure this employee's face photo is uploaded in the face gallery before using group attendance.",
             });
             continue;
           }
 
-          // if similarity is still null (fallback via roster), set to 0 for reporting
-          similarity = similarity ?? 0;
+          // ✅ LAYER 2: CompareFaces cross-check against enrolled S3 image
+          // Even though Rekognition collection matched, we do a second independent
+          // verification to eliminate any false positives from low-quality crops.
+          const DOUBLE_VERIFY_THRESHOLD = 90;
+          try {
+            const enrolledBuffer = await loadFaceBuffer(
+              employeeRecord.face_embedding,
+              employeeRecord.emp_id
+            );
+            if (enrolledBuffer) {
+              const crossCheck = await rekognition.send(
+                new CompareFacesCommand({
+                  SourceImage: { Bytes: enrolledBuffer },
+                  TargetImage: { Bytes: faceImageBuffer },
+                  SimilarityThreshold: DOUBLE_VERIFY_THRESHOLD,
+                })
+              );
+              const crossSimilarity = crossCheck?.FaceMatches?.[0]?.Similarity ?? 0;
+              if (crossSimilarity < DOUBLE_VERIFY_THRESHOLD) {
+                console.warn(
+                  `[Group] Double-verify FAILED for emp_id=${employeeRecord.emp_id}: ` +
+                  `Rekognition=${similarity?.toFixed(1)}% but CompareFaces=${crossSimilarity.toFixed(1)}%`
+                );
+                results.push({
+                  faceIndex,
+                  status: "unmatched",
+                  similarity: crossSimilarity,
+                  message: "Face verification failed secondary check. Please recapture.",
+                  code: "DOUBLE_VERIFY_FAILED",
+                });
+                continue;
+              }
+            }
+          } catch (crossErr) {
+            // Non-fatal: if S3 enrolled image is missing, log and proceed.
+            // Do NOT block — network/S3 errors should not stop attendance.
+            console.warn(`[Group] Double-verify skipped for emp_id=${employeeRecord.emp_id}:`, crossErr.message);
+          }
+
+          // ✅ LAYER 3: Supervisor roster cross-check
+          // Ensure matched employee actually belongs to THIS supervisor's ward.
+          // Prevents cross-ward attendance even if the face somehow matched.
+          if (supervisorId) {
+            const rosterCheck = await pool.query(
+              `SELECT 1 FROM employee e
+               JOIN supervisor_ward sw ON sw.ward_id = e.ward_id
+               WHERE e.emp_id = $1 AND sw.supervisor_id = $2 LIMIT 1`,
+              [employeeRecord.emp_id, supervisorId]
+            );
+            if (rosterCheck.rowCount === 0) {
+              console.warn(
+                `[Group] Roster check FAILED: emp_id=${employeeRecord.emp_id} not in supervisor ${supervisorId}'s ward`
+              );
+              results.push({
+                faceIndex,
+                status: "skipped",
+                similarity,
+                employeeId: employeeRecord.emp_id,
+                employeeName: employeeRecord.name,
+                message: "Employee does not belong to this supervisor's ward.",
+                code: "UNAUTHORIZED_WARD",
+              });
+              continue;
+            }
+          }
+
 
           if (processedEmployees.has(employeeRecord.emp_id)) {
             results.push({
@@ -1758,30 +1796,32 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             continue;
           }
 
-          // For punch-out: use the OPEN session (handles night-shift carry-forward)
-          let attendance;
-          if (punchType === PUNCH_TYPES.OUT) {
-            attendance = await fetchRecentOpenAttendance(employeeRecord.emp_id, attendanceDate);
-            if (!attendance) {
-              results.push({
-                faceIndex,
-                status: "skipped",
-                employeeId: employeeRecord.emp_id,
-                employeeName: employeeRecord.name,
-                similarity,
-                message: "Pehle punch in karein",
-                code: "NOT_PUNCHED_IN",
-              });
-              processedEmployees.add(employeeRecord.emp_id);
-              continue;
-            }
-          } else {
-            attendance = await getOrCreateAttendanceRecord(
-              employeeRecord.emp_id,
-              attendanceDate,
-              { punchType, createIfMissing: true }
-            );
+          // 📍 Geofencing Validation
+          const geoCheck = await validateGeofencing(
+            employeeRecord.emp_id,
+            locationPayload.latitude,
+            locationPayload.longitude
+          );
+          if (!geoCheck.allowed) {
+            results.push({
+              faceIndex,
+              status: "skipped",
+              employeeId: employeeRecord.emp_id,
+              employeeName: employeeRecord.name,
+              similarity,
+              message: geoCheck.message || "Out of assigned zone",
+              code: "OUT_OF_GEofence",
+            });
+            processedEmployees.add(employeeRecord.emp_id);
+            continue;
           }
+
+          // Resolve or create attendance record (handles night-shift carry-forward)
+          const attendance = await getOrCreateAttendanceRecord(
+            employeeRecord.emp_id,
+            attendanceDate,
+            { punchType, createIfMissing: true }
+          );
 
           const updated = await processPunch(
             attendance.attendance_id,
@@ -1918,19 +1958,11 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       });
     }
 
-    // For punch-out: use open session's record (handles night-shift carry-forward)
-    let attendance;
-    if (punchType === PUNCH_TYPES.OUT) {
-      attendance = await fetchRecentOpenAttendance(empId, attendanceDate);
-      if (!attendance) {
-        return res.status(400).json({ error: "Pehle punch in karein", code: "NOT_PUNCHED_IN" });
-      }
-    } else {
-      attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
-        punchType,
-        createIfMissing: true,
-      });
-    }
+    // Resolve or create attendance record (handles night-shift carry-forward)
+    const attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
+      punchType,
+      createIfMissing: true,
+    });
 
     // 📍 Geofencing Validation
     const geoCheck = await validateGeofencing(empId, locationPayload.latitude, locationPayload.longitude);
@@ -2129,19 +2161,11 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
       });
     }
 
-    // For punch-out: use open session's record (handles night-shift carry-forward)
-    let attendance;
-    if (punchType === PUNCH_TYPES.OUT) {
-      attendance = await fetchRecentOpenAttendance(empId, attendanceDate);
-      if (!attendance) {
-        return res.status(400).json({ error: "Pehle punch in karein", code: "NOT_PUNCHED_IN" });
-      }
-    } else {
-      attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
-        punchType,
-        createIfMissing: true,
-      });
-    }
+    // Resolve or create attendance record (handles night-shift carry-forward)
+    const attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
+      punchType,
+      createIfMissing: true,
+    });
 
     const geoCheck = await validateGeofencing(empId, locationPayload.latitude, locationPayload.longitude);
     if (!geoCheck.allowed) {
@@ -2591,19 +2615,35 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
       });
     }
 
-    // For punch-out: use open session's attendance_id (night-shift carry-forward)
-    let attendance;
-    if (punchType === PUNCH_TYPES.OUT) {
-      attendance = await fetchRecentOpenAttendance(resolved.employee.emp_id, attendanceDate);
-      if (!attendance) {
-        return res.status(400).json({ error: "Pehle punch in karein", code: "NOT_PUNCHED_IN" });
+    // Resolve or create attendance record (handles night-shift carry-forward)
+    const attendance = await getOrCreateAttendanceRecord(
+      resolved.employee.emp_id,
+      attendanceDate,
+      { punchType, createIfMissing: true }
+    );
+
+    // 📍 Geofencing Validation
+    const geoCheck = await validateGeofencing(
+      resolved.employee.emp_id,
+      req.body.latitude,
+      req.body.longitude
+    );
+    if (!geoCheck.allowed) {
+      if (geoCheck.notConfigured) {
+        return res.status(403).json({
+          error: "Your geofencing location is not mapped yet",
+          notConfigured: true,
+          details:
+            geoCheck.message ||
+            "Please contact admin to configure your zone boundaries.",
+        });
       }
-    } else {
-      attendance = await getOrCreateAttendanceRecord(
-        resolved.employee.emp_id,
-        attendanceDate,
-        { punchType }
-      );
+      return res.status(403).json({
+        error: "Out of Zone",
+        notConfigured: false,
+        details:
+          geoCheck.message || "You are outside the allowed geo-fence zone.",
+      });
     }
 
     const updated = await processPunch(
