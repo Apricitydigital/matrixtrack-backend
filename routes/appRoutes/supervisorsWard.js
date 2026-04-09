@@ -338,7 +338,7 @@ const fetchSupervisorSummary = async (
     baseFilters.push(`c.city_id = $${params.length}`);
   }
 
-  if (userId && !hasZoneFilter && !hasKothiFilter) {
+  if (userId) {
     // Fallback to user-linked wards/zones to avoid city-wide expansion
     params.push(userId);
     const userParam = params.length;
@@ -444,7 +444,7 @@ const fetchSupervisorEmployees = async (
   
   let accessFilter = "TRUE";
   // Only restrict if we're not allowing city fallback and no specific filters are applied
-  if (!allowCityFallback && userId && !hasZoneFilter && !hasKothiFilter) {
+  if (!allowCityFallback && userId) {
     accessFilter = `($1::int IS NULL OR sw_exists.is_assigned OR kothi_rbac.is_assigned OR sup_kothi_rbac.is_assigned OR zone_rbac.is_assigned)`;
   }
   

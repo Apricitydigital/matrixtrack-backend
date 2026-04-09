@@ -41,6 +41,13 @@ const formatEmployeeRow = (row = {}) => {
   };
 };
 
+const parseId = (id) => {
+  if (id === undefined || id === null) return null;
+  if (typeof id === "string" && id.trim() === "") return null;
+  const parsed = parseInt(id, 10);
+  return isNaN(parsed) ? null : parsed;
+};
+
 // 🟢 Fetch all employees with city, zone, ward, department, and designation
 router.get(
   "/",
@@ -109,8 +116,8 @@ router.post("/", async (req, res) => {
       emp_code,
       name,
       phone,
-      ward_id,
-      designation_id,
+      parseId(ward_id),
+      parseId(designation_id),
     ]);
     return res.status(200).json(result.rows[0]);
   } catch (error) {
@@ -135,7 +142,7 @@ router.put("/:id", async (req, res) => {
        SET name = $1, emp_code = $2, phone = $3, ward_id = $4, designation_id = $5 
        WHERE emp_id = $6 
        RETURNING *`,
-      [name, emp_code, phone, ward_id, designation_id, id]
+      [name, emp_code, phone, parseId(ward_id), parseId(designation_id), id]
     );
 
     if (result.rowCount === 0) {
