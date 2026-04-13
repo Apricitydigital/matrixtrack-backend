@@ -578,20 +578,23 @@ const fetchCitySummary = async (
   cityId,
   startDate,
   endDate,
-  zoneIds = []
+  zoneIds = [],
+  kothiIds = []
 ) => {
   const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
+  const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
+
   const query = `
     WITH employee_city AS (
-      SELECT DISTINCT
+      SELECT 
         e.emp_id,
-        c.city_id,
-        c.city_name
+        MIN(c.city_id) as city_id,
+        MIN(c.city_name) as city_name
       FROM employee e
       JOIN wards w ON e.ward_id = w.ward_id
       JOIN zones z ON w.zone_id = z.zone_id
       JOIN cities c ON z.city_id = c.city_id
-      LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
+      LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
       WHERE ($1::int IS NULL OR 
              sw.supervisor_id = $1::int OR 
              w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $1) OR
@@ -600,6 +603,8 @@ const fetchCitySummary = async (
             )
         AND ($4::int IS NULL OR c.city_id = $4::int)
         ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
+        ${hasKothiFilter ? "AND w.ward_id = ANY($6::int[])" : ""}
+      GROUP BY e.emp_id
     ),
     attendance_status AS (
       SELECT
@@ -638,6 +643,13 @@ const fetchCitySummary = async (
   const params = [userId ?? null, startDate, endDate, cityId ?? null];
   if (hasZoneFilter) {
     params.push(zoneIds);
+  } else {
+    params.push([]); // Placeholder for $5
+  }
+  if (hasKothiFilter) {
+    params.push(kothiIds);
+  } else {
+    params.push([]); // Placeholder for $6
   }
 
   const result = await pool.query(query, params);
@@ -980,6 +992,34 @@ router.post("/city-summary", async (req, res) => {
   }
 
   const allowedZoneIds = resolveZoneScope(req);
+  const allowedKothiIds = resolveKothiScope(req);
+
+  const requestedZoneIds = parseIdList(
+    req.body?.zoneIds ||
+      req.body?.zone_ids ||
+      req.body?.zones ||
+      req.body?.zoneId ||
+      req.body?.zone_id
+  );
+  const requestedKothiIds = parseIdList(
+    req.body?.kothiIds ||
+      req.body?.kothi_ids ||
+      req.body?.wardIds ||
+      req.body?.ward_ids ||
+      req.body?.kothiId ||
+      req.body?.kothi_id ||
+      req.body?.wardId ||
+      req.body?.ward_id
+  );
+
+  const zoneIds =
+    requestedZoneIds.length > 0
+      ? requestedZoneIds.filter((id) => allowedZoneIds.includes(id))
+      : allowedZoneIds;
+  const kothiIds =
+    requestedKothiIds.length > 0
+      ? requestedKothiIds.filter((id) => allowedKothiIds.includes(id))
+      : allowedKothiIds;
 
   try {
     const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
@@ -988,7 +1028,8 @@ router.post("/city-summary", async (req, res) => {
       scopedCityId,
       startDate,
       endDate,
-      allowedZoneIds,
+      zoneIds,
+      kothiIds,
       isAdmin
     );
 
