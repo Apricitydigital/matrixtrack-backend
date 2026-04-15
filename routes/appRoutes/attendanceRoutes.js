@@ -24,8 +24,7 @@ const {
 } = require("../../config/awsConfig");
 
 const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD ?? "97") || 97;
-co
- st isGroupModeRequest = (...values) =>
+const isGroupModeRequest = (...values) =>
   values.some((v) => {
     if (v === null || v === undefined) return false;
     if (typeof v === "boolean") return v;
@@ -163,10 +162,13 @@ router.put("/", upload.single("image"), async (req, res) => {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
+  const normalizedPunchType = (punch_type || "").toString().trim().toUpperCase();
+  const punchType = normalizedPunchType === "OUT" ? "OUT" : "IN";
+
   try {
-    // Fetch existing attendance record
+    // Fetch record to get emp_id and date
     const attendanceResult = await pool.query(
-      `SELECT punch_in_time, punch_out_time FROM attendance WHERE attendance_id = $1`,
+      `SELECT emp_id, date, punch_in_time, punch_out_time FROM attendance WHERE attendance_id = $1`,
       [attendance_id]
     );
 
@@ -174,23 +176,65 @@ router.put("/", upload.single("image"), async (req, res) => {
       return res.status(404).json({ error: "Attendance record not found" });
     }
 
-    const { punch_in_time, punch_out_time } = attendanceResult.rows[0];
+    const { emp_id, date: recordDate, punch_in_time, punch_out_time } = attendanceResult.rows[0];
 
-    // Validate punch conditions (keep your existing validation logic)
-    if (punch_type === "IN" && punch_in_time) {
-      return res
-        .status(400)
-        .json({ error: "User has already punched in for today." });
+    // 🔒 SESSION-AWARE VALIDATION — prevents re-punch-in after punch-out
+    if (punchType === "IN") {
+      // Block if already punched in (open session)
+      const openSession = await pool.query(
+        `SELECT attendance_id FROM attendance
+         WHERE emp_id = $1
+           AND date >= ($2::date - INTERVAL '1 day')
+           AND date <= $2::date
+           AND punch_in_time IS NOT NULL
+           AND punch_out_time IS NULL
+         LIMIT 1`,
+        [emp_id, recordDate]
+      );
+      if (openSession.rows.length > 0) {
+        return res.status(400).json({
+          error: "Aap abhi bhi punched in hain. Pehle punch out karein.",
+          code: "ALREADY_PUNCHED_IN",
+        });
+      }
+
+      // Block if today's session already completed (punch-in + punch-out both done)
+      const closedSession = await pool.query(
+        `SELECT attendance_id FROM attendance
+         WHERE emp_id = $1
+           AND date >= ($2::date - INTERVAL '1 day')
+           AND date <= $2::date
+           AND punch_in_time IS NOT NULL
+           AND punch_out_time IS NOT NULL
+         LIMIT 1`,
+        [emp_id, recordDate]
+      );
+      if (closedSession.rows.length > 0) {
+        return res.status(400).json({
+          error: "Aapka aaj ka attendance pehle se complete ho chuka hai.",
+          code: "SESSION_ALREADY_COMPLETE",
+        });
+      }
     }
-    if (punch_type === "OUT" && punch_out_time) {
-      return res
-        .status(400)
-        .json({ error: "User has already punched out for today." });
-    }
-    if (punch_type === "OUT" && !punch_in_time) {
-      return res
-        .status(400)
-        .json({ error: "User must punch in before punching out." });
+
+    if (punchType === "OUT") {
+      // For punch-out: find the open session (handles night-shift carry-forward)
+      const openSession = await pool.query(
+        `SELECT attendance_id FROM attendance
+         WHERE emp_id = $1
+           AND date >= ($2::date - INTERVAL '1 day')
+           AND date <= $2::date
+           AND punch_in_time IS NOT NULL
+           AND punch_out_time IS NULL
+         LIMIT 1`,
+        [emp_id, recordDate]
+      );
+      if (openSession.rows.length === 0) {
+        return res.status(400).json({
+          error: "Pehle punch in karein",
+          code: "NOT_PUNCHED_IN",
+        });
+      }
     }
 
     let imageUrl = null;
@@ -204,11 +248,11 @@ router.put("/", upload.single("image"), async (req, res) => {
         buildAttendanceImagePath({
           attendanceDate: uploadContext?.attendance_date,
           punchType:
-            punch_type === "IN"
+            punchType === "IN"
               ? "punch-in"
-              : punch_type === "OUT"
+              : punchType === "OUT"
                 ? "punch-out"
-                : punch_type,
+                : punchType,
           empCode: uploadContext?.emp_code,
           empId: uploadContext?.emp_id,
           employeeName: uploadContext?.employee_name,
@@ -226,7 +270,7 @@ router.put("/", upload.single("image"), async (req, res) => {
 
     // Update attendance record
     const updateQuery =
-      punch_type === "IN"
+      punchType === "IN"
         ? `UPDATE attendance SET 
           punch_in_time = NOW(),
           latitude_in = $1, 
@@ -256,7 +300,7 @@ router.put("/", upload.single("image"), async (req, res) => {
     }
 
     res.json({
-      message: `Punch ${punch_type} updated successfully`,
+      message: `Punch ${punchType} updated successfully`,
       attendance: result.rows[0],
     });
   } catch (error) {

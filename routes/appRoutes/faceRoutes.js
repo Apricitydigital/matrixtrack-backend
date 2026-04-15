@@ -322,7 +322,7 @@ router.get("/reconcile-all", async (req, res) => {
     } while (continuationToken);
 
     console.log(`[Reconcile] Finished. Scanned: ${scannedCount}, Reconciled: ${reconciledCount}`);
-    
+
     // Clear caches to reflect new data
     MISSING_FACE_CACHE.clear();
     FOUND_FACE_CACHE.clear();
@@ -376,7 +376,7 @@ router.post("/auto-heal", async (req, res) => {
         try {
           await s3.send(new HeadObjectCommand({ Bucket: b, Key: key }));
           return b;
-        } catch (_e) {}
+        } catch (_e) { }
       }
       return null;
     };
@@ -407,7 +407,7 @@ router.post("/auto-heal", async (req, res) => {
                 new Date(a.LastModified || 0)
             );
             return { key: contents[0].Key, bucket: b };
-          } catch (_e) {}
+          } catch (_e) { }
         }
       }
       return null;
@@ -509,7 +509,7 @@ router.post("/reindex-all", async (req, res) => {
           try {
             await s3.send(new HeadObjectCommand({ Bucket: secondaryBucketName, Key: s3Key }));
             foundInSecondary = true;
-          } catch (_e2) {}
+          } catch (_e2) { }
         }
         if (!foundInSecondary) {
           skipped++;
@@ -578,6 +578,145 @@ router.post("/reindex-all", async (req, res) => {
   } catch (error) {
     console.error("[ReindexAll] Fatal error:", error);
     res.status(500).json({ error: "Reindex failed", details: error.message });
+  }
+});
+
+/**
+ * 🎯 Targeted Reindex: Re-indexes specific employees' existing S3 face images into
+ * the Rekognition collection. Accepts emp_ids or emp_codes in request body.
+ */
+router.post("/reindex-targeted", async (req, res) => {
+  const { emp_ids, emp_codes } = req.body;
+
+  if (!Array.isArray(emp_ids) && !Array.isArray(emp_codes)) {
+    return res.status(400).json({
+      error: "Provide an array of emp_ids or emp_codes",
+    });
+  }
+
+  if (!bucketName) {
+    return res.status(500).json({ error: "S3 bucket is not configured" });
+  }
+
+  const collectionId = resolveCollectionId();
+  if (!collectionId) {
+    return res.status(500).json({ error: "Rekognition collection is not configured" });
+  }
+
+  try {
+    await ensureCollectionExists(collectionId);
+
+    let query = "SELECT emp_id, emp_code, face_embedding, face_id FROM employee WHERE face_embedding IS NOT NULL";
+    const params = [];
+
+    if (Array.isArray(emp_ids) && emp_ids.length > 0) {
+      query += ` AND emp_id = ANY($1)`;
+      params.push(emp_ids);
+    } else if (Array.isArray(emp_codes) && emp_codes.length > 0) {
+      query += ` AND emp_code = ANY($1)`;
+      params.push(emp_codes);
+    }
+
+    const { rows } = await pool.query(query, params);
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No employees found with face enrollment for provided identifiers",
+      });
+    }
+
+    let indexed = 0;
+    let skipped = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const row of rows) {
+      const { parseFaceKey: _parseFaceKey } = require("../../utils/faceImage");
+      const s3Key = _parseFaceKey(row.face_embedding);
+
+      if (!s3Key) {
+        skipped++;
+        continue;
+      }
+
+      // Verify the S3 key exists
+      try {
+        await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: s3Key }));
+      } catch (_e) {
+        // Try with secondary bucket
+        let foundInSecondary = false;
+        if (secondaryBucketName) {
+          try {
+            await s3.send(new HeadObjectCommand({ Bucket: secondaryBucketName, Key: s3Key }));
+            foundInSecondary = true;
+          } catch (_e2) { }
+        }
+        if (!foundInSecondary) {
+          skipped++;
+          continue; // S3 key doesn't exist in any bucket, skip
+        }
+      }
+
+      try {
+        // Remove old face_id from collection to avoid duplicates
+        if (row.face_id) {
+          try {
+            await rekognition.send(
+              new DeleteFacesCommand({ CollectionId: collectionId, FaceIds: [row.face_id] })
+            );
+          } catch (_del) { /* ignore - may already be gone */ }
+        }
+
+        // Re-index the face
+        const indexResp = await rekognition.send(
+          new IndexFacesCommand({
+            CollectionId: collectionId,
+            Image: { S3Object: { Bucket: bucketName, Name: s3Key } },
+            ExternalImageId: row.emp_id.toString(),
+            DetectionAttributes: ["DEFAULT"],
+            MaxFaces: 1,
+            QualityFilter: "NONE", // Use NONE so lower-quality legacy images still get indexed
+          })
+        );
+
+        const newFaceRecord = indexResp.FaceRecords?.[0];
+        if (!newFaceRecord) {
+          errors.push({ empId: row.emp_id, error: "No face detected in stored image" });
+          failed++;
+          continue;
+        }
+
+        const newFaceId = newFaceRecord.Face.FaceId;
+        const newConfidence = newFaceRecord.Face.Confidence;
+
+        // Update DB with new face_id
+        await pool.query(
+          `UPDATE employee SET face_id = $1, face_confidence = $2 WHERE emp_id = $3`,
+          [newFaceId, newConfidence, row.emp_id]
+        );
+
+        MISSING_FACE_CACHE.delete(row.emp_id);
+        FOUND_FACE_CACHE.delete(row.emp_id);
+        indexed++;
+      } catch (rekErr) {
+        errors.push({ empId: row.emp_id, error: rekErr.message });
+        failed++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Targeted reindex completed",
+      total: rows.length,
+      indexed,
+      skipped,
+      failed,
+      errors: errors.slice(0, 20),
+    });
+  } catch (error) {
+    console.error("[ReindexTargeted] Fatal error:", error);
+    res.status(500).json({ error: "Targeted reindex failed", details: error.message });
   }
 });
 
@@ -652,7 +791,7 @@ router.get("/gallery", async (req, res) => {
           employeeId,
           size: item.Size ?? null,
           lastModified: item.LastModified ?? null,
-          url: employeeId 
+          url: employeeId
             ? `app/attendance/employee/faceRoutes/image/${employeeId}`
             : buildPublicFaceUrl(item.Key),
         });
@@ -669,8 +808,8 @@ router.get("/gallery", async (req, res) => {
         item.employeeId !== null && item.employeeId !== undefined
           ? String(item.employeeId)
           : item.identifier
-          ? String(item.identifier)
-          : item.key;
+            ? String(item.identifier)
+            : item.key;
       const dedupKey = identifier ? identifier.toLowerCase() : item.key;
       const existing = dedupMap.get(dedupKey);
 
@@ -868,7 +1007,7 @@ router.get("/image/:employeeId", async (req, res) => {
           try {
             streamResult = await streamS3Object(cachedKey, bucketName);
             objectKey = cachedKey;
-          } catch (e) {}
+          } catch (e) { }
         }
 
         if (!streamResult) {
@@ -896,16 +1035,16 @@ router.get("/image/:employeeId", async (req, res) => {
             try {
               streamResult = await streamS3Object(bestKey, bucketName);
               objectKey = bestKey;
-              
+
               // 🛡️ Self-Healing: Backfill the database so next time is a direct hit
               FOUND_FACE_CACHE.set(employeeId, bestKey);
               pool.query(
                 "UPDATE employee SET face_embedding = $1 WHERE emp_id = $2",
                 [bestKey, employeeId]
               ).catch(e => console.error(`Failed to backfill face_embedding for ${employeeId}:`, e));
-              
+
               console.log(`[Self-Healing] Backfilled face_embedding for employee ${employeeId} with key: ${bestKey}`);
-            } catch (err) {}
+            } catch (err) { }
           }
         }
       }
@@ -1129,14 +1268,14 @@ router.post("/store-face", upload.single("image"), async (req, res) => {
             const _listed = await s3.send(new ListObjectsV2Command({ Bucket: _bucket, Prefix: _prefix }));
             for (const _obj of _listed?.Contents || []) {
               if (_obj.Key && _obj.Key !== objectKey) { // don't delete the new upload
-                await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _obj.Key })).catch(() => {});
+                await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _obj.Key })).catch(() => { });
               }
             }
-          } catch (_) {}
+          } catch (_) { }
         }
         // Also explicitly delete the stored key
         if (_oldKey && _oldKey !== objectKey) {
-          await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _oldKey })).catch(() => {});
+          await s3.send(new DeleteObjectCommand({ Bucket: _bucket, Key: _oldKey })).catch(() => { });
         }
       }
 

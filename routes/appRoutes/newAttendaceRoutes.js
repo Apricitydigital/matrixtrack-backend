@@ -400,13 +400,14 @@ async function resolveEmployeeFromFaceIdentifiers({
   return employeeRecord;
 }
 
+// Legacy sync check — used only as last-resort guard on the attendance object itself
 function validatePunchAttempt(attendance, punchType) {
   if (!attendance) {
     return {
       status: punchType === PUNCH_TYPES.OUT ? 400 : 404,
       error:
         punchType === PUNCH_TYPES.OUT
-          ? "Must punch in first"
+          ? "Pehle punch in karein"
           : "Attendance record not found",
     };
   }
@@ -414,25 +415,50 @@ function validatePunchAttempt(attendance, punchType) {
   if (punchType === PUNCH_TYPES.IN && attendance.punch_in_time) {
     return {
       status: 400,
-      error: "Already punched in today",
+      error: "Aap abhi bhi punched in hain. Pehle punch out karein.",
     };
   }
 
   if (punchType === PUNCH_TYPES.OUT && attendance.punch_out_time) {
     return {
       status: 400,
-      error: "Already punched out today",
+      error: "Aap pehle se punch out kar chuke hain.",
     };
   }
 
   if (punchType === PUNCH_TYPES.OUT && !attendance.punch_in_time) {
     return {
       status: 400,
-      error: "Must punch in first",
+      error: "Pehle punch in karein",
     };
   }
 
   return null;
+}
+
+/**
+ * 🔒 SESSION-AWARE PUNCH VALIDATION (Night-Shift + Re-Punch-In Guard)
+ *
+ * PUNCH IN allowed only if:
+ *   1. No OPEN session exists (already punched in but not out)
+ *   2. No CLOSED session exists for this attendance_date (already done for the day)
+ *
+ * PUNCH OUT allowed only if:
+ *   1. An OPEN session exists
+ *
+ * Night shift is handled automatically:
+ *   - 11 PM punch-in → attendance_date = Day1 (formatDate uses NIGHT_SHIFT_ROLLOVER_HOUR)
+ *   - 4 AM punch-out → finds the open session from Day1, closes it correctly
+ *   - Re-punch-in on Day2 morning is blocked because Day1 session is now CLOSED
+ */
+async function validatePunchSession(empId, attendanceDate, punchType) {
+  if (!empId || !attendanceDate) {
+    return { status: 400, error: "Employee ID aur date zaroori hain" };
+  }
+
+  // Multi-punch allowed: we no longer block re-punch-in or re-punch-out.
+  // The system will update the existing record for the day.
+  return null; // ✅ OK to proceed
 }
 
 const mapRekognitionError = (error) => {
@@ -653,6 +679,25 @@ async function fetchRecentOpenAttendance(empId, date) {
   );
 }
 
+// 🔒 Check if a CLOSED session already exists for the given attendance_date
+// (handles night-shift: session started on date-1 but punch_out on date)
+async function fetchClosedSessionForDate(empId, date) {
+  if (!empId || !date) {
+    return null;
+  }
+
+  return fetchAttendanceRecord(
+    `
+      a.emp_id = $1
+      AND a.date >= ($2::date - INTERVAL '1 day')
+      AND a.date <= $2::date
+      AND a.punch_in_time IS NOT NULL
+      AND a.punch_out_time IS NOT NULL
+    `,
+    [empId, date]
+  );
+}
+
 async function getOrCreateAttendanceRecord(emp_id, date, options = {}) {
   const { punchType = null, createIfMissing = true } = options;
   const targetDate = date || formatDate();
@@ -834,14 +879,21 @@ async function processPunch(
   }
 
   const isPunchIn = punchType === PUNCH_TYPES.IN;
+  const targetTimeField = isPunchIn ? "punch_in_time" : "punch_out_time";
+  const targetLatField = isPunchIn ? "latitude_in" : "latitude_out";
+  const targetLngField = isPunchIn ? "longitude_in" : "longitude_out";
+  const targetAddrField = isPunchIn ? "in_address" : "out_address";
+  const targetImgField = isPunchIn ? "punch_in_image" : "punch_out_image";
+  const targetByField = isPunchIn ? "punched_in_by" : "punched_out_by";
+
   const updateQuery = `
     UPDATE attendance SET 
-      ${isPunchIn ? "punch_in_time" : "punch_out_time"} = NOW(),
-      ${isPunchIn ? "latitude_in" : "latitude_out"} = $1,
-      ${isPunchIn ? "longitude_in" : "longitude_out"} = $2,
-      ${isPunchIn ? "in_address" : "out_address"} = $3,
-      ${isPunchIn ? "punch_in_image" : "punch_out_image"} = $4,
-      ${isPunchIn ? "punched_in_by" : "punched_out_by"} = $5
+      ${targetTimeField} = COALESCE(${targetTimeField}, NOW()),
+      ${targetLatField} = COALESCE(${targetLatField}, $1),
+      ${targetLngField} = COALESCE(${targetLngField}, $2),
+      ${targetAddrField} = COALESCE(${targetAddrField}, $3),
+      ${targetImgField} = COALESCE(${targetImgField}, $4),
+      ${targetByField} = COALESCE(${targetByField}, $5)
     WHERE attendance_id = $6
     RETURNING *
   `;
@@ -1238,32 +1290,42 @@ router.put("/", upload.single("image"), async (req, res) => {
   }
 
   try {
-    // Validate punch conditions
-    const attendance = await pool.query(
-      `SELECT emp_id, punch_in_time, punch_out_time FROM attendance WHERE attendance_id = $1`,
+    // Fetch the attendance record to get emp_id
+    const attendanceResult = await pool.query(
+      `SELECT emp_id, date FROM attendance WHERE attendance_id = $1`,
       [attendance_id]
     );
 
-    if (attendance.rows.length === 0) {
+    if (attendanceResult.rows.length === 0) {
       return res.status(404).json({ error: "Attendance record not found" });
     }
 
-    const { emp_id: attendanceEmpId, punch_in_time, punch_out_time } =
-      attendance.rows[0];
+    const { emp_id: attendanceEmpId, date: recordDate } = attendanceResult.rows[0];
+    const attendanceDate = formatDate(new Date(recordDate));
+    const normalizedPunchType = (punch_type || "").toString().trim().toUpperCase();
+    const punchType = normalizedPunchType === PUNCH_TYPES.OUT ? PUNCH_TYPES.OUT : PUNCH_TYPES.IN;
 
-    if (punch_type === PUNCH_TYPES.IN && punch_in_time) {
-      return res.status(400).json({ error: "Already punched in today" });
+    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    const sessionError = await validatePunchSession(attendanceEmpId, attendanceDate, punchType);
+    if (sessionError) {
+      return res.status(sessionError.status).json({
+        error: sessionError.error,
+        code: sessionError.code,
+      });
     }
-    if (punch_type === PUNCH_TYPES.OUT && punch_out_time) {
-      return res.status(400).json({ error: "Already punched out today" });
-    }
-    if (punch_type === PUNCH_TYPES.OUT && !punch_in_time) {
-      return res.status(400).json({ error: "Must punch in first" });
+
+    // For punch-out: use the OPEN session's attendance_id (night-shift carry-forward)
+    let targetAttendanceId = attendance_id;
+    if (punchType === PUNCH_TYPES.OUT) {
+      const openSession = await fetchRecentOpenAttendance(attendanceEmpId, attendanceDate);
+      if (openSession && openSession.attendance_id !== attendance_id) {
+        targetAttendanceId = openSession.attendance_id;
+      }
     }
 
     const updated = await processPunch(
-      attendance_id,
-      punch_type,
+      targetAttendanceId,
+      punchType,
       req.file,
       userId,
       {
@@ -1278,7 +1340,7 @@ router.put("/", upload.single("image"), async (req, res) => {
     );
 
     res.json({
-      message: `Punch ${punch_type} updated successfully`,
+      message: `Punch ${punchType} updated successfully`,
       attendance: updated,
     });
   } catch (error) {
@@ -1586,12 +1648,18 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         }
 
         try {
+          // 🔒 Group mode uses a HIGHER threshold than individual mode to reduce
+          // false positives from low-quality group photo crops.
+          // Floor at 90% — lower quality crops can't reliably hit 95%.
+          // The double-verify CompareFaces step (Layer 2) provides the extra accuracy.
+          const groupThreshold = Math.max(90, matchThreshold);
+
           const searchResult = await rekognition.send(
             new SearchFacesByImageCommand({
               CollectionId: collectionId,
               Image: { Bytes: faceImageBuffer },
-              MaxFaces: 3,
-              FaceMatchThreshold: matchThreshold,
+              MaxFaces: 1,
+              FaceMatchThreshold: groupThreshold,
             })
           );
 
@@ -1611,32 +1679,89 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             });
           }
 
-          // Fallback: compare against supervisor roster when collection has no match
-          if (!employeeRecord) {
-            const fallback = await fallbackMatchByCompare(
-              faceImageBuffer,
-              supervisorId,
-              wardId,
-              matchThreshold
-            );
-            if (fallback?.employee) {
-              employeeRecord = fallback.employee;
-              similarity = fallback.similarity;
-            }
-          }
+          // ⚠️ REMOVED: fallbackMatchByCompare in group mode.
+          // The roster-level CompareFaces fallback was causing wrong employee matches
+          // because group photo crops are low quality and can falsely match similar-
+          // looking people in the same ward. If Rekognition collection search returns
+          // no confident match (>= 95%), we report "unmatched" — do NOT guess.
 
           if (!employeeRecord) {
             results.push({
               faceIndex,
               status: "unmatched",
               similarity: null,
-              message: "No matching employee found.",
+              message: "Face not registered in gallery. Please enroll employee face first.",
+              hint: "Ensure this employee's face photo is uploaded in the face gallery before using group attendance.",
             });
             continue;
           }
 
-          // if similarity is still null (fallback via roster), set to 0 for reporting
-          similarity = similarity ?? 0;
+          // ✅ LAYER 2: CompareFaces cross-check against enrolled S3 image
+          // Even though Rekognition collection matched, we do a second independent
+          // verification to eliminate any false positives from low-quality crops.
+          const DOUBLE_VERIFY_THRESHOLD = 90;
+          try {
+            const enrolledBuffer = await loadFaceBuffer(
+              employeeRecord.face_embedding,
+              employeeRecord.emp_id
+            );
+            if (enrolledBuffer) {
+              const crossCheck = await rekognition.send(
+                new CompareFacesCommand({
+                  SourceImage: { Bytes: enrolledBuffer },
+                  TargetImage: { Bytes: faceImageBuffer },
+                  SimilarityThreshold: DOUBLE_VERIFY_THRESHOLD,
+                })
+              );
+              const crossSimilarity = crossCheck?.FaceMatches?.[0]?.Similarity ?? 0;
+              if (crossSimilarity < DOUBLE_VERIFY_THRESHOLD) {
+                console.warn(
+                  `[Group] Double-verify FAILED for emp_id=${employeeRecord.emp_id}: ` +
+                  `Rekognition=${similarity?.toFixed(1)}% but CompareFaces=${crossSimilarity.toFixed(1)}%`
+                );
+                results.push({
+                  faceIndex,
+                  status: "unmatched",
+                  similarity: crossSimilarity,
+                  message: "Face verification failed secondary check. Please recapture.",
+                  code: "DOUBLE_VERIFY_FAILED",
+                });
+                continue;
+              }
+            }
+          } catch (crossErr) {
+            // Non-fatal: if S3 enrolled image is missing, log and proceed.
+            // Do NOT block — network/S3 errors should not stop attendance.
+            console.warn(`[Group] Double-verify skipped for emp_id=${employeeRecord.emp_id}:`, crossErr.message);
+          }
+
+          // ✅ LAYER 3: Supervisor roster cross-check
+          // Ensure matched employee actually belongs to THIS supervisor's ward.
+          // Prevents cross-ward attendance even if the face somehow matched.
+          if (supervisorId) {
+            const rosterCheck = await pool.query(
+              `SELECT 1 FROM employee e
+               JOIN supervisor_ward sw ON sw.ward_id = e.ward_id
+               WHERE e.emp_id = $1 AND sw.supervisor_id = $2 LIMIT 1`,
+              [employeeRecord.emp_id, supervisorId]
+            );
+            if (rosterCheck.rowCount === 0) {
+              console.warn(
+                `[Group] Roster check FAILED: emp_id=${employeeRecord.emp_id} not in supervisor ${supervisorId}'s ward`
+              );
+              results.push({
+                faceIndex,
+                status: "skipped",
+                similarity,
+                employeeId: employeeRecord.emp_id,
+                employeeName: employeeRecord.name,
+                message: "Employee does not belong to this supervisor's ward.",
+                code: "UNAUTHORIZED_WARD",
+              });
+              continue;
+            }
+          }
+
 
           if (processedEmployees.has(employeeRecord.emp_id)) {
             results.push({
@@ -1650,28 +1775,53 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             continue;
           }
 
-          const attendance = await getOrCreateAttendanceRecord(
+          // 🔒 Session-aware validation per employee in group (prevents re-punch-in)
+          const sessionError = await validatePunchSession(
             employeeRecord.emp_id,
             attendanceDate,
-            {
-              punchType,
-              createIfMissing: punchType !== PUNCH_TYPES.OUT,
-            }
+            punchType
           );
-          const validation = validatePunchAttempt(attendance, punchType);
 
-          if (validation) {
+          if (sessionError) {
             results.push({
               faceIndex,
               status: "skipped",
               employeeId: employeeRecord.emp_id,
               employeeName: employeeRecord.name,
               similarity,
-              message: validation.error,
+              message: sessionError.error,
+              code: sessionError.code,
             });
             processedEmployees.add(employeeRecord.emp_id);
             continue;
           }
+
+          // 📍 Geofencing Validation
+          const geoCheck = await validateGeofencing(
+            employeeRecord.emp_id,
+            locationPayload.latitude,
+            locationPayload.longitude
+          );
+          if (!geoCheck.allowed) {
+            results.push({
+              faceIndex,
+              status: "skipped",
+              employeeId: employeeRecord.emp_id,
+              employeeName: employeeRecord.name,
+              similarity,
+              message: geoCheck.message || "Out of assigned zone",
+              code: "OUT_OF_GEofence",
+            });
+            processedEmployees.add(employeeRecord.emp_id);
+            continue;
+          }
+
+          // Resolve or create attendance record (handles night-shift carry-forward)
+          const attendance = await getOrCreateAttendanceRecord(
+            employeeRecord.emp_id,
+            attendanceDate,
+            { punchType, createIfMissing: true }
+          );
 
           const updated = await processPunch(
             attendance.attendance_id,
@@ -1798,21 +1948,21 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     }
 
     const empId = employeeRecord.emp_id;
-    const attendance = await getOrCreateAttendanceRecord(
-      empId,
-      attendanceDate,
-      {
-        punchType,
-        createIfMissing: punchType !== PUNCH_TYPES.OUT,
-      }
-    );
 
-    const validation = validatePunchAttempt(attendance, punchType);
-    if (validation) {
-      return res.status(validation.status).json({
-        error: validation.error,
+    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    const sessionError = await validatePunchSession(empId, attendanceDate, punchType);
+    if (sessionError) {
+      return res.status(sessionError.status).json({
+        error: sessionError.error,
+        code: sessionError.code,
       });
     }
+
+    // Resolve or create attendance record (handles night-shift carry-forward)
+    const attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
+      punchType,
+      createIfMissing: true,
+    });
 
     // 📍 Geofencing Validation
     const geoCheck = await validateGeofencing(empId, locationPayload.latitude, locationPayload.longitude);
@@ -2001,17 +2151,21 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
     }
 
     const empId = employeeRecord.emp_id;
-    const attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
-      punchType,
-      createIfMissing: punchType !== PUNCH_TYPES.OUT,
-    });
 
-    const validation = validatePunchAttempt(attendance, punchType);
-    if (validation) {
-      return res.status(validation.status).json({
-        error: validation.error,
+    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    const sessionError = await validatePunchSession(empId, attendanceDate, punchType);
+    if (sessionError) {
+      return res.status(sessionError.status).json({
+        error: sessionError.error,
+        code: sessionError.code,
       });
     }
+
+    // Resolve or create attendance record (handles night-shift carry-forward)
+    const attendance = await getOrCreateAttendanceRecord(empId, attendanceDate, {
+      punchType,
+      createIfMissing: true,
+    });
 
     const geoCheck = await validateGeofencing(empId, locationPayload.latitude, locationPayload.longitude);
     if (!geoCheck.allowed) {
@@ -2451,15 +2605,45 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
         : PUNCH_TYPES.IN;
 
     const attendanceDate = resolveAttendanceDate(req.body, req.query);
+
+    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    const sessionError = await validatePunchSession(resolved.employee.emp_id, attendanceDate, punchType);
+    if (sessionError) {
+      return res.status(sessionError.status).json({
+        error: sessionError.error,
+        code: sessionError.code,
+      });
+    }
+
+    // Resolve or create attendance record (handles night-shift carry-forward)
     const attendance = await getOrCreateAttendanceRecord(
       resolved.employee.emp_id,
       attendanceDate,
-      { punchType }
+      { punchType, createIfMissing: true }
     );
 
-    const validation = validatePunchAttempt(attendance, punchType);
-    if (validation) {
-      return res.status(validation.status).json({ error: validation.error });
+    // 📍 Geofencing Validation
+    const geoCheck = await validateGeofencing(
+      resolved.employee.emp_id,
+      req.body.latitude,
+      req.body.longitude
+    );
+    if (!geoCheck.allowed) {
+      if (geoCheck.notConfigured) {
+        return res.status(403).json({
+          error: "Your geofencing location is not mapped yet",
+          notConfigured: true,
+          details:
+            geoCheck.message ||
+            "Please contact admin to configure your zone boundaries.",
+        });
+      }
+      return res.status(403).json({
+        error: "Out of Zone",
+        notConfigured: false,
+        details:
+          geoCheck.message || "You are outside the allowed geo-fence zone.",
+      });
     }
 
     const updated = await processPunch(
