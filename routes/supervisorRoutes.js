@@ -80,11 +80,9 @@ router.get("/", requireCityScope(), async (req, res) => {
           AND (
             $1::int IS NULL
             OR c.city_id = $1::int
-            OR NOT EXISTS (
-              SELECT 1 FROM supervisor_ward sw2 WHERE sw2.supervisor_id = u.user_id
-            )
+            OR c.city_id IS NULL
           )
-        ORDER BY u.user_id, u.name
+        ORDER BY u.user_id, CASE WHEN c.city_id = $1::int THEN 0 ELSE 1 END, u.name
       `,
       [scopedCityId ?? null]
     );
