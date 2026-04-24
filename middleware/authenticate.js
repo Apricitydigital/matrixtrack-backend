@@ -1,25 +1,33 @@
 const jwt = require("jsonwebtoken");
 
 const authenticate = (req, res, next) => {
-  // Get token from headers
-  const token = req.header("Authorization");
+  // Accept token from cookie, Authorization header, or fallback headers
+  const bearer = req.header("Authorization") || req.header("authorization") || "";
+  const headerToken = bearer.startsWith("Bearer ") ? bearer.split(" ")[1] : bearer || null;
+  const fallbackHeader = req.header("x-access-token") || req.header("token");
+  
+  // Standard priority: Authorization Header > Cookie > Others
+  const token = headerToken || req.cookies?.token || fallbackHeader;
 
-  // Check if token exists
   if (!token) {
-    return res
-      .status(401)
-      .json({ message: "Access Denied. No token provided." });
+    return res.status(401).json({ message: "Access Denied. No token provided." });
   }
 
   try {
-    // Verify token
-    const secretKey = process.env.JWT_SECRET || "ankit"; // Use env variable in production
-    const decoded = jwt.verify(token.replace("Bearer ", ""), secretKey);
-
-    // Attach user info to request object
+    const secretKey = process.env.JWT_SECRET || "ankit";
+    const decoded = jwt.verify(token, secretKey);
     req.user = decoded;
-    next(); // Proceed to next middleware or route handler
+    next();
   } catch (err) {
+    console.error("[authenticate] Token verification failed:", err.message);
+    // Standardizing the response so mobile and web can handle it gracefully
+    if (err.name === "TokenExpiredError") {
+      return res.status(403).json({ 
+        message: "Token expired", 
+        error: "Token expired", 
+        code: "TOKEN_EXPIRED" 
+      });
+    }
     res.status(403).json({ message: "Invalid or expired token." });
   }
 };

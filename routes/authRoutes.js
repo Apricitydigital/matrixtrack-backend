@@ -254,6 +254,25 @@ router.put("/update", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
+    // ── Update city access if city_id was provided ──────────────────────────
+    const city_id = req.body.city_id;
+    if (city_id !== undefined && city_id !== null && city_id !== "") {
+      const numericCityId = Number(city_id);
+      if (Number.isFinite(numericCityId)) {
+        // Replace existing city assignment with the new one
+        await pool.query(
+          "DELETE FROM user_city_access WHERE user_id = $1",
+          [user_id]
+        );
+        await pool.query(
+          `INSERT INTO user_city_access (user_id, city_id)
+           VALUES ($1, $2)
+           ON CONFLICT (user_id, city_id) DO NOTHING`,
+          [user_id, numericCityId]
+        );
+      }
+    }
+
     res.status(200).json({
       message: passChange
         ? "User updated with new password"
@@ -281,11 +300,11 @@ router.post("/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.rows[0].password_hash);
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
-    // ✅ Generate JWT Token
+    // ✅ Generate JWT Token (30-day validity with sliding-window refresh in middleware)
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: "30d" }
     );
 
     const access = await getUserAccessProfile(user.rows[0].user_id);
@@ -305,7 +324,7 @@ router.post("/login", async (req, res) => {
         user_id: user.rows[0].user_id,
         name: user.rows[0].name,
         email: user.rows[0].email,
-        role: primaryRole,
+        role: access.roles?.[0]?.name || user.rows[0].role || "user",
         roles: access.roles,
         permissions: access.permissions,
         emp_code: user.rows[0].emp_code,
@@ -346,11 +365,11 @@ router.post("/supervisor-login", async (req, res) => {
       });
     }
 
-    // ✅ Generate JWT Token for supervisor
+    // ✅ Generate JWT Token for supervisor (30-day validity)
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: "30d" }
     );
 
     const access = await getUserAccessProfile(user.rows[0].user_id);
@@ -378,7 +397,6 @@ router.post("/supervisor-login", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Supervisor login error:", error);
     res.status(500).json({
       success: false,
       error: "Login failed. Please try again."
@@ -390,6 +408,21 @@ router.post("/supervisor-login", async (req, res) => {
 router.post("/logout", (req, res) => {
   res.clearCookie("token");
   res.json({ message: "Logged out successfully" });
+});
+
+// ✅ Refresh Token — issues a fresh 30-day token if the current one is still valid
+router.post("/refresh-token", authenticateToken, async (req, res) => {
+  try {
+    const { iat, exp, ...payload } = req.user; // strip old timing claims
+    const newToken = jwt.sign(payload, process.env.JWT_SECRET, {
+      expiresIn: "30d",
+    });
+
+    res.cookie("token", newToken, { httpOnly: true });
+    res.json({ token: newToken, message: "Token refreshed" });
+  } catch (error) {
+    res.status(500).json({ error: "Token refresh failed" });
+  }
 });
 
 // ✅ Create Admin User (One-time setup)
