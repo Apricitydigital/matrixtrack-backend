@@ -274,6 +274,8 @@ const mapRowsToWards = (rows) => {
       last_punch_display: row.last_punch_display,
       has_punch_in: Boolean(row.has_punch_in),
       has_punch_out: Boolean(row.has_punch_out),
+      is_auto_punch_out: Boolean(row.is_auto_punch_out),
+      isAutoPunchOut: Boolean(row.is_auto_punch_out),
       punch_in_epoch: row.punch_in_epoch
         ? Number(row.punch_in_epoch)
         : null,
@@ -362,7 +364,8 @@ const fetchSupervisorSummary = async (
         se.emp_id,
         MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
-        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = TRUE THEN 1 ELSE 0 END) AS has_auto_punch_out
       FROM scoped_employees se
       LEFT JOIN attendance a
         ON a.emp_id = se.emp_id
@@ -375,6 +378,8 @@ const fetchSupervisorSummary = async (
       COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_auto_punch_out = 1 THEN 1 ELSE 0 END), 0) AS auto_punch_out,
+      COALESCE(SUM(CASE WHEN has_punch_out = 1 AND has_auto_punch_out = 0 THEN 1 ELSE 0 END), 0) AS manual_punch_out,
       GREATEST(
         (SELECT COUNT(*) FROM scoped_employees) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
@@ -393,6 +398,8 @@ const fetchSupervisorSummary = async (
   const fullyMarked = Number(row.fully_marked) || 0;
   const inProgress = Number(row.in_progress) || 0;
   const notMarked = Number(row.not_marked) || 0;
+  const autoPunchOut = Number(row.auto_punch_out) || 0;
+  const manualPunchOut = Number(row.manual_punch_out) || 0;
   const attendanceRate =
     totalEmployees > 0
       ? Number((((present + onLeave) / totalEmployees) * 100).toFixed(1))
@@ -406,6 +413,8 @@ const fetchSupervisorSummary = async (
     inProgress,
     onLeave,
     notMarked,
+    autoPunchOut,
+    manualPunchOut,
     attendanceRate,
   };
 };
@@ -463,6 +472,7 @@ const fetchSupervisorEmployees = async (
       COALESCE(summary.days_marked, 0) AS days_marked,
       summary.has_punch_in,
       summary.has_punch_out,
+      summary.is_auto_punch_out,
       summary.last_punch_time,
       summary.punch_in_time,
       summary.punch_out_time,
@@ -493,6 +503,12 @@ const fetchSupervisorEmployees = async (
         COUNT(*) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
         MAX(a.punch_out_time) FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,
+        MAX(
+          CASE
+            WHEN a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = TRUE THEN 1
+            ELSE 0
+          END
+        ) AS is_auto_punch_out,
         MAX(
           CASE
             WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
@@ -593,7 +609,8 @@ const fetchCitySummary = async (
         ec.emp_id,
         MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
-        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = TRUE THEN 1 ELSE 0 END) AS has_auto_punch_out
       FROM employee_city ec
       LEFT JOIN attendance a
         ON a.emp_id = ec.emp_id
@@ -608,6 +625,8 @@ const fetchCitySummary = async (
       COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_auto_punch_out = 1 THEN 1 ELSE 0 END), 0) AS auto_punch_out,
+      COALESCE(SUM(CASE WHEN has_punch_out = 1 AND has_auto_punch_out = 0 THEN 1 ELSE 0 END), 0) AS manual_punch_out,
       GREATEST(
         COUNT(*) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
@@ -634,6 +653,8 @@ const fetchCitySummary = async (
     marked: Number(row.present) || 0,
     fullyMarked: Number(row.fully_marked) || 0,
     inProgress: Number(row.in_progress) || 0,
+    autoPunchOut: Number(row.auto_punch_out) || 0,
+    manualPunchOut: Number(row.manual_punch_out) || 0,
     notMarked: Math.max(
       (Number(row.total_employees) || 0) - (Number(row.present) || 0) - (Number(row.on_leave) || 0),
       0
@@ -684,7 +705,8 @@ const fetchZoneSummary = async (
         ez.emp_id,
         MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
-        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave
+        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = TRUE THEN 1 ELSE 0 END) AS has_auto_punch_out
       FROM employee_zone ez
       LEFT JOIN attendance a
         ON a.emp_id = ez.emp_id
@@ -699,6 +721,8 @@ const fetchZoneSummary = async (
       COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_auto_punch_out = 1 THEN 1 ELSE 0 END), 0) AS auto_punch_out,
+      COALESCE(SUM(CASE WHEN has_punch_out = 1 AND has_auto_punch_out = 0 THEN 1 ELSE 0 END), 0) AS manual_punch_out,
       GREATEST(COUNT(*) - COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0), 0) AS not_marked
     FROM attendance_status
     GROUP BY zone_id, zone_name
@@ -720,6 +744,8 @@ const fetchZoneSummary = async (
     marked: Number(row.present) || 0,
     fullyMarked: Number(row.fully_marked) || 0,
     inProgress: Number(row.in_progress) || 0,
+    autoPunchOut: Number(row.auto_punch_out) || 0,
+    manualPunchOut: Number(row.manual_punch_out) || 0,
     notMarked: Math.max(
       (Number(row.total_employees) || 0) -
         (Number(row.present) || 0) -
@@ -1325,4 +1351,3 @@ router.post("/top-supervisors", async (req, res) => {
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
-

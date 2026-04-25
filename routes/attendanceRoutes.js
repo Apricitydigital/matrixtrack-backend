@@ -74,6 +74,7 @@ router.post("/", async (req, res) => {
         a.punch_out_image, 
         a.duration,
         a.leave_type,
+        a.is_auto_punch_out,
         u.name AS punched_in_by,
         u1.name AS punched_out_by
       FROM attendance a
@@ -187,6 +188,16 @@ router.get("/short-report", async (req, res) => {
             WHEN a.leave_type IS NOT NULL THEN e.emp_id
           END
         )                                                AS total_leave_employees,
+        COUNT(
+          DISTINCT CASE
+            WHEN a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = FALSE THEN e.emp_id
+          END
+        )                                                AS manual_punch_out_count,
+        COUNT(
+          DISTINCT CASE
+            WHEN a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = TRUE THEN e.emp_id
+          END
+        )                                                AS auto_punch_out_count,
         ARRAY_REMOVE(ARRAY_AGG(DISTINCT e.emp_id), NULL) AS registered_emp_ids,
         ARRAY_REMOVE(
           ARRAY_AGG(DISTINCT CASE

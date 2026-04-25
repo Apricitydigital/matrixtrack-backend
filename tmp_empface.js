@@ -4,3 +4,4 @@ const pool=require("./config/db");
   console.log(rows);
   await pool.end();
 })();
+

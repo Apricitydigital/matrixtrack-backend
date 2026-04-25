@@ -456,9 +456,41 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
     return { status: 400, error: "Employee ID aur date zaroori hain" };
   }
 
-  // Multi-punch allowed: we no longer block re-punch-in or re-punch-out.
-  // The system will update the existing record for the day.
-  return null; // ✅ OK to proceed
+  if (punchType === PUNCH_TYPES.IN) {
+    const openSession = await fetchRecentOpenAttendance(empId, attendanceDate);
+    if (openSession) {
+      return {
+        status: 400,
+        error: "Aap abhi bhi punched in hain. Pehle punch out karein.",
+        code: "ALREADY_PUNCHED_IN",
+      };
+    }
+
+    const closedForSameDate = await fetchClosedSessionForDate(
+      empId,
+      attendanceDate
+    );
+    if (closedForSameDate) {
+      return {
+        status: 400,
+        error: "Aapka aaj ka attendance pehle se complete ho chuka hai.",
+        code: "SESSION_ALREADY_COMPLETE",
+      };
+    }
+  }
+
+  if (punchType === PUNCH_TYPES.OUT) {
+    const openSession = await fetchRecentOpenAttendance(empId, attendanceDate);
+    if (!openSession) {
+      return {
+        status: 400,
+        error: "Pehle punch in karein",
+        code: "NOT_PUNCHED_IN",
+      };
+    }
+  }
+
+  return null;
 }
 
 const mapRekognitionError = (error) => {
@@ -679,8 +711,9 @@ async function fetchRecentOpenAttendance(empId, date) {
   );
 }
 
-// 🔒 Check if a CLOSED session already exists for the given attendance_date
-// (handles night-shift: session started on date-1 but punch_out on date)
+// 🔒 Check if a CLOSED session already exists for the exact attendance_date.
+// Do not include date-1 here; otherwise a night-shift close on Day B
+// would wrongly block a fresh punch-in on Day B.
 async function fetchClosedSessionForDate(empId, date) {
   if (!empId || !date) {
     return null;
@@ -689,8 +722,7 @@ async function fetchClosedSessionForDate(empId, date) {
   return fetchAttendanceRecord(
     `
       a.emp_id = $1
-      AND a.date >= ($2::date - INTERVAL '1 day')
-      AND a.date <= $2::date
+      AND a.date = $2::date
       AND a.punch_in_time IS NOT NULL
       AND a.punch_out_time IS NOT NULL
     `,
