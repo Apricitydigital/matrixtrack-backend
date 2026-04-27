@@ -9,6 +9,7 @@ const pool = require('./config/db');
     const q1 = await pool.query(`SELECT count(*) FROM attendance WHERE date::date = $1 AND punch_in_time IS NOT NULL`, [today]);
     out.push("Total punched in today (attendance table): " + q1.rows[0].count);
 
+
     // How many of these punched-in employees are in Pune?
     const q2 = await pool.query(`
       SELECT COUNT(DISTINCT a.emp_id) 

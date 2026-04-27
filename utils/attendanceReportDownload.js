@@ -240,6 +240,21 @@ const buildAttendanceFilters = (query, { locationExpression, cityScope, kothiSco
     metadata.has_punch_out = hasPunchOut;
   }
 
+  const isAutoPunchOut = parseBooleanFlag(
+    query.is_auto_punch_out ??
+      query.has_auto_punch_out ??
+      query.auto_punch_out ??
+      query.autoPunchOut
+  );
+  if (isAutoPunchOut !== null) {
+    filters.push(
+      isAutoPunchOut
+        ? "a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = TRUE"
+        : "a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = FALSE"
+    );
+    metadata.is_auto_punch_out = isAutoPunchOut;
+  }
+
   const shift = (query.shift || "").toString().toLowerCase().trim();
   if (shift && shift !== "all") {
     if (shift === "morning") {
@@ -385,6 +400,7 @@ const groupingConfigs = {
       des.designation_name,
       0 AS supervisor_id,
       COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
+      COALESCE(a.is_auto_punch_out, FALSE) AS is_auto_punch_out,
       COALESCE(u.name, 'Self') AS punched_in_by,
       COALESCE(u1.name, 'Self') AS punched_out_by
     `,
@@ -404,6 +420,7 @@ const groupingConfigs = {
       { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
       { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}", "${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}")` : "-" },
       { key: "punch_out_time", label: "Out Time", formatter: (val) => val || "-" },
+      { key: "is_auto_punch_out", label: "Auto Punch-Out", formatter: (val, row) => row.punch_out_time ? (val ? "Yes" : "No") : "-" },
       { key: "punched_out_by", label: "PunchedOut By", formatter: (val, row) => row.punch_out_time ? val : "-" },
       { key: "out_address", label: "Out Address", formatter: (val) => val || "-" },
       { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}", "${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}")` : "-" },
@@ -739,6 +756,12 @@ const createAttendanceDownloadHandler =
           const filters = [];
           const hasPunchInFlag = parseBooleanFlag(payload.has_punch_in);
           const hasPunchOutFlag = parseBooleanFlag(payload.has_punch_out);
+          const autoPunchOutFlag = parseBooleanFlag(
+            payload.is_auto_punch_out ??
+              payload.has_auto_punch_out ??
+              payload.auto_punch_out ??
+              payload.autoPunchOut
+          );
           const absOnlyFlag = parseBooleanFlag(payload.absentees_only);
 
           // City scope
@@ -811,6 +834,13 @@ const createAttendanceDownloadHandler =
                 : "a.punch_out_time IS NULL"
             );
           }
+          if (autoPunchOutFlag !== null) {
+            filters.push(
+              autoPunchOutFlag
+                ? "a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = TRUE"
+                : "a.punch_out_time IS NOT NULL AND COALESCE(a.is_auto_punch_out, FALSE) = FALSE"
+            );
+          }
 
           const whereCombined = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
 
@@ -842,6 +872,7 @@ const createAttendanceDownloadHandler =
               des.designation_name,
               0 AS supervisor_id,
               COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
+              COALESCE(a.is_auto_punch_out, FALSE) AS is_auto_punch_out,
               COALESCE(u.name, 'Self') AS punched_in_by,
               COALESCE(u1.name, 'Self') AS punched_out_by
             FROM employee e
@@ -870,6 +901,7 @@ const createAttendanceDownloadHandler =
                 att.out_address,
                 att.latitude_out,
                 att.longitude_out,
+                att.is_auto_punch_out,
                 att.punched_in_by,
                 att.punched_out_by
               FROM attendance att

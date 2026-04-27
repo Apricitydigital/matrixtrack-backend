@@ -18,6 +18,7 @@ process.on("uncaughtException", (error) => {
   console.error("UNCAUGHT EXCEPTION:", error);
 });
 
+
 // =======================
 // 🧪 TEST MODE CONFIG
 // =======================
@@ -120,6 +121,53 @@ if (AUTO_HEAL_CRON_ENABLED) {
   );
 }
 
+// =======================
+// ⏰ AUTO PUNCH-OUT CRON
+// Runs every hour. Finds employees punched in > 9 hours ago
+// with no punch-out and auto-closes their attendance.
+// =======================
+const AUTO_PUNCHOUT_HOURS = Number(process.env.AUTO_PUNCHOUT_HOURS ?? 9) || 9;
+const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "false";
+
+if (AUTO_PUNCHOUT_CRON_ENABLED) {
+  cron.schedule(
+    "0 * * * *", // Every hour at :00
+    async () => {
+      try {
+        // Use pool.query() directly — it handles connection checkout/release
+        // automatically and avoids crashes if pool.connect() itself times out.
+        const result = await pool.query(
+          `UPDATE attendance
+              SET punch_out_time    = punch_in_time + ($1 * INTERVAL '1 hour'),
+                  duration          = LPAD($1::text, 2, '0') || ':00',
+                  is_auto_punch_out = TRUE,
+                  punched_out_by    = NULL
+            WHERE punch_in_time    IS NOT NULL
+              AND punch_out_time   IS NULL
+              AND COALESCE(is_auto_punch_out, FALSE) = FALSE
+              AND punch_in_time    < (NOW() AT TIME ZONE 'Asia/Kolkata') - ($1 * INTERVAL '1 hour')
+            RETURNING attendance_id, emp_id, punch_in_time, punch_out_time`,
+          [AUTO_PUNCHOUT_HOURS]
+        );
+
+        if (result.rowCount > 0) {
+          console.log(
+            `[AutoPunchOut] ✅ Auto-punched out ${result.rowCount} employee(s) after ${AUTO_PUNCHOUT_HOURS}h.`,
+            result.rows.map((r) => `attendance_id=${r.attendance_id} emp_id=${r.emp_id}`).join(", ")
+          );
+        } else {
+          console.log("[AutoPunchOut] No employees to auto punch-out at this hour.");
+        }
+      } catch (err) {
+        // Log but never crash the cron runner
+        console.error("[AutoPunchOut] ❌ Cron error:", err.message);
+      }
+    },
+    { timezone: "Asia/Kolkata" }
+  );
+  console.log(`[AutoPunchOut] Cron registered — auto punch-out after ${AUTO_PUNCHOUT_HOURS}h, runs every hour.`);
+}
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -213,6 +261,31 @@ app.use("/api/app/attendance/employee", selfAttendanceRoutes);
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
+
+  // Run migration 5s after server starts — DB pool is warmed up by then
+  setTimeout(async () => {
+    const MAX_RETRIES = 5;
+    const RETRY_DELAY_MS = 5000;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        await pool.query(`
+          ALTER TABLE attendance
+            ADD COLUMN IF NOT EXISTS is_auto_punch_out BOOLEAN NOT NULL DEFAULT FALSE;
+        `);
+        console.log("[Migration] ✅ attendance.is_auto_punch_out column ensured.");
+        break;
+      } catch (migErr) {
+        const isRetryable = migErr.message?.includes("timeout") || migErr.message?.includes("terminated");
+        if (attempt < MAX_RETRIES && isRetryable) {
+          console.warn(`[Migration] ⚠️  Attempt ${attempt}/${MAX_RETRIES} failed (${migErr.message}). Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        } else {
+          console.warn("[Migration] ⚠️  Warning (non-fatal):", migErr.message);
+          break;
+        }
+      }
+    }
+  }, 5000);
 });
 
 
