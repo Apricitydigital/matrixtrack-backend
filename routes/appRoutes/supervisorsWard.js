@@ -499,7 +499,7 @@ const fetchSupervisorEmployees = async (
         MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
-        COUNT(*) FILTER (WHERE a.punch_in_time IS NOT NULL) AS days_present,
+        COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_in_time IS NOT NULL) AS days_present,
         COUNT(*) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
         MAX(a.punch_out_time) FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,

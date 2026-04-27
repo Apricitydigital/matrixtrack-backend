@@ -410,6 +410,8 @@ const groupingConfigs = {
       { key: "attendance_date", label: "Date" },
       { key: "zone_name", label: "Zone", formatter: (val) => val || "-" },
       { key: "ward_name", label: "Ward", formatter: (val) => val || "-" },
+      { key: "department_name", label: "Department", formatter: (val) => val || "-" },
+      { key: "designation_name", label: "Designation", formatter: (val) => val || "-" },
       { key: "employee_name", label: "Employee Name", formatter: (val) => val || "-" },
       { key: "emp_code", label: "EmpCode", formatter: (val) => val ? `="${val}"` : "-" },
       { key: "contact_no", label: "Contact No.", formatter: (val) => val ? `="${val}"` : "-" },
@@ -805,15 +807,15 @@ const createAttendanceDownloadHandler =
             detailParams.push(empCode);
             filters.push(`e.emp_code = $${detailParams.length}`);
           }
-          const departmentId = parseIntegerParam(payload.department_id);
-          if (departmentId !== null) {
-            detailParams.push(departmentId);
-            filters.push(`dept.department_id = $${detailParams.length}`);
+          const departmentIds = (payload.department_id || payload.departmentId || "").toString().split(",").map(id => parseIntegerParam(id)).filter(id => id !== null);
+          if (departmentIds.length > 0) {
+            detailParams.push(departmentIds);
+            filters.push(`dept.department_id = ANY($${detailParams.length}::int[])`);
           }
-          const designationId = parseIntegerParam(payload.designation_id);
-          if (designationId !== null) {
-            detailParams.push(designationId);
-            filters.push(`des.designation_id = $${detailParams.length}`);
+          const designationIds = (payload.designation_id || payload.designationId || "").toString().split(",").map(id => parseIntegerParam(id)).filter(id => id !== null);
+          if (designationIds.length > 0) {
+            detailParams.push(designationIds);
+            filters.push(`des.designation_id = ANY($${detailParams.length}::int[])`);
           }
           if (absOnlyFlag === true) {
             filters.push("a.punch_in_time IS NULL");
