@@ -44,6 +44,18 @@ const getUserAccessProfile = async (userId) => {
   };
 };
 
+const getSafeUserAccessProfile = async (userId) => {
+  try {
+    return await getUserAccessProfile(userId);
+  } catch (error) {
+    console.warn(
+      "Access profile fetch failed; continuing with base role only:",
+      error?.message || error
+    );
+    return { roles: [], permissions: [] };
+  }
+};
+
 const computeAllowedCities = async (userRow, access) => {
   const isAdminRole =
     (userRow?.role || "").toLowerCase() === "admin" ||
@@ -64,6 +76,18 @@ const computeAllowedCities = async (userRow, access) => {
     .map((id) => Number(id))
     .filter((id) => Number.isFinite(id));
   return list.length ? list : [];
+};
+
+const computeAllowedCitiesSafe = async (userRow, access) => {
+  try {
+    return await computeAllowedCities(userRow, access);
+  } catch (error) {
+    console.warn(
+      "City scope fetch failed; allowing login with fallback scope:",
+      error?.message || error
+    );
+    return [];
+  }
 };
 
 const buildUiPermissions = (access) => {
@@ -125,9 +149,9 @@ router.get("/me", authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const access = await getUserAccessProfile(req.user.user_id);
+    const access = await getSafeUserAccessProfile(req.user.user_id);
 
-    const allowedCities = await computeAllowedCities(user.rows[0], access);
+    const allowedCities = await computeAllowedCitiesSafe(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
     const employeeProfile = await fetchEmployeeProfile(user.rows[0].emp_code);
 
@@ -278,6 +302,9 @@ router.post("/login", async (req, res) => {
     if (user.rows.length === 0)
       return res.status(400).json({ error: "Invalid credentials" });
 
+    if (!user.rows[0].password_hash) {
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
     const isMatch = await bcrypt.compare(password, user.rows[0].password_hash);
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
@@ -288,13 +315,13 @@ router.post("/login", async (req, res) => {
       { expiresIn: "24h" }
     );
 
-    const access = await getUserAccessProfile(user.rows[0].user_id);
+    const access = await getSafeUserAccessProfile(user.rows[0].user_id);
 
     const primaryRole =
       access.roles?.[0]?.name || user.rows[0].role || "user";
 
     res.cookie("token", token, { httpOnly: true });
-    const allowedCities = await computeAllowedCities(user.rows[0], access);
+    const allowedCities = await computeAllowedCitiesSafe(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
     const employeeProfile = await fetchEmployeeProfile(user.rows[0].emp_code);
 
@@ -338,6 +365,12 @@ router.post("/supervisor-login", async (req, res) => {
       });
     }
 
+    if (!user.rows[0].password_hash) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid credentials"
+      });
+    }
     const isMatch = await bcrypt.compare(password, user.rows[0].password_hash);
     if (!isMatch) {
       return res.status(401).json({
@@ -353,9 +386,9 @@ router.post("/supervisor-login", async (req, res) => {
       { expiresIn: "24h" }
     );
 
-    const access = await getUserAccessProfile(user.rows[0].user_id);
+    const access = await getSafeUserAccessProfile(user.rows[0].user_id);
 
-    const allowedCities = await computeAllowedCities(user.rows[0], access);
+    const allowedCities = await computeAllowedCitiesSafe(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
     const employeeProfile = await fetchEmployeeProfile(user.rows[0].emp_code);
 

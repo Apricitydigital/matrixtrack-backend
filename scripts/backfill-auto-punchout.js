@@ -3,7 +3,8 @@ const pool = require("../config/db");
 
 async function run() {
   const hours = Number(process.env.AUTO_PUNCHOUT_HOURS ?? 9) || 9;
-  const batchSize = Number(process.env.AUTO_PUNCHOUT_BACKFILL_BATCH_SIZE ?? 500) || 500;
+  const batchSize = Number(process.env.AUTO_PUNCHOUT_BACKFILL_BATCH_SIZE ?? 100) || 100;
+  const maxBatches = Number(process.env.AUTO_PUNCHOUT_BACKFILL_MAX_BATCHES ?? 0) || 0;
   let totalUpdated = 0;
   let batch = 0;
   const startedAt = Date.now();
@@ -16,6 +17,10 @@ async function run() {
 
     while (true) {
       batch += 1;
+      if (maxBatches > 0 && batch > maxBatches) {
+        console.log(`[BackfillAutoPunchOut] Reached max batch limit (${maxBatches}). Stopping safely.`);
+        break;
+      }
       const result = await client.query(
         `WITH target AS (
            SELECT a.attendance_id

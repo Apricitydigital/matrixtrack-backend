@@ -133,7 +133,9 @@ const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "f
 const AUTO_PUNCHOUT_LOCK_ID = 812346; // unique advisory lock id for auto punch-out
 const AUTO_PUNCHOUT_BATCH_SIZE = Number(process.env.AUTO_PUNCHOUT_BATCH_SIZE ?? 300) || 300;
 const AUTO_PUNCHOUT_LOOKBACK_DAYS =
-  Number(process.env.AUTO_PUNCHOUT_LOOKBACK_DAYS ?? 2) || 2;
+  Number(process.env.AUTO_PUNCHOUT_LOOKBACK_DAYS ?? 30) || 30;
+const AUTO_PUNCHOUT_INCLUDE_ALL_OPEN =
+  process.env.AUTO_PUNCHOUT_INCLUDE_ALL_OPEN === "true";
 
 const runAutoPunchOutBatchJob = async (client) => {
   let totalUpdated = 0;
@@ -147,7 +149,10 @@ const runAutoPunchOutBatchJob = async (client) => {
            AND a.punch_out_time IS NULL
            AND COALESCE(a.is_auto_punch_out, FALSE) = FALSE
            AND a.punch_in_time < (NOW() AT TIME ZONE 'Asia/Kolkata') - ($1 * INTERVAL '1 hour')
-           AND a.date >= ((NOW() AT TIME ZONE 'Asia/Kolkata')::date - ($3 * INTERVAL '1 day'))
+           AND (
+             $4::boolean = TRUE OR
+             a.date >= ((NOW() AT TIME ZONE 'Asia/Kolkata')::date - ($3 * INTERVAL '1 day'))
+           )
          ORDER BY a.attendance_id
          LIMIT $2
          FOR UPDATE SKIP LOCKED
@@ -160,7 +165,12 @@ const runAutoPunchOutBatchJob = async (client) => {
        FROM target t
        WHERE a.attendance_id = t.attendance_id
        RETURNING a.attendance_id`,
-      [AUTO_PUNCHOUT_HOURS, AUTO_PUNCHOUT_BATCH_SIZE, AUTO_PUNCHOUT_LOOKBACK_DAYS]
+      [
+        AUTO_PUNCHOUT_HOURS,
+        AUTO_PUNCHOUT_BATCH_SIZE,
+        AUTO_PUNCHOUT_LOOKBACK_DAYS,
+        AUTO_PUNCHOUT_INCLUDE_ALL_OPEN,
+      ]
     );
 
     totalUpdated += result.rowCount;
@@ -178,6 +188,8 @@ if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
       let lockAcquired = false;
       try {
         client = await pool.connect();
+        await client.query("SET statement_timeout = '30s'");
+        await client.query("SET lock_timeout = '2s'");
         const lock = await client.query(
           "SELECT pg_try_advisory_lock($1) AS locked",
           [AUTO_PUNCHOUT_LOCK_ID]
