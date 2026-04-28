@@ -35,6 +35,7 @@ router.get("/", authenticate, async (req, res) => {
         z.zone_name,
         s.sector_name AS ward_name,
         w.ward_name AS kothi_name,
+        u.user_id AS supervisor_id,
         u.name AS supervisor_name,
         u.phone AS supervisor_phone,
         COUNT(DISTINCT a_in.attendance_id) AS total_punch_in,
@@ -52,7 +53,7 @@ router.get("/", authenticate, async (req, res) => {
         AND a_out.ward_id = w.ward_id 
         AND a_out.date::date >= $1 AND a_out.date::date <= $2
       WHERE u.role = 'supervisor'
-      GROUP BY c.city_id, z.zone_id, s.sector_id, w.ward_id, c.city_name, z.zone_name, s.sector_name, w.ward_name, u.name, u.phone
+      GROUP BY c.city_id, z.zone_id, s.sector_id, w.ward_id, c.city_name, z.zone_name, s.sector_name, w.ward_name, u.user_id, u.name, u.phone
       ORDER BY c.city_name, z.zone_name, s.sector_name, w.ward_name, u.name;
     `;
 

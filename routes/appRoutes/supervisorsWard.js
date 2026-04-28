@@ -170,8 +170,19 @@ const parseIdList = (raw) => {
   return [];
 };
 
+const getTodayISTIso = () =>
+  new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+const toISTIsoDate = (value, fallbackIso) => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return fallbackIso;
+  }
+  return parsed.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+};
+
 const resolveDateRange = (rawStart, rawEnd) => {
-  const todayIso = new Date().toISOString().split("T")[0];
+  const todayIso = getTodayISTIso();
   const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
   const normalizeInputDate = (value, fallbackIso) => {
@@ -187,12 +198,12 @@ const resolveDateRange = (rawStart, rawEnd) => {
 
       const parsed = new Date(trimmed);
       if (!Number.isNaN(parsed.getTime())) {
-        return parsed.toISOString().split("T")[0];
+        return toISTIsoDate(parsed, fallbackIso);
       }
     }
 
     if (value instanceof Date && !Number.isNaN(value.getTime())) {
-      return value.toISOString().split("T")[0];
+      return toISTIsoDate(value, fallbackIso);
     }
 
     return fallbackIso;
@@ -300,6 +311,48 @@ const EMPTY_SUMMARY = {
   onLeave: 0,
   notMarked: 0,
   attendanceRate: 0,
+};
+
+const isTransientDashboardDbError = (error) => {
+  const code = (error?.code || "").toString();
+  const message = (error?.message || "").toLowerCase();
+  if (["57014", "57P01", "57P02", "57P03", "53300", "53400"].includes(code)) {
+    return true;
+  }
+  return (
+    message.includes("timeout") ||
+    message.includes("terminated") ||
+    message.includes("connection") ||
+    message.includes("canceling statement")
+  );
+};
+
+const sendDashboardFallback = (res, type, error) => {
+  if (!isTransientDashboardDbError(error)) {
+    return false;
+  }
+
+  if (type === "summary") {
+    res.json({
+      success: true,
+      degraded: true,
+      warning: "Dashboard temporarily running in fallback mode.",
+      data: EMPTY_SUMMARY,
+    });
+    return true;
+  }
+
+  if (type === "employees") {
+    res.json({
+      success: true,
+      degraded: true,
+      warning: "Employee list temporarily unavailable; retry in a moment.",
+      data: [],
+    });
+    return true;
+  }
+
+  return false;
 };
 
 const fetchSupervisorSummary = async (
@@ -828,7 +881,7 @@ router.get("/summary", async (req, res) => {
 
   try {
     const { startDate: startDateRaw, endDate: endDateRaw } = req.query;
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getTodayISTIso();
     const { startDate, endDate } = resolveDateRange(
       startDateRaw || todayIso,
       endDateRaw || todayIso
@@ -845,6 +898,9 @@ router.get("/summary", async (req, res) => {
   } catch (error) {
     console.error("Error fetching supervisor summary: ", error);
     logError("summary-get", error);
+    if (sendDashboardFallback(res, "summary", error)) {
+      return;
+    }
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
@@ -880,7 +936,7 @@ router.get("/", async (req, res) => {
 
   try {
     const { startDate: startDateRaw, endDate: endDateRaw } = req.query;
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getTodayISTIso();
     const { startDate, endDate } = resolveDateRange(
       startDateRaw || todayIso,
       endDateRaw || todayIso
@@ -897,6 +953,9 @@ router.get("/", async (req, res) => {
   } catch (error) {
     console.error("Error fetching employee data: ", error);
     logError("wards-get", error);
+    if (sendDashboardFallback(res, "employees", error)) {
+      return;
+    }
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
@@ -1173,7 +1232,7 @@ router.post("/summary", async (req, res) => {
   const allowCityFallback = isAdmin; // only admins may expand to city level
 
   try {
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getTodayISTIso();
     const { startDate, endDate } = resolveDateRange(
       startDateRaw || todayIso,
       endDateRaw || todayIso
@@ -1189,6 +1248,9 @@ router.post("/summary", async (req, res) => {
     res.json({ success: true, data: summary });
   } catch (error) {
     console.error("Error fetching supervisor summary: ", error);
+    if (sendDashboardFallback(res, "summary", error)) {
+      return;
+    }
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
@@ -1273,6 +1335,9 @@ router.post("/", async (req, res) => {
   } catch (error) {
     console.error("Error fetching employee data: ", error);
     logError("wards-post", error);
+    if (sendDashboardFallback(res, "employees", error)) {
+      return;
+    }
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });

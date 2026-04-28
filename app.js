@@ -101,6 +101,8 @@ const parseOrigins = (value) =>
 
 const envOrigins = parseOrigins(process.env.FRONTEND_ORIGINS) || [];
 const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
+const isPrimaryCronInstance =
+  !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === "0";
 
 // Nightly auto-heal for face embeddings (defaults ON; set AUTO_HEAL_CRON_ENABLED=false to disable)
 const AUTO_HEAL_CRON_ENABLED = process.env.AUTO_HEAL_CRON_ENABLED !== "false";
@@ -128,32 +130,70 @@ if (AUTO_HEAL_CRON_ENABLED) {
 // =======================
 const AUTO_PUNCHOUT_HOURS = Number(process.env.AUTO_PUNCHOUT_HOURS ?? 9) || 9;
 const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "false";
+const AUTO_PUNCHOUT_LOCK_ID = 812346; // unique advisory lock id for auto punch-out
+const AUTO_PUNCHOUT_BATCH_SIZE = Number(process.env.AUTO_PUNCHOUT_BATCH_SIZE ?? 300) || 300;
+const AUTO_PUNCHOUT_LOOKBACK_DAYS =
+  Number(process.env.AUTO_PUNCHOUT_LOOKBACK_DAYS ?? 2) || 2;
 
-if (AUTO_PUNCHOUT_CRON_ENABLED) {
+const runAutoPunchOutBatchJob = async (client) => {
+  let totalUpdated = 0;
+
+  while (true) {
+    const result = await client.query(
+      `WITH target AS (
+         SELECT a.attendance_id
+         FROM attendance a
+         WHERE a.punch_in_time IS NOT NULL
+           AND a.punch_out_time IS NULL
+           AND COALESCE(a.is_auto_punch_out, FALSE) = FALSE
+           AND a.punch_in_time < (NOW() AT TIME ZONE 'Asia/Kolkata') - ($1 * INTERVAL '1 hour')
+           AND a.date >= ((NOW() AT TIME ZONE 'Asia/Kolkata')::date - ($3 * INTERVAL '1 day'))
+         ORDER BY a.attendance_id
+         LIMIT $2
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE attendance a
+       SET punch_out_time    = a.punch_in_time + ($1 * INTERVAL '1 hour'),
+           duration          = LPAD($1::text, 2, '0') || ':00',
+           is_auto_punch_out = TRUE,
+           punched_out_by    = NULL
+       FROM target t
+       WHERE a.attendance_id = t.attendance_id
+       RETURNING a.attendance_id`,
+      [AUTO_PUNCHOUT_HOURS, AUTO_PUNCHOUT_BATCH_SIZE, AUTO_PUNCHOUT_LOOKBACK_DAYS]
+    );
+
+    totalUpdated += result.rowCount;
+    if (result.rowCount < AUTO_PUNCHOUT_BATCH_SIZE) break;
+  }
+
+  return totalUpdated;
+};
+
+if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     "0 * * * *", // Every hour at :00
     async () => {
+      let client = null;
+      let lockAcquired = false;
       try {
-        // Use pool.query() directly — it handles connection checkout/release
-        // automatically and avoids crashes if pool.connect() itself times out.
-        const result = await pool.query(
-          `UPDATE attendance
-              SET punch_out_time    = punch_in_time + ($1 * INTERVAL '1 hour'),
-                  duration          = LPAD($1::text, 2, '0') || ':00',
-                  is_auto_punch_out = TRUE,
-                  punched_out_by    = NULL
-            WHERE punch_in_time    IS NOT NULL
-              AND punch_out_time   IS NULL
-              AND COALESCE(is_auto_punch_out, FALSE) = FALSE
-              AND punch_in_time    < (NOW() AT TIME ZONE 'Asia/Kolkata') - ($1 * INTERVAL '1 hour')
-            RETURNING attendance_id, emp_id, punch_in_time, punch_out_time`,
-          [AUTO_PUNCHOUT_HOURS]
+        client = await pool.connect();
+        const lock = await client.query(
+          "SELECT pg_try_advisory_lock($1) AS locked",
+          [AUTO_PUNCHOUT_LOCK_ID]
         );
+        lockAcquired = Boolean(lock.rows[0]?.locked);
+        if (!lockAcquired) {
+          console.log("[AutoPunchOut] Another instance is handling this run; skipping.");
+          return;
+        }
 
-        if (result.rowCount > 0) {
+        const totalUpdated = await runAutoPunchOutBatchJob(client);
+
+        if (totalUpdated > 0) {
           console.log(
-            `[AutoPunchOut] ✅ Auto-punched out ${result.rowCount} employee(s) after ${AUTO_PUNCHOUT_HOURS}h.`,
-            result.rows.map((r) => `attendance_id=${r.attendance_id} emp_id=${r.emp_id}`).join(", ")
+            `[AutoPunchOut] ✅ Auto-punched out ${totalUpdated} attendance row(s) after ${AUTO_PUNCHOUT_HOURS}h` +
+              ` (batch=${AUTO_PUNCHOUT_BATCH_SIZE}, lookbackDays=${AUTO_PUNCHOUT_LOOKBACK_DAYS}).`
           );
         } else {
           console.log("[AutoPunchOut] No employees to auto punch-out at this hour.");
@@ -161,11 +201,25 @@ if (AUTO_PUNCHOUT_CRON_ENABLED) {
       } catch (err) {
         // Log but never crash the cron runner
         console.error("[AutoPunchOut] ❌ Cron error:", err.message);
+      } finally {
+        try {
+          if (client && lockAcquired) {
+            await client.query("SELECT pg_advisory_unlock($1)", [AUTO_PUNCHOUT_LOCK_ID]);
+          }
+        } catch (unlockErr) {
+          console.warn("[AutoPunchOut] Unlock warning:", unlockErr.message);
+        } finally {
+          if (client) client.release();
+        }
       }
     },
     { timezone: "Asia/Kolkata" }
   );
   console.log(`[AutoPunchOut] Cron registered — auto punch-out after ${AUTO_PUNCHOUT_HOURS}h, runs every hour.`);
+} else if (AUTO_PUNCHOUT_CRON_ENABLED && !isPrimaryCronInstance) {
+  console.log(
+    `[AutoPunchOut] Skipping cron registration on cluster instance ${process.env.NODE_APP_INSTANCE}`
+  );
 }
 
 app.use(
@@ -188,9 +242,6 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // 🔔 REPORT / WHATSAPP CRON
 // ⏰ 9:30 AM IST
 // =======================
-const isPrimaryCronInstance =
-  !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === "0";
-
 if (isPrimaryCronInstance) {
   cron.schedule(
     "30 09 * * *",
@@ -264,28 +315,66 @@ app.listen(PORT, "0.0.0.0", () => {
 
   // Run migration 5s after server starts — DB pool is warmed up by then
   setTimeout(async () => {
+    const AUTO_PUNCHOUT_MIGRATION_ENABLED =
+      process.env.AUTO_PUNCHOUT_MIGRATION_ENABLED !== "false";
+    if (!AUTO_PUNCHOUT_MIGRATION_ENABLED) {
+      console.log("[Migration] Skipped (AUTO_PUNCHOUT_MIGRATION_ENABLED=false).");
+      return;
+    }
+
     const MAX_RETRIES = 5;
     const RETRY_DELAY_MS = 5000;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      let client = null;
       try {
-        await pool.query(`
+        client = await pool.connect();
+
+        // Quick existence check first to avoid unnecessary ALTER TABLE under load.
+        const existsResult = await client.query(`
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_name = 'attendance'
+            AND column_name = 'is_auto_punch_out'
+          LIMIT 1;
+        `);
+
+        if (existsResult.rowCount > 0) {
+          console.log("[Migration] ✅ attendance.is_auto_punch_out already present.");
+          break;
+        }
+
+        // Run DDL with session-level timeout controls to avoid pool default 15s cancellation.
+        await client.query("SET statement_timeout = 0");
+        await client.query("SET lock_timeout = '5s'");
+        await client.query(`
           ALTER TABLE attendance
             ADD COLUMN IF NOT EXISTS is_auto_punch_out BOOLEAN NOT NULL DEFAULT FALSE;
         `);
         console.log("[Migration] ✅ attendance.is_auto_punch_out column ensured.");
         break;
       } catch (migErr) {
-        const isRetryable = migErr.message?.includes("timeout") || migErr.message?.includes("terminated");
+        const msg = migErr?.message || "";
+        const isRetryable =
+          msg.includes("timeout") ||
+          msg.includes("terminated") ||
+          msg.includes("canceling statement") ||
+          msg.includes("could not obtain lock");
         if (attempt < MAX_RETRIES && isRetryable) {
-          console.warn(`[Migration] ⚠️  Attempt ${attempt}/${MAX_RETRIES} failed (${migErr.message}). Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+          console.warn(
+            `[Migration] ⚠️  Attempt ${attempt}/${MAX_RETRIES} failed (${msg}). Retrying in ${
+              RETRY_DELAY_MS / 1000
+            }s...`
+          );
           await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
         } else {
-          console.warn("[Migration] ⚠️  Warning (non-fatal):", migErr.message);
+          console.warn("[Migration] ⚠️  Warning (non-fatal):", msg);
           break;
+        }
+      } finally {
+        if (client) {
+          client.release();
         }
       }
     }
   }, 5000);
 });
-
-
