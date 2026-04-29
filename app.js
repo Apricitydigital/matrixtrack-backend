@@ -210,12 +210,7 @@ if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
     async () => {
       console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
       
-      // Run DB migrations to ensure auto_punched_out columns exist before punching out
-      try {
-        await runMigrations();
-      } catch (err) {
-        console.error("[AutoPunchOut Cron] Migration failed:", err.message);
-      }
+
 
       const WINDOW_MS = 10 * 60 * 1000; // 10 minutes
       const INTERVAL_MS = 30 * 1000;    // every 30 seconds
@@ -258,6 +253,13 @@ app.use("/api/app/attendance/employee", selfAttendanceRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT}`);
+
+// Run migrations before starting the server
+runMigrations().then(() => {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error("Fatal: Migrations failed on startup", err);
+  process.exit(1);
 });
