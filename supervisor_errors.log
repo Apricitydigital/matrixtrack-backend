@@ -447,3 +447,91 @@
     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     at async fetchSupervisorEmployees (C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
     at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:03:25.588Z] top-supervisors: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T06:03:25.598Z] top-supervisors: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T06:03:25.948Z] top-supervisors: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T06:09:49.343Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:09:50.663Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:09:50.707Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:09:57.416Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:10:21.989Z] top-supervisors: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T06:10:21.994Z] top-supervisors: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T06:10:22.787Z] top-supervisors: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T06:10:28.173Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:10:31.244Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:10:38.778Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:10:46.152Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:11:01.232Z] top-supervisors: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T06:12:08.899Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:22:22.079Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:22:27.213Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T06:22:56.722Z] wards-post: error: canceling statement due to statement timeout
+    at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async fetchSupervisorEmployees (D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1238:22

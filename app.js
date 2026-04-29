@@ -5,6 +5,8 @@ const cookieParser = require("cookie-parser");
 const path = require("path");
 const cron = require("node-cron");
 const { sendDailyWhatsAppReport } = require("./utils/msg91WhatsApp");
+const { runAutoPunchOut } = require("./utils/autoPunchOutScheduler");
+const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
 const fs = require("fs");
 const { spawn } = require("child_process");
@@ -194,6 +196,46 @@ if (isPrimaryCronInstance) {
   );
 }
 
+// =======================
+// ⏰ AUTO PUNCH-OUT CRON
+// Runs at the top of every hour.
+// Keeps re-running for 10 minutes (every 30s) to catch all eligible employees.
+// Set AUTO_PUNCHOUT_CRON_ENABLED=false in .env to disable.
+// =======================
+const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "false";
+
+if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
+  cron.schedule(
+    "0 * * * *", // Top of every hour (e.g. 1:00, 2:00, ...)
+    async () => {
+      console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
+      
+
+
+      const WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+      const INTERVAL_MS = 30 * 1000;    // every 30 seconds
+      const startTime = Date.now();
+
+      // Run immediately on trigger
+      await runAutoPunchOut();
+
+      // Then repeat every 30s for 10 minutes
+      const intervalId = setInterval(async () => {
+        if (Date.now() - startTime >= WINDOW_MS) {
+          clearInterval(intervalId);
+          console.log("[AutoPunchOut Cron] ✅ 10-minute window complete. Stopping.");
+          return;
+        }
+        await runAutoPunchOut();
+      }, INTERVAL_MS);
+    },
+    { timezone: "Asia/Kolkata" }
+  );
+  console.log("[AutoPunchOut Cron] ✅ Registered — fires every hour, runs for 10 minutes.");
+} else {
+  console.log("[AutoPunchOut Cron] ⏭ Disabled or non-primary instance — skipping.");
+}
+
 // General API Route
 app.get("/", (req, res) => {
   res.send("Attendance System API is running...");
@@ -211,6 +253,13 @@ app.use("/api/app/attendance/employee", selfAttendanceRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT}`);
+
+// Run migrations before starting the server
+runMigrations().then(() => {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error("Fatal: Migrations failed on startup", err);
+  process.exit(1);
 });
