@@ -209,6 +209,9 @@ if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
     "0 * * * *", // Top of every hour (e.g. 1:00, 2:00, ...)
     async () => {
       console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
+      
+
+
       const WINDOW_MS = 10 * 60 * 1000; // 10 minutes
       const INTERVAL_MS = 30 * 1000;    // every 30 seconds
       const startTime = Date.now();
@@ -251,14 +254,12 @@ app.use("/api/app/attendance/employee", selfAttendanceRoutes);
 // Start Server
 const PORT = process.env.PORT || 5000;
 
-// Run DB migrations first, then start server
+// Run migrations before starting the server
 runMigrations().then(() => {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
-}).catch((err) => {
-  console.error("[Startup] Migration failed, starting server anyway:", err.message);
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+}).catch(err => {
+  console.error("Fatal: Migrations failed on startup", err);
+  process.exit(1);
 });

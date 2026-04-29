@@ -24,6 +24,20 @@ async function runMigrations() {
     `);
     console.log("[Migration] ✅ updated_at column ready.");
 
+    // Create index on date for faster dashboard queries
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_attendance_date 
+      ON attendance(date)
+    `);
+    console.log("[Migration] ✅ idx_attendance_date index ready.");
+
+    // Create index on punch_out_time for faster auto-punchout and dashboard queries
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_attendance_punch_out_time 
+      ON attendance(punch_out_time)
+    `);
+    console.log("[Migration] ✅ idx_attendance_punch_out_time index ready.");
+
     console.log("[Migration] ✅ All migrations complete.");
   } catch (err) {
     // Non-fatal: log and continue

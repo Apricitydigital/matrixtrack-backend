@@ -42,82 +42,50 @@ async function runAutoPunchOut() {
   try {
     client = await pool.connect();
 
-    // Find eligible records: punched in but not out, >= AUTO_PUNCHOUT_HOURS hours ago
-    const eligibleResult = await client.query(
-      `SELECT
-        a.attendance_id,
-        a.emp_id,
-        a.punch_in_time,
-        a.ward_id,
-        e.name AS emp_name,
-        e.emp_code
-      FROM attendance a
-      JOIN employee e ON a.emp_id = e.emp_id
-      WHERE a.date::date = $1::date
-        AND a.punch_in_time IS NOT NULL
-        AND a.punch_out_time IS NULL
-        AND (NOW() AT TIME ZONE 'Asia/Kolkata') - (a.punch_in_time AT TIME ZONE 'Asia/Kolkata') >= INTERVAL '${AUTO_PUNCHOUT_HOURS} hours'`,
+    // Single batch update query to prevent DB slowdown
+    const updateResult = await client.query(
+      `WITH updated AS (
+        UPDATE attendance a
+        SET
+          punch_out_time = NOW() AT TIME ZONE 'Asia/Kolkata',
+          duration = TO_CHAR(
+            (NOW() AT TIME ZONE 'Asia/Kolkata') - (a.punch_in_time AT TIME ZONE 'Asia/Kolkata'),
+            'HH24:MI:SS'
+          ),
+          auto_punched_out = true,
+          out_address = 'Auto Punch-Out (System)',
+          updated_at = NOW()
+        WHERE a.date::date = $1::date
+          AND a.punch_in_time IS NOT NULL
+          AND a.punch_out_time IS NULL
+          AND (NOW() AT TIME ZONE 'Asia/Kolkata') - (a.punch_in_time AT TIME ZONE 'Asia/Kolkata') >= INTERVAL '${AUTO_PUNCHOUT_HOURS} hours'
+        RETURNING a.attendance_id, a.emp_id, a.duration
+      )
+      SELECT u.attendance_id, u.duration, e.name AS emp_name, e.emp_code
+      FROM updated u
+      JOIN employee e ON u.emp_id = e.emp_id`,
       [today]
     );
 
-    const eligible = eligibleResult.rows;
+    const updatedRecords = updateResult.rows;
 
-    if (eligible.length === 0) {
+    if (updatedRecords.length === 0) {
       console.log(`[AutoPunchOut] ✅ No employees need auto punch-out.`);
-      return { processed: 0 };
+      return { processed: 0, failed: 0 };
     }
 
-    console.log(`[AutoPunchOut] 📋 Found ${eligible.length} employee(s) to auto punch-out.`);
+    console.log(`[AutoPunchOut] 📋 Batch updated ${updatedRecords.length} employee(s).`);
 
-    let successCount = 0;
-    let failCount = 0;
-
-    for (const record of eligible) {
-      try {
-        // Calculate duration from punch_in to now
-        const durationResult = await client.query(
-          `SELECT
-            TO_CHAR(
-              (NOW() AT TIME ZONE 'Asia/Kolkata') - (punch_in_time AT TIME ZONE 'Asia/Kolkata'),
-              'HH24:MI:SS'
-            ) AS duration
-          FROM attendance
-          WHERE attendance_id = $1`,
-          [record.attendance_id]
-        );
-
-        const duration = durationResult.rows[0]?.duration || null;
-
-        // Update: set punch_out_time, duration, auto_punched_out flag
-        await client.query(
-          `UPDATE attendance
-          SET
-            punch_out_time = NOW() AT TIME ZONE 'Asia/Kolkata',
-            duration = $1,
-            auto_punched_out = true,
-            out_address = 'Auto Punch-Out (System)',
-            updated_at = NOW()
-          WHERE attendance_id = $2`,
-          [duration, record.attendance_id]
-        );
-
-        console.log(
-          `[AutoPunchOut] ✅ Punched out: ${record.emp_name} (${record.emp_code}) | attendance_id: ${record.attendance_id} | duration: ${duration}`
-        );
-        successCount++;
-      } catch (rowErr) {
-        console.error(
-          `[AutoPunchOut] ❌ Failed for attendance_id ${record.attendance_id}:`,
-          rowErr.message
-        );
-        failCount++;
-      }
+    for (const record of updatedRecords) {
+      console.log(
+        `[AutoPunchOut] ✅ Punched out: ${record.emp_name} (${record.emp_code}) | attendance_id: ${record.attendance_id} | duration: ${record.duration}`
+      );
     }
 
     console.log(
-      `[AutoPunchOut] 🏁 Done | Success: ${successCount} | Failed: ${failCount}`
+      `[AutoPunchOut] 🏁 Done | Success: ${updatedRecords.length} | Failed: 0`
     );
-    return { processed: successCount, failed: failCount };
+    return { processed: updatedRecords.length, failed: 0 };
   } catch (err) {
     console.error("[AutoPunchOut] 💥 Scheduler error:", err.message);
     return { processed: 0, error: err.message };
