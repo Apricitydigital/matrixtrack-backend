@@ -447,3 +447,152 @@
     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     at async fetchSupervisorEmployees (C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
     at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T10:10:34.081Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:10:34.282Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:10:34.373Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:10:36.154Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T10:10:46.205Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:10:51.845Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:10:51.871Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:11:05.124Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:19:09.080Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:19:09.195Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:19:14.637Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T10:19:15.268Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T10:19:24.410Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:19:24.446Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:57:35.908Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:57:36.008Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:57:36.653Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:57:37.410Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:57:43.217Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:57:50.542Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:57:50.554Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:57:51.061Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:57:53.667Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:59:51.518Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T10:59:52.093Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:10:14.266Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:10:14.271Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:10:14.687Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:10:15.188Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:11:09.613Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:11:10.037Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:11:34.323Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:11:34.913Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:11:35.885Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-04-29T11:14:46.594Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-04-29T11:17:49.067Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
