@@ -1358,6 +1358,52 @@ router.post("/store-face", upload.single("image"), async (req, res) => {
     MISSING_FACE_CACHE.delete(targetEmployeeId);
     FOUND_FACE_CACHE.delete(targetEmployeeId);
 
+    // ── Face Re-Capture Request: auto-close APPROVED request as UPDATED ──────
+    // If this upload is happening as part of an approved re-capture workflow,
+    // mark the request UPDATED and notify admin so they can review the new photo.
+    try {
+      const callerUserId = req.user?.user_id ?? req.user?.id ?? null;
+      if (callerUserId) {
+        const { rows: reqRows } = await pool.query(
+          `UPDATE face_recapture_requests
+              SET status = 'UPDATED',
+                  reviewed_at = NOW()
+            WHERE user_id = $1
+              AND emp_id  = $2
+              AND status  = 'APPROVED'
+            RETURNING id`,
+          [callerUserId, targetEmployeeId]
+        );
+
+        if (reqRows.length > 0) {
+          // Resolve user name for admin notification
+          const { rows: userRows } = await pool.query(
+            `SELECT name, emp_code FROM users WHERE user_id = $1`,
+            [callerUserId]
+          );
+          const userName = userRows[0]?.name ?? `User #${callerUserId}`;
+          const empCode  = userRows[0]?.emp_code ?? "";
+
+          await pool.query(
+            `INSERT INTO admin_notifications (type, title, message, reference_id)
+               VALUES ('FACE_UPDATED',
+                       'Face Photo Updated',
+                       $1,
+                       $2)`,
+            [
+              `${userName}${empCode ? ` (${empCode})` : ""} has uploaded a new face photo (emp_id: ${targetEmployeeId}). Please review and confirm.`,
+              reqRows[0].id,
+            ]
+          );
+          console.log(`[StoreFace] Closed APPROVED request #${reqRows[0].id} as UPDATED for emp_id=${targetEmployeeId}`);
+        }
+      }
+    } catch (reqUpdateErr) {
+      // Non-fatal — don't block the face upload response
+      console.warn("[StoreFace] Failed to auto-close re-capture request:", reqUpdateErr.message);
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     res.json({
       success: true,
       faceId,

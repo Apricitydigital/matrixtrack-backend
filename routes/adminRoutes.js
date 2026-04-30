@@ -731,4 +731,157 @@ router.delete("/feedback/config/:id", async (req, res) => {
   }
 });
 
+// ===== FACE RE-CAPTURE REQUEST MANAGEMENT =====
+
+/**
+ * GET /admin/face-requests
+ * List all face re-capture requests (filterable by ?status=)
+ */
+router.get("/face-requests", async (req, res) => {
+  try {
+    const { status } = req.query;
+
+    let query = `
+      SELECT
+        r.id,
+        r.user_id,
+        r.emp_id,
+        r.status,
+        r.requested_at,
+        r.reviewed_at,
+        r.rejection_reason,
+        r.notes,
+        u.name   AS user_name,
+        u.email  AS user_email,
+        u.emp_code AS user_emp_code,
+        e.name   AS employee_name
+      FROM face_recapture_requests r
+      LEFT JOIN users    u ON r.user_id = u.user_id
+      LEFT JOIN employee e ON r.emp_id  = e.emp_id
+    `;
+    const params = [];
+
+    if (status) {
+      query += " WHERE r.status = $1";
+      params.push(status.toUpperCase());
+    }
+
+    query += " ORDER BY r.requested_at DESC";
+
+    const { rows } = await pool.query(query, params);
+    return res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error("[AdminFaceRequest] list error:", error);
+    return res.status(500).json({ success: false, error: "Server error", details: error.message });
+  }
+});
+
+/**
+ * PATCH /admin/face-requests/:id/approve
+ * Approve a face re-capture request → allows the user to upload a new face photo.
+ */
+router.patch("/face-requests/:id/approve", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user?.user_id ?? req.user?.id ?? null;
+
+    const { rows } = await pool.query(
+      `UPDATE face_recapture_requests
+          SET status = 'APPROVED',
+              reviewed_at = NOW(),
+              reviewed_by = $2
+        WHERE id = $1 AND status = 'REQUESTED'
+        RETURNING id, emp_id, user_id, status`,
+      [id, adminId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: "Request not found or already actioned." });
+    }
+
+    const req_ = rows[0];
+
+    // Notify the user (admin_notifications is used as an in-app inbox)
+    await pool.query(
+      `INSERT INTO admin_notifications (type, title, message, reference_id)
+         VALUES ('FACE_REQUEST_APPROVED',
+                 'Face Re-Capture Approved',
+                 $1,
+                 $2)`,
+      [
+        `Your face re-capture request has been approved. Please open the app and capture your new face photo.`,
+        req_.id,
+      ]
+    ).catch(() => {}); // non-fatal
+
+    return res.json({ success: true, message: "Request approved.", status: "APPROVED", requestId: req_.id });
+  } catch (error) {
+    console.error("[AdminFaceRequest] approve error:", error);
+    return res.status(500).json({ success: false, error: "Server error", details: error.message });
+  }
+});
+
+/**
+ * PATCH /admin/face-requests/:id/reject
+ * Reject a face re-capture request.
+ * Body: { reason? }
+ */
+router.patch("/face-requests/:id/reject", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason = "" } = req.body ?? {};
+    const adminId = req.user?.user_id ?? req.user?.id ?? null;
+
+    const { rows } = await pool.query(
+      `UPDATE face_recapture_requests
+          SET status = 'REJECTED',
+              reviewed_at = NOW(),
+              reviewed_by = $2,
+              rejection_reason = $3
+        WHERE id = $1 AND status = 'REQUESTED'
+        RETURNING id, emp_id, user_id, status`,
+      [id, adminId, reason || null]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: "Request not found or already actioned." });
+    }
+
+    return res.json({ success: true, message: "Request rejected.", status: "REJECTED", requestId: rows[0].id });
+  } catch (error) {
+    console.error("[AdminFaceRequest] reject error:", error);
+    return res.status(500).json({ success: false, error: "Server error", details: error.message });
+  }
+});
+
+/**
+ * PATCH /admin/face-requests/:id/review-update
+ * Mark an UPDATED request as reviewed (admin has seen the new photo).
+ * This keeps the audit trail clean and confirms the update.
+ */
+router.patch("/face-requests/:id/review-update", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user?.user_id ?? req.user?.id ?? null;
+
+    const { rows } = await pool.query(
+      `UPDATE face_recapture_requests
+          SET notes = COALESCE(notes, '') || ' [Admin reviewed on ' || NOW()::date || ']',
+              reviewed_by = $2
+        WHERE id = $1 AND status = 'UPDATED'
+        RETURNING id, status`,
+      [id, adminId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: "Request not found or not in UPDATED status." });
+    }
+
+    return res.json({ success: true, message: "Update marked as reviewed.", requestId: rows[0].id });
+  } catch (error) {
+    console.error("[AdminFaceRequest] review-update error:", error);
+    return res.status(500).json({ success: false, error: "Server error", details: error.message });
+  }
+});
+
 module.exports = router;
