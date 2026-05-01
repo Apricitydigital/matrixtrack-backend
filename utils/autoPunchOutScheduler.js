@@ -50,7 +50,7 @@ async function runAutoPunchOut() {
           punch_out_time = NOW() AT TIME ZONE 'Asia/Kolkata',
           duration = TO_CHAR(
             (NOW() AT TIME ZONE 'Asia/Kolkata') - (a.punch_in_time AT TIME ZONE 'Asia/Kolkata'),
-            'HH24:MI:SS'
+            'HH24:MI'
           ),
           auto_punched_out = true,
           out_address = 'Auto Punch-Out (System)',

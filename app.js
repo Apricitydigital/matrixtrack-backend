@@ -203,10 +203,11 @@ if (isPrimaryCronInstance) {
 // Set AUTO_PUNCHOUT_CRON_ENABLED=false in .env to disable.
 // =======================
 const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "false";
+const AUTO_PUNCHOUT_CRON_EXPR = process.env.AUTO_PUNCHOUT_CRON_EXPR || "0 * * * *";
 
 if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
-    "0 * * * *", // Top of every hour (e.g. 1:00, 2:00, ...)
+    AUTO_PUNCHOUT_CRON_EXPR,
     async () => {
       console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
       
@@ -231,7 +232,7 @@ if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
     },
     { timezone: "Asia/Kolkata" }
   );
-  console.log("[AutoPunchOut Cron] ✅ Registered — fires every hour, runs for 10 minutes.");
+  console.log(`[AutoPunchOut Cron] ✅ Registered — schedule: "${AUTO_PUNCHOUT_CRON_EXPR}", runs for 10 minutes.`);
 } else {
   console.log("[AutoPunchOut Cron] ⏭ Disabled or non-primary instance — skipping.");
 }
