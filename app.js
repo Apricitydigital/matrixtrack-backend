@@ -28,6 +28,7 @@ const parseRecipients = (value) =>
   [...new Set(String(value || "").split(",").map((v) => v.trim()).filter(Boolean))];
 const DEFAULT_RECIPIENTS = ["9131042937", "8319776925", "8982622996", "9111899909", "9371222202", "9229499999", "9340553792", "8007773301", "83088541510", "9730779278", "9689931759", "7620661125", "7722004567", "9013990014", "8349733213"];
 const TEST_RECIPIENTS = parseRecipients(process.env.WHATSAPP_RECIPIENTS).length ? parseRecipients(process.env.WHATSAPP_RECIPIENTS) : DEFAULT_RECIPIENTS;
+const NEW_REPORT_RECIPIENTS = ["918827232995", "919131042937"];
 
 // ========= WHATSAPP DEDUP (one run per day) =========
 const LAST_RUN_FILE = path.join(__dirname, "whatsapp_report_last_run.txt");
@@ -145,7 +146,28 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 const isPrimaryCronInstance =
   !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === "0";
 
+const { sendDailyWhatsAppReportNew } = require("./utils/msg91WhatsAppNew");
+
+// ========= WHATSAPP NEW DEDUP =========
+const LAST_RUN_FILE_NEW = path.join(__dirname, "whatsapp_report_new_last_run.txt");
+const hasSentTodayNew = (key) => {
+  try {
+    const stored = fs.readFileSync(LAST_RUN_FILE_NEW, "utf8").trim();
+    return stored === key;
+  } catch (err) {
+    return false;
+  }
+};
+const markSentTodayNew = (key) => {
+  try {
+    fs.writeFileSync(LAST_RUN_FILE_NEW, key, "utf8");
+  } catch (err) {
+    console.error("Unable to record New WhatsApp send date:", err.message);
+  }
+};
+
 if (isPrimaryCronInstance) {
+  // Existing Report Cron (9:30 AM)
   cron.schedule(
     "30 09 * * *",
     async () => {
@@ -182,6 +204,61 @@ if (isPrimaryCronInstance) {
       } finally {
         if (lockAcquired) {
           await releaseCronLock(client);
+        }
+        client.release();
+      }
+    },
+    {
+      timezone: "Asia/Kolkata",
+    }
+  );
+
+  // New Report Cron (9:35 AM)
+  cron.schedule(
+    "35 09 * * *",
+    async () => {
+      console.log('[WhatsApp New Cron] New Daily attendance report triggered');
+      const client = await pool.connect();
+      let lockAcquired = false;
+      try {
+        // Use a different lock ID for the new report
+        const NEW_LOCK_ID = 812346;
+        const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [NEW_LOCK_ID]);
+        lockAcquired = Boolean(rows[0]?.locked);
+        
+        if (!lockAcquired) {
+          console.log("[WhatsApp New Cron] Another instance is handling send; skipping.");
+          return;
+        }
+
+        const runKey = todayKey();
+        if (hasSentTodayNew(runKey)) {
+          console.log("[WhatsApp New Cron] Already sent today, skipping.");
+          return;
+        }
+
+        for (const mobile of NEW_REPORT_RECIPIENTS) {
+          try {
+            const { reportData } = await sendDailyWhatsAppReportNew({
+              phoneNumber: mobile,
+            });
+            console.log('[WhatsApp New Cron] Sent to:', mobile, reportData.date);
+          } catch (error) {
+            console.error('[WhatsApp New Cron] Failed for:', mobile, error.message);
+          }
+        }
+
+        markSentTodayNew(runKey);
+        
+        // Unlock
+        await client.query("SELECT pg_advisory_unlock($1)", [NEW_LOCK_ID]);
+        lockAcquired = false; 
+      } catch (err) {
+        console.error('[WhatsApp New Cron] Cron error:', err.message);
+      } finally {
+        if (lockAcquired) {
+          // This would be reached only if lock was acquired but try/catch failed before explicit unlock
+          await client.query("SELECT pg_advisory_unlock(812346)");
         }
         client.release();
       }
