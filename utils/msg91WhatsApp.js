@@ -327,7 +327,7 @@ const buildReportData = async () => {
   // Raw unique employee count (kept for reference; the message uses category sums below)
   const cityTotalRegistered = cityRegisteredSet.size;
 
-  const departmentCounts = new Ma p();
+  const departmentCounts = new Map();
   allRows.forEach((row) => {
     const allowedDepartments = getAllowedDepartments(row);
     // Canonicalize so every employee lands in one of the 4 known buckets
