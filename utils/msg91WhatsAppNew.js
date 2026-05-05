@@ -14,11 +14,11 @@ const REPORT_TIMEZONE = "Asia/Kolkata";
 const getReportDates = () => {
   const nowUtc = new Date();
   const istNow = new Date(nowUtc.toLocaleString("en-US", { timeZone: REPORT_TIMEZONE }));
-  
+
   // Use YESTERDAY's date for the daily report
   const reportDate = new Date(istNow);
   reportDate.setDate(reportDate.getDate() - 1);
-  
+
   const isoDate = reportDate.toISOString().slice(0, 10);
   const displayDate = reportDate.toLocaleDateString("en-IN", {
     day: "2-digit",
@@ -26,7 +26,7 @@ const getReportDates = () => {
     year: "numeric",
     timeZone: REPORT_TIMEZONE,
   });
-  
+
   return { isoDate, displayDate };
 };
 
@@ -46,26 +46,26 @@ const fetchCityReportData = async (date) => {
     WHERE c.city_name = $2
       AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
   `;
-  
+
   const { rows } = await pool.query(query, [date, REPORT_CITY]);
-  
+
   let cityStats = { total: rows.length, present: 0, absent: 0 };
   let rampStats = { total: 0, present: 0, absent: 0 };
   let pmcStats = { total: 0, present: 0, absent: 0 };
 
   rows.forEach(row => {
     const isPresent = row.is_present === 1;
-    
+
     if (isPresent) cityStats.present++;
-    
+
     const deptName = row.department_name || "";
-    
+
     // Ramp Detection
     if (/ramp/i.test(deptName)) {
       rampStats.total++;
       if (isPresent) rampStats.present++;
     }
-    
+
     // Road Sweeping Staff- PMC Detection
     if (/pmc/i.test(deptName) && /sweeping/i.test(deptName)) {
       pmcStats.total++;

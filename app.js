@@ -146,7 +146,8 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 const isPrimaryCronInstance =
   !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === "0";
 
-const { sendDailyWhatsAppReportNew } = require("./utils/msg91WhatsAppNew");
+const { sendDailyWhatsAppReportNew }       = require("./utils/msg91WhatsAppNew");
+const { sendSupervisorDailyReport }        = require("./utils/msg91SupervisorDailyReport");
 
 // ========= WHATSAPP NEW DEDUP =========
 const LAST_RUN_FILE_NEW = path.join(__dirname, "whatsapp_report_new_last_run.txt");
@@ -213,9 +214,9 @@ if (isPrimaryCronInstance) {
     }
   );
 
-  // New Report Cron (9:35 AM)
+  // New Report Cron (1:20 PM)
   cron.schedule(
-    "35 09 * * *",
+    "20 13 * * *",
     async () => {
       console.log('[WhatsApp New Cron] New Daily attendance report triggered');
       const client = await pool.connect();
@@ -267,6 +268,65 @@ if (isPrimaryCronInstance) {
       timezone: "Asia/Kolkata",
     }
   );
+
+  // =============================================
+  // Supervisor Daily Report Cron (8:00 PM IST)
+  // ISOLATED: own lock ID (812347), own tracking file
+  // Recipients: defined inside msg91SupervisorDailyReport.js
+  // =============================================
+  const LAST_RUN_FILE_SUP = path.join(__dirname, "whatsapp_report_supervisor_last_run.txt");
+  const hasSentTodaySup = (key) => {
+    try {
+      const stored = fs.readFileSync(LAST_RUN_FILE_SUP, "utf8").trim();
+      return stored === key;
+    } catch (_) { return false; }
+  };
+  const markSentTodaySup = (key) => {
+    try { fs.writeFileSync(LAST_RUN_FILE_SUP, key, "utf8"); }
+    catch (err) { console.error("[SupervisorCron] Unable to record run date:", err.message); }
+  };
+
+  cron.schedule(
+    "00 20 * * *",          // 8:00 PM IST daily
+    async () => {
+      console.log("[SupervisorCron] Supervisor daily report triggered.");
+      const client = await pool.connect();
+      let lockAcquired = false;
+      const SUP_LOCK_ID = 812347;   // unique — never reuse this number
+      try {
+        const { rows } = await client.query(
+          "SELECT pg_try_advisory_lock($1) AS locked", [SUP_LOCK_ID]
+        );
+        lockAcquired = Boolean(rows[0]?.locked);
+        if (!lockAcquired) {
+          console.log("[SupervisorCron] Another instance running; skipping.");
+          return;
+        }
+
+        const runKey = todayKey();
+        if (hasSentTodaySup(runKey)) {
+          console.log("[SupervisorCron] Already sent today; skipping.");
+          return;
+        }
+
+        const result = await sendSupervisorDailyReport();
+        markSentTodaySup(runKey);
+        console.log(`[SupervisorCron] Done. Processed ${result.count} supervisors for ${result.isoDate}.`);
+
+        await client.query("SELECT pg_advisory_unlock($1)", [SUP_LOCK_ID]);
+        lockAcquired = false;
+      } catch (err) {
+        console.error("[SupervisorCron] Error:", err.message);
+      } finally {
+        if (lockAcquired) {
+          await client.query("SELECT pg_advisory_unlock($1)", [SUP_LOCK_ID]);
+        }
+        client.release();
+      }
+    },
+    { timezone: "Asia/Kolkata" }
+  );
+
 } else {
   console.log(
     `[WhatsApp Cron] Skipping cron registration on cluster instance ${process.env.NODE_APP_INSTANCE}`
