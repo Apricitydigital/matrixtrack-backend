@@ -1,0 +1,88 @@
+const AWS = require('aws-sdk');
+const logger = require('./logger');
+
+const awsRegion = process.env.AWS_REGION || 'ap-south-1';
+
+AWS.config.update({
+  region: awsRegion,
+  accessKeyId: process.env.AWS_ACCESS_KEY,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+});
+
+const sns = new AWS.SNS({ apiVersion: '2010-03-31' });
+
+const normalizeIndianPhone = (phoneRaw = '') => {
+  const digits = String(phoneRaw).replace(/[^\d]/g, '');
+  if (!digits) return '';
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
+  if (digits.length > 12 && digits.startsWith('0091')) return `+${digits.slice(2)}`;
+  return digits.startsWith('+') ? digits : `+${digits}`;
+};
+
+const buildSnsMessageAttributes = () => {
+  const attributes = {};
+  attributes['AWS.SNS.SMS.SMSType'] = {
+    DataType: 'String',
+    StringValue: process.env.AWS_SNS_SMS_TYPE || 'Transactional'
+  };
+  if (process.env.AWS_SNS_SENDER_ID) {
+    attributes['AWS.SNS.SMS.SenderID'] = {
+      DataType: 'String',
+      StringValue: process.env.AWS_SNS_SENDER_ID
+    };
+  }
+  if (process.env.AWS_SNS_ENTITY_ID) {
+    attributes['AWS.MM.SMS.EntityId'] = {
+      DataType: 'String',
+      StringValue: process.env.AWS_SNS_ENTITY_ID
+    };
+  }
+  if (process.env.AWS_SNS_TEMPLATE_ID) {
+    attributes['AWS.MM.SMS.TemplateId'] = {
+      DataType: 'String',
+      StringValue: process.env.AWS_SNS_TEMPLATE_ID
+    };
+  }
+  return attributes;
+};
+
+const sendSms = async ({ phone, message, context = 'general' }) => {
+  const destination = normalizeIndianPhone(phone);
+  if (!destination) {
+    throw new Error('Invalid phone number for SMS');
+  }
+
+  if (!process.env.AWS_ACCESS_KEY || !process.env.AWS_SECRET_ACCESS_KEY) {
+    throw new Error('AWS credentials missing for SNS SMS');
+  }
+
+  const params = {
+    Message: String(message || ''),
+    PhoneNumber: destination,
+    MessageAttributes: buildSnsMessageAttributes()
+  };
+
+  try {
+    const result = await sns.publish(params).promise();
+    logger.info('[SMS] Sent via AWS SNS', {
+      context,
+      phone: destination,
+      messageId: result?.MessageId || null
+    });
+    return result;
+  } catch (error) {
+    logger.warn('[SMS] AWS SNS publish failed', {
+      context,
+      phone: destination,
+      code: error.code || null,
+      statusCode: error.statusCode || null,
+      message: error.message
+    });
+    throw error;
+  }
+};
+
+module.exports = {
+  sendSms
+};

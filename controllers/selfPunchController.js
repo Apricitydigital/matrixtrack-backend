@@ -1,0 +1,292 @@
+const multer = require('multer');
+const { v4: uuidv4 } = require('uuid');
+const pool = require('../config/db');
+const logger = require('../utils/logger');
+const { encryptAadhar } = require('../utils/encryption');
+const { uploadToS3, deleteFromS3 } = require('../utils/s3SelfPunch');
+const socketio = require('../utils/socket');
+
+// Multer memory storage to hold files before uploading to S3
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB max across any single file
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.fieldname === 'aadhar_doc') {
+      if (!file.mimetype.match(/^image\/(jpeg|jpg|png)$/) && file.mimetype !== 'application/pdf') {
+        return cb(new Error('Aadhar doc must be an image (jpg/png) or PDF.'));
+      }
+    } else if (file.fieldname === 'selfie') {
+      if (!file.mimetype.match(/^image\/(jpeg|jpg|png)$/)) {
+        return cb(new Error('Selfie must be an image (jpg/png).'));
+      }
+    }
+    cb(null, true);
+  }
+}).fields([
+  { name: 'aadhar_doc', maxCount: 1 },
+  { name: 'selfie', maxCount: 1 }
+]);
+
+// Strip basic HTML tags for basic sanitization
+const sanitizeString = (str) => {
+  if (!str) return str;
+  return str.replace(/<[^>]*>?/gm, '').trim();
+};
+
+const resolveValidKothiId = async (client, kothiIdRaw) => {
+  if (!kothiIdRaw) {
+    return null;
+  }
+
+  const parsed = parseInt(kothiIdRaw, 10);
+  if (Number.isNaN(parsed)) {
+    return null;
+  }
+
+  try {
+    const { rows } = await client.query(
+      'SELECT id FROM kothi_assignments WHERE id = $1 LIMIT 1',
+      [parsed]
+    );
+    if (rows.length) {
+      return parsed;
+    }
+
+    // Some deployments keep kothi_assignments sparse while UI sends ward_id as kothi_id.
+    // Try to backfill a minimal mapping row so FK remains valid and selection is preserved.
+    await client.query(
+      'INSERT INTO kothi_assignments (id) VALUES ($1) ON CONFLICT (id) DO NOTHING',
+      [parsed]
+    );
+
+    const verify = await client.query(
+      'SELECT id FROM kothi_assignments WHERE id = $1 LIMIT 1',
+      [parsed]
+    );
+
+    return verify.rows.length ? parsed : null;
+  } catch (error) {
+    // If table lookup fails for any reason, treat kothi as optional and continue.
+    logger.warn('[SelfPunch] kothi_assignments validation failed, storing NULL kothi_id', {
+      message: error.message
+    });
+    return null;
+  }
+};
+
+const validateInput = (reqBody, reqFiles) => {
+  const errors = {};
+
+  const { full_name, mobile, email, aadhar_number, city_id, zone_id, ward_id } = reqBody;
+
+  if (!full_name || !sanitizeString(full_name)) errors.full_name = "Full name is required.";
+  
+  if (!mobile || !/^\d{10}$/.test(mobile)) {
+    errors.mobile = "Mobile must be a valid 10-digit number.";
+  }
+
+  if (!email || !/^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/.test(email)) {
+    errors.email = "Valid email is required.";
+  }
+
+  if (!aadhar_number || !/^\d{12}$/.test(aadhar_number)) {
+    errors.aadhar_number = "Aadhar number must be exactly 12 digits.";
+  }
+
+  if (!city_id || isNaN(parseInt(city_id, 10))) errors.city_id = "Valid city_id is required.";
+  if (!zone_id || isNaN(parseInt(zone_id, 10))) errors.zone_id = "Valid zone_id is required.";
+  if (!ward_id || isNaN(parseInt(ward_id, 10))) errors.ward_id = "Valid ward_id (sector in DB) is required.";
+  
+  // kothi_id is optional at UI level, but if provided must be integer
+  if (reqBody.kothi_id && isNaN(parseInt(reqBody.kothi_id, 10))) {
+    errors.kothi_id = "Valid kothi_id (ward in DB) is required if provided.";
+  }
+
+  if (!reqFiles || !reqFiles['aadhar_doc'] || !reqFiles['aadhar_doc'][0]) {
+    errors.aadhar_doc = "Aadhar document (PDF or Image) is required.";
+  }
+
+  if (!reqFiles || !reqFiles['selfie'] || !reqFiles['selfie'][0]) {
+    errors.selfie = "Selfie image is required.";
+  }
+
+  return Object.keys(errors).length > 0 ? errors : null;
+};
+
+const submitRequest = async (req, res) => {
+  // 1. Validate Input
+  const errors = validateInput(req.body, req.files);
+  if (errors) {
+    logger.warn('[SelfPunch] Validation failed for new request', { errors, ip: req.ip });
+    return res.status(400).json({ success: false, errors });
+  }
+
+  const {
+    full_name,
+    mobile,
+    email,
+    aadhar_number,
+    city_id,
+    zone_id,
+    ward_id,
+    kothi_id
+  } = req.body;
+
+  const sanitizedFullName = sanitizeString(full_name);
+  const sanitizedEmail = sanitizeString(email);
+
+  // 2. Encrypt Aadhar
+  let encryptedAadhar;
+  try {
+    encryptedAadhar = encryptAadhar(aadhar_number);
+  } catch (err) {
+    logger.error('[SelfPunch] Aadhar encryption failed', err);
+    return res.status(500).json({ success: false, message: 'Internal server encryption error.' });
+  }
+
+  const client = await pool.connect();
+  let aadharDocKey = null;
+  let selfieKey = null;
+
+  try {
+    await client.query('BEGIN');
+
+    // Duplicate check: Same aadhar and ward_id already pending or approved
+    // Note: To check exact duplicate Aadhar securely, we query by the encrypted string directly
+    const duplicateCheck = await client.query(`
+      SELECT id FROM self_punch_requests 
+      WHERE aadhar_number = $1 
+        AND ward_id = $2 
+        AND status IN ('pending', 'approved')
+    `, [encryptedAadhar, parseInt(ward_id, 10)]);
+
+    if (duplicateCheck.rowCount > 0) {
+      await client.query('ROLLBACK');
+      logger.info('[SelfPunch] Duplicate request rejected', { ward_id, ip: req.ip });
+      return res.status(409).json({ 
+        success: false, 
+        message: 'A request for this Aadhar number at this location is already pending or approved.' 
+      });
+    }
+
+    // Generate Request UUID
+    const requestId = uuidv4();
+
+    // 3. Upload to S3
+    const aadharDocFile = req.files['aadhar_doc'][0];
+    const selfieFile = req.files['selfie'][0];
+
+    const aadharExt = aadharDocFile.mimetype === 'application/pdf' ? 'pdf' : aadharDocFile.mimetype.split('/')[1];
+    const selfieExt = selfieFile.mimetype.split('/')[1];
+
+    const aadharPath = `self-punch-requests/${requestId}/aadhar.${aadharExt}`;
+    const selfiePath = `self-punch-requests/${requestId}/selfie.${selfieExt}`;
+
+    logger.info(`[SelfPunch] Uploading files for ${requestId} to S3...`);
+    aadharDocKey = await uploadToS3(aadharDocFile.buffer, aadharPath, aadharDocFile.mimetype);
+    selfieKey = await uploadToS3(selfieFile.buffer, selfiePath, selfieFile.mimetype);
+
+    // 4. Save to DB
+    logger.info(`[SelfPunch] Inserting record ${requestId} into DB...`);
+    const insertRequestQuery = `
+      INSERT INTO self_punch_requests (
+        id, full_name, mobile, email, aadhar_number, 
+        aadhar_doc_url, selfie_url, 
+        city_id, zone_id, ward_id, kothi_id, 
+        status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
+      RETURNING id;
+    `;
+    
+    const safeKothiId = await resolveValidKothiId(client, kothi_id);
+    logger.info('[SelfPunch] Final location mapping', {
+      ward_id: parseInt(ward_id, 10),
+      requested_kothi_id: kothi_id ? parseInt(kothi_id, 10) : null,
+      stored_kothi_id: safeKothiId
+    });
+
+    await client.query(insertRequestQuery, [
+      requestId,
+      sanitizedFullName,
+      mobile,
+      sanitizedEmail,
+      encryptedAadhar,
+      aadharDocKey,
+      selfieKey,
+      parseInt(city_id, 10),
+      parseInt(zone_id, 10),
+      parseInt(ward_id, 10),
+      safeKothiId
+    ]);
+
+    // 5. Insert Log Entry
+    const insertLogQuery = `
+      INSERT INTO self_punch_request_logs (request_id, action, performed_by_type, performed_by_id, note)
+      VALUES ($1, 'submitted', 'admin', 0, 'Request submitted by worker')
+    `;
+    await client.query(insertLogQuery, [requestId]);
+
+    await client.query('COMMIT');
+    logger.info(`[SelfPunch] Request ${requestId} saved successfully.`);
+
+    // 6 & 7. Send Socket Notification to Supervisors
+    try {
+      const io = socketio.getIO();
+      // Emitting to everyone for now, but ideally we'd target supervisors connected to this ward room
+      // To target specifically:
+      // io.to(`ward_${ward_id}`).emit('new_self_punch_request', { request_id: requestId, ward_id });
+      
+      io.emit('new_self_punch_request', { 
+        request_id: requestId, 
+        ward_id: parseInt(ward_id, 10),
+        zone_id: parseInt(zone_id, 10)
+      });
+      logger.info(`[SelfPunch] Socket notification emitted for ${requestId}.`);
+    } catch (socketErr) {
+      // Non-fatal, just log
+      logger.warn(`[SelfPunch] Failed to emit socket notification for ${requestId}:`, socketErr.message);
+    }
+
+    // 8. Return Success
+    return res.status(201).json({
+      success: true,
+      request_id: requestId,
+      message: "Your request has been submitted. You'll be notified once approved."
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    logger.error(`[SelfPunch] Transaction failed. Rolling back DB and S3.`, error);
+
+    // Rollback S3 uploads if they happened
+    if (aadharDocKey) await deleteFromS3(aadharDocKey);
+    if (selfieKey) await deleteFromS3(selfieKey);
+
+    return res.status(500).json({ success: false, message: 'Internal server error during submission.' });
+  } finally {
+    client.release();
+  }
+};
+
+// Error handling middleware for Multer limits/filters
+const handleMulterError = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    // A Multer error occurred when uploading.
+    logger.warn('[SelfPunch] Multer Error', err.message);
+    return res.status(400).json({ success: false, errors: { file: err.message } });
+  } else if (err) {
+    // An unknown error occurred.
+    logger.warn('[SelfPunch] Upload Error', err.message);
+    return res.status(400).json({ success: false, errors: { file: err.message } });
+  }
+  next();
+};
+
+module.exports = {
+  upload,
+  handleMulterError,
+  submitRequest
+};

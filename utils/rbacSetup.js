@@ -80,6 +80,24 @@ const BASE_PERMISSIONS = [
     description: "Access analytics dashboards",
   },
   {
+    module: "field-access-requests",
+    action: "view",
+    label: "View Professional Access Requests",
+    description: "View self punch-in registration requests",
+  },
+  {
+    module: "field-access-requests",
+    action: "write",
+    label: "Manage Professional Access Requests",
+    description: "Approve or reject self punch-in registration requests",
+  },
+  {
+    module: "professional-attendance",
+    action: "view",
+    label: "View Professional Attendance",
+    description: "View professional employee attendance dashboard",
+  },
+  {
     module: "master",
     action: "view",
     label: "View Master Data",

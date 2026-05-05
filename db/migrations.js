@@ -4,6 +4,8 @@
  */
 
 const pool = require("../config/db");
+const fs = require("fs");
+const path = require("path");
 
 async function runMigrations() {
   const client = await pool.connect();
@@ -37,6 +39,16 @@ async function runMigrations() {
       ON attendance(punch_out_time)
     `);
     console.log("[Migration] ✅ idx_attendance_punch_out_time index ready.");
+
+    console.log("[Migration] Running Self Punch-In migrations...");
+    const selfPunchInSqlPath = path.join(__dirname, "migrations", "20260505_self_punch_in_up.sql");
+    if (fs.existsSync(selfPunchInSqlPath)) {
+      const selfPunchInSql = fs.readFileSync(selfPunchInSqlPath, "utf8");
+      await client.query(selfPunchInSql);
+      console.log("[Migration] ✅ Self Punch-In migrations ready.");
+    } else {
+      console.warn("[Migration] ⚠️ Self Punch-In SQL file not found at:", selfPunchInSqlPath);
+    }
 
     console.log("[Migration] ✅ All migrations complete.");
   } catch (err) {

@@ -10,6 +10,8 @@ const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const http = require("http");
+const socketio = require("./utils/socket");
 
 
 process.on("unhandledRejection", (reason) => {
@@ -73,7 +75,8 @@ app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.url}`);
   next();
 });
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
+app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 const defaultOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
@@ -255,9 +258,13 @@ app.use("/api/app/attendance/employee", selfAttendanceRoutes);
 // Start Server
 const PORT = process.env.PORT || 5000;
 
+// Create HTTP server and initialize Socket.io
+const server = http.createServer(app);
+socketio.init(server);
+
 // Run migrations before starting the server
 runMigrations().then(() => {
-  app.listen(PORT, "0.0.0.0", () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
 }).catch(err => {
