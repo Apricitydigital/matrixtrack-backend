@@ -72,6 +72,7 @@ router.post("/", async (req, res) => {
         a.latitude_out,
         a.longitude_out,
         a.punch_out_image, 
+        COALESCE(a.auto_punched_out, false) AS is_auto_punch_out,
         a.duration,
         a.leave_type,
         u.name AS punched_in_by,
