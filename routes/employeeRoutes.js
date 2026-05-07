@@ -2,23 +2,23 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 const multer = require("multer");
+const multerS3 = require("multer-s3");
 const path = require("path");
 const fs = require("fs");
+const { s3 } = require("../config/awsConfig");
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = path.join(__dirname, "../uploads/aadhar");
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `aadhar_${req.params.id}_${Date.now()}${ext}`);
-  }
+const bucketName = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+
+const uploadAadhar = multer({
+  storage: multerS3({
+    s3,
+    bucket: bucketName,
+    key: (req, file, cb) => {
+      const ext = path.extname(file.originalname);
+      cb(null, `aadhar/${req.params.id}_${Date.now()}${ext}`);
+    },
+  }),
 });
-const uploadAadhar = multer({ storage });
 const { buildPublicFaceUrl } = require("../utils/faceImage");
 const { isBackblazeUrl } = require("../utils/backblaze");
 const authenticate = require("../middleware/authMiddleware");
@@ -232,13 +232,19 @@ router.delete("/:id", async (req, res) => {
 // 🟢 Upload Aadhar Document
 router.post("/:id/aadhar", uploadAadhar.single("document"), async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = parseId(req.params.id);
+    if (!id) {
+        return res.status(400).json({ error: "Invalid Employee ID" });
+    }
+    
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // Construct URL for local upload
-    const aadharUrl = `${process.env.API_BASE_URL || 'http://localhost:5000'}/uploads/aadhar/${req.file.filename}`;
+    console.log(`[Aadhar] Uploading for ID: ${id}, File: ${req.file.location}`);
+
+    // Use URL returned by S3
+    const aadharUrl = req.file.location;
 
     const result = await pool.query(
       "UPDATE employee SET aadhar_url = $1 WHERE emp_id = $2 RETURNING *",
@@ -246,13 +252,72 @@ router.post("/:id/aadhar", uploadAadhar.single("document"), async (req, res) => 
     );
 
     if (result.rowCount === 0) {
-      return res.status(404).json({ error: "Employee not found" });
+      return res.status(404).json({ error: "Employee not found in database" });
     }
 
     res.json({ message: "Aadhar uploaded successfully", aadhar_url: aadharUrl });
   } catch (error) {
     console.error("Error uploading Aadhar:", error);
     res.status(500).json({ error: "Failed to upload Aadhar document" });
+  }
+});
+
+// 🟢 Proxy/View Aadhar Document
+router.get("/:id/aadhar/view", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query("SELECT aadhar_url FROM employee WHERE emp_id = $1", [id]);
+    
+    if (result.rows.length === 0 || !result.rows[0].aadhar_url) {
+      return res.status(404).json({ error: "Aadhar document not found" });
+    }
+    
+    const aadharUrl = result.rows[0].aadhar_url;
+
+    // Case 1: Local URL (from before S3 connection)
+    if (aadharUrl.includes("/uploads/aadhar/")) {
+      return res.redirect(aadharUrl);
+    }
+
+    // Case 2: S3 URL
+    if (aadharUrl.includes("amazonaws.com") || !aadharUrl.startsWith("http")) {
+      const { GetObjectCommand } = require("@aws-sdk/client-s3");
+      const bucketName = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+      
+      let key = "";
+      try {
+        const urlObj = new URL(aadharUrl);
+        key = decodeURIComponent(urlObj.pathname.replace(/^\/+/, ""));
+      } catch (e) {
+        key = aadharUrl;
+      }
+
+      const command = new GetObjectCommand({ Bucket: bucketName, Key: key });
+      const response = await s3.send(command);
+
+      // Detect content type from extension if S3 doesn't provide it reliably
+      const ext = key.split('.').pop().toLowerCase();
+      let contentType = response.ContentType || 'application/octet-stream';
+      if (['jpg', 'jpeg'].includes(ext)) contentType = 'image/jpeg';
+      else if (ext === 'png') contentType = 'image/png';
+      else if (ext === 'pdf') contentType = 'application/pdf';
+
+      const filename = key.split('/').pop();
+      const isDownload = req.query.download === '1';
+
+      res.set({
+        "Content-Type": contentType,
+        "Content-Disposition": isDownload ? `attachment; filename="${filename}"` : "inline",
+        "Cache-Control": "no-store",
+      });
+
+      response.Body.pipe(res);
+    } else {
+      res.redirect(aadharUrl);
+    }
+  } catch (error) {
+    console.error("Error viewing Aadhar:", error);
+    res.status(500).json({ error: "Unable to load Aadhar document" });
   }
 });
 
