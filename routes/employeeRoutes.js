@@ -1,6 +1,24 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = path.join(__dirname, "../uploads/aadhar");
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `aadhar_${req.params.id}_${Date.now()}${ext}`);
+  }
+});
+const uploadAadhar = multer({ storage });
 const { buildPublicFaceUrl } = require("../utils/faceImage");
 const { isBackblazeUrl } = require("../utils/backblaze");
 const authenticate = require("../middleware/authMiddleware");
@@ -38,6 +56,8 @@ const formatEmployeeRow = (row = {}) => {
     faceRegistered,
     face_image_url: faceImageUrl,
     faceImageUrl,
+    aadhar_no: row.aadhar_no,
+    aadhar_url: row.aadhar_url
   };
 };
 
@@ -74,7 +94,9 @@ router.get(
         w.ward_name AS ward, 
         d.department_name AS department, 
         ds.designation_name AS designation,
-        e.face_embedding
+        e.face_embedding,
+        e.aadhar_no,
+        e.aadhar_url
       FROM employee e
       LEFT JOIN wards w ON e.ward_id = w.ward_id
       LEFT JOIN zones z ON w.zone_id = z.zone_id
@@ -100,14 +122,15 @@ router.post("/", async (req, res) => {
   }
 
   const upsertEmployeeQuery = `
-    INSERT INTO employee (emp_code, name, phone, ward_id, designation_id)
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO employee (emp_code, name, phone, ward_id, designation_id, aadhar_no)
+    VALUES ($1, $2, $3, $4, $5, $6)
     ON CONFLICT (emp_code)
     DO UPDATE SET
       name = EXCLUDED.name,
       phone = EXCLUDED.phone,
       ward_id = EXCLUDED.ward_id,
-      designation_id = EXCLUDED.designation_id
+      designation_id = EXCLUDED.designation_id,
+      aadhar_no = EXCLUDED.aadhar_no
     RETURNING *;
   `;
 
@@ -118,6 +141,7 @@ router.post("/", async (req, res) => {
       phone,
       parseId(ward_id),
       parseId(designation_id),
+      req.body.aadhar_no || null
     ]);
     return res.status(200).json(result.rows[0]);
   } catch (error) {
@@ -139,10 +163,10 @@ router.put("/:id", async (req, res) => {
     const { name, emp_code, phone, ward_id, designation_id } = req.body;
     const result = await pool.query(
       `UPDATE employee 
-       SET name = $1, emp_code = $2, phone = $3, ward_id = $4, designation_id = $5 
-       WHERE emp_id = $6 
+       SET name = $1, emp_code = $2, phone = $3, ward_id = $4, designation_id = $5, aadhar_no = $6 
+       WHERE emp_id = $7 
        RETURNING *`,
-      [name, emp_code, phone, parseId(ward_id), parseId(designation_id), id]
+      [name, emp_code, phone, parseId(ward_id), parseId(designation_id), req.body.aadhar_no || null, id]
     );
 
     if (result.rowCount === 0) {
@@ -161,7 +185,9 @@ router.put("/:id", async (req, res) => {
           w.ward_name AS ward, 
           d.department_name AS department, 
           ds.designation_name AS designation,
-          e.face_embedding
+          e.face_embedding,
+          e.aadhar_no,
+          e.aadhar_url
        FROM employee e
        LEFT JOIN wards w ON e.ward_id = w.ward_id
        LEFT JOIN zones z ON w.zone_id = z.zone_id
@@ -200,6 +226,33 @@ router.delete("/:id", async (req, res) => {
   } catch (error) {
     console.error("Error deleting employee:", error);
     res.status(500).json({ error: "Database error" });
+  }
+});
+
+// 🟢 Upload Aadhar Document
+router.post("/:id/aadhar", uploadAadhar.single("document"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    // Construct URL for local upload
+    const aadharUrl = `${process.env.API_BASE_URL || 'http://localhost:5000'}/uploads/aadhar/${req.file.filename}`;
+
+    const result = await pool.query(
+      "UPDATE employee SET aadhar_url = $1 WHERE emp_id = $2 RETURNING *",
+      [aadharUrl, id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    res.json({ message: "Aadhar uploaded successfully", aadhar_url: aadharUrl });
+  } catch (error) {
+    console.error("Error uploading Aadhar:", error);
+    res.status(500).json({ error: "Failed to upload Aadhar document" });
   }
 });
 
