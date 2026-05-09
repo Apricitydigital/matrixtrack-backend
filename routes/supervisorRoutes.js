@@ -194,11 +194,10 @@ router.get(
         LEFT JOIN employee e ON e.ward_id = w.ward_id
       `;
 
-      const conditions = [];
+      const conditions = ["u.role = 'supervisor'"];  // ← ADDED
       const queryParams = [];
 
       if (selectedCityId && selectedCityId !== "ALL") {
-        // block if city user tries to access a city outside their scope
         if (
           !scope.all &&
           scope.ids?.length &&
