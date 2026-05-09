@@ -634,3 +634,223 @@
     at D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\node_modules\pg-pool\index.js:45:11
     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     at async D:\HumanMatrixSolutions\MatrixTrack\attendease-backend\routes\appRoutes\supervisorsWard.js:1310:20
+[2026-05-08T08:11:50.493Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T08:11:54.052Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T08:12:18.549Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T09:51:11.491Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T09:51:24.395Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T09:52:27.698Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:01:29.883Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:01:30.690Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:04:18.527Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:04:27.783Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:06:06.585Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:07:16.530Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:07:16.744Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:10:23.157Z] wards-post: Error: Connection terminated due to connection timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:10:36.330Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:11:17.953Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:13:02.557Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:14:33.993Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:14:41.813Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:15:01.365Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:17:29.449Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:17:32.891Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:17:37.830Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:17:42.539Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T10:41:50.517Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T11:02:01.897Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T11:02:15.645Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T11:02:15.682Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T11:03:42.133Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T11:56:50.895Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T11:56:50.932Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T11:56:50.983Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T11:56:51.308Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T12:06:04.077Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T12:07:11.372Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T12:12:06.569Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-08T12:12:56.245Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-09T04:15:24.439Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-09T04:15:24.495Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-09T04:15:24.784Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-09T04:15:24.972Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-09T04:17:55.892Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-09T04:38:22.699Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-09T04:38:23.445Z] wards-post: error: canceling statement due to statement timeout
+    at D:\Matrixtrack\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
+    at async D:\Matrixtrack\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
