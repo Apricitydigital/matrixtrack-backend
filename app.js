@@ -29,6 +29,7 @@ const parseRecipients = (value) =>
 const DEFAULT_RECIPIENTS = ["9131042937", "8319776925", "8982622996", "9111899909", "9371222202", "9229499999", "9340553792", "8007773301", "83088541510", "9730779278", "9689931759", "7620661125", "7722004567", "9013990014", "8349733213"];
 const TEST_RECIPIENTS = parseRecipients(process.env.WHATSAPP_RECIPIENTS).length ? parseRecipients(process.env.WHATSAPP_RECIPIENTS) : DEFAULT_RECIPIENTS;
 const NEW_REPORT_RECIPIENTS = ["918827232995", "919131042937"];
+const NEW_REPORT_WEEKLY_RECIPIENTS = ["918827232995"];
 
 // ========= WHATSAPP DEDUP (one run per day) =========
 const LAST_RUN_FILE = path.join(__dirname, "whatsapp_report_last_run.txt");
@@ -146,8 +147,9 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 const isPrimaryCronInstance =
   !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === "0";
 
-const { sendDailyWhatsAppReportNew }       = require("./utils/msg91WhatsAppNew");
-const { sendSupervisorDailyReport }        = require("./utils/msg91SupervisorDailyReport");
+const { sendDailyWhatsAppReportNew } = require("./utils/msg91WhatsAppNew");
+const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
+const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 
 // ========= WHATSAPP NEW DEDUP =========
 const LAST_RUN_FILE_NEW = path.join(__dirname, "whatsapp_report_new_last_run.txt");
@@ -226,7 +228,7 @@ if (isPrimaryCronInstance) {
         const NEW_LOCK_ID = 812346;
         const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [NEW_LOCK_ID]);
         lockAcquired = Boolean(rows[0]?.locked);
-        
+
         if (!lockAcquired) {
           console.log("[WhatsApp New Cron] Another instance is handling send; skipping.");
           return;
@@ -250,16 +252,62 @@ if (isPrimaryCronInstance) {
         }
 
         markSentTodayNew(runKey);
-        
+
         // Unlock
         await client.query("SELECT pg_advisory_unlock($1)", [NEW_LOCK_ID]);
-        lockAcquired = false; 
+        lockAcquired = false;
       } catch (err) {
         console.error('[WhatsApp New Cron] Cron error:', err.message);
       } finally {
         if (lockAcquired) {
           // This would be reached only if lock was acquired but try/catch failed before explicit unlock
           await client.query("SELECT pg_advisory_unlock(812346)");
+        }
+        client.release();
+      }
+    },
+    {
+      timezone: "Asia/Kolkata",
+    }
+  );
+
+  // Weekly Performance Report Cron (Every Monday at 10:00 AM IST)
+  cron.schedule(
+    "00 10 * * 1",
+    async () => {
+      console.log('[WhatsApp Weekly Cron] Weekly performance report triggered');
+      const client = await pool.connect();
+      let lockAcquired = false;
+      const WEEKLY_LOCK_ID = 812348; // Unique ID for this report
+      try {
+        const { rows } = await client.query(
+          "SELECT pg_try_advisory_lock($1) AS locked", [WEEKLY_LOCK_ID]
+        );
+        lockAcquired = Boolean(rows[0]?.locked);
+        if (!lockAcquired) {
+          console.log("[WhatsApp Weekly Cron] Another instance is handling send; skipping.");
+          return;
+        }
+
+        // Recipients are defined at the top of app.js as NEW_REPORT_WEEKLY_RECIPIENTS
+        for (const mobile of NEW_REPORT_WEEKLY_RECIPIENTS) {
+          try {
+            const { reportData } = await sendWeeklyWhatsAppReport({
+              phoneNumber: mobile,
+            });
+            console.log('[WhatsApp Weekly Cron] Sent to:', mobile, reportData.period);
+          } catch (error) {
+            console.error('[WhatsApp Weekly Cron] Failed for:', mobile, error.message);
+          }
+        }
+
+        await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+        lockAcquired = false;
+      } catch (err) {
+        console.error('[WhatsApp Weekly Cron] Cron error:', err.message);
+      } finally {
+        if (lockAcquired) {
+          await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
         }
         client.release();
       }
@@ -347,7 +395,7 @@ if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
     AUTO_PUNCHOUT_CRON_EXPR,
     async () => {
       console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
-      
+
 
 
       const WINDOW_MS = 10 * 60 * 1000; // 10 minutes

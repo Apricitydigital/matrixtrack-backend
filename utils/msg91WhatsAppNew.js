@@ -30,53 +30,68 @@ const getReportDates = () => {
   return { isoDate, displayDate };
 };
 
+const normalizePhoneNumber = (phoneNumber = "") => {
+  const digits = String(phoneNumber).replace(/[^\d]/g, "");
+  if (!digits) return "";
+  if (digits.length === 10) return `91${digits}`;
+  return digits;
+};
+
 const fetchCityReportData = async (date) => {
-  // Fetch ALL face-registered employees in Pune (matching dashboard count: 10,713)
   const query = `
     SELECT
-      dept.department_name,
-      CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END AS is_present
+      des.designation_name,
+      COUNT(DISTINCT CASE WHEN e.face_embedding IS NOT NULL THEN e.emp_id END) as total,
+      COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN e.emp_id END) as present,
+      COUNT(DISTINCT CASE WHEN a.leave_type IS NOT NULL THEN e.emp_id END) as on_leave
     FROM employee e
     JOIN wards w ON e.ward_id = w.ward_id
     JOIN zones z ON w.zone_id = z.zone_id
     JOIN cities c ON z.city_id = c.city_id
-    LEFT JOIN designation des ON e.designation_id = des.designation_id
-    LEFT JOIN department dept ON des.department_id = dept.department_id
-    LEFT JOIN attendance a ON a.emp_id = e.emp_id AND a.date::date = $1::date
+    JOIN designation des ON e.designation_id = des.designation_id
+    JOIN department dept ON des.department_id = dept.department_id
+    LEFT JOIN attendance a ON e.emp_id = a.emp_id AND a.date::date = $1::date
     WHERE c.city_name = $2
-      AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
+      AND dept.department_name = 'Road Sweeping Staff- PMC'
+    GROUP BY des.designation_name
   `;
 
   const { rows } = await pool.query(query, [date, REPORT_CITY]);
 
-  let cityStats = { total: rows.length, present: 0, absent: 0 };
-  let rampStats = { total: 0, present: 0, absent: 0 };
-  let pmcStats = { total: 0, present: 0, absent: 0 };
+  let cityStats = { total: 0, present: 0, onLeave: 0, absent: 0 };
+  let rampStats = { total: 0, present: 0, onLeave: 0, absent: 0 };
+  let pmcStats = { total: 0, present: 0, onLeave: 0, absent: 0 };
 
   rows.forEach(row => {
-    const isPresent = row.is_present === 1;
+    const total = parseInt(row.total);
+    const present = parseInt(row.present);
+    const onLeave = parseInt(row.on_leave);
+    const designation = row.designation_name || "";
 
-    if (isPresent) cityStats.present++;
+    // Overall City Stats (All designations in this department)
+    cityStats.total += total;
+    cityStats.present += present;
+    cityStats.onLeave += onLeave;
 
-    const deptName = row.department_name || "";
-
-    // Ramp Detection
-    if (/ramp/i.test(deptName)) {
-      rampStats.total++;
-      if (isPresent) rampStats.present++;
+    // Ramp Breakdown (Strictly 'Ramp Bigari')
+    if (/ramp\s*bigari/i.test(designation)) {
+      rampStats.total += total;
+      rampStats.present += present;
+      rampStats.onLeave += onLeave;
     }
 
-    // Road Sweeping Staff- PMC Detection
-    if (/pmc/i.test(deptName) && /sweeping/i.test(deptName)) {
-      pmcStats.total++;
-      if (isPresent) pmcStats.present++;
+    // Road Sweeping PMC Breakdown (Strictly 'Road Sweeper')
+    if (/road\s*sweeper/i.test(designation)) {
+      pmcStats.total += total;
+      pmcStats.present += present;
+      pmcStats.onLeave += onLeave;
     }
   });
 
-  // Calculate Absents: Total - Present
-  cityStats.absent = Math.max(cityStats.total - cityStats.present, 0);
-  rampStats.absent = Math.max(rampStats.total - rampStats.present, 0);
-  pmcStats.absent = Math.max(pmcStats.total - pmcStats.present, 0);
+  // Calculate Absents: Total - (Present + OnLeave)
+  cityStats.absent = Math.max(cityStats.total - (cityStats.present + cityStats.onLeave), 0);
+  rampStats.absent = Math.max(rampStats.total - (rampStats.present + rampStats.onLeave), 0);
+  pmcStats.absent = Math.max(pmcStats.total - (pmcStats.present + pmcStats.onLeave), 0);
 
   return {
     city: cityStats,
@@ -88,6 +103,7 @@ const fetchCityReportData = async (date) => {
 const sendDailyWhatsAppReportNew = async ({ phoneNumber }) => {
   if (!phoneNumber) throw new Error("phoneNumber is required.");
 
+  const normalizedPhone = normalizePhoneNumber(phoneNumber);
   const { isoDate, displayDate } = getReportDates();
   const data = await fetchCityReportData(isoDate);
 
@@ -106,7 +122,7 @@ const sendDailyWhatsAppReportNew = async ({ phoneNumber }) => {
         },
         to_and_components: [
           {
-            to: [phoneNumber],
+            to: [normalizedPhone],
             components: {
               body_1: { type: "text", value: String(REPORT_CITY) },
               body_2: { type: "text", value: String(displayDate) },
