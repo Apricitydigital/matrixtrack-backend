@@ -10,3 +10,6 @@ matrixtrack-backend/
 check_*.js
 run_query.js
 
+
+#test files
+test_*.js
