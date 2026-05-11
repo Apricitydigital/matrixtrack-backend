@@ -50,8 +50,10 @@ const buildVisibilityScope = (user, cityScope, tableAlias = 'pa') => {
         WHERE uza.user_id = $1
       ),
       assigned_zones AS (
+        -- Direct zone assignments
         SELECT zone_id FROM user_zone_access WHERE user_id = $1
         UNION
+        -- Zones inferred from ward/kothi assignments
         SELECT DISTINCT COALESCE(w.zone_id, s.zone_id) AS zone_id
         FROM wards w
         LEFT JOIN sectors s ON s.sector_id = w.sector_id
@@ -63,23 +65,34 @@ const buildVisibilityScope = (user, cityScope, tableAlias = 'pa') => {
         JOIN assigned_sectors sec ON sec.sector_id = s.sector_id
         WHERE s.zone_id IS NOT NULL
         UNION
+        -- City-level access: expand to ALL zones ONLY when user has no zone restrictions for that city
         SELECT DISTINCT z.zone_id
         FROM zones z
         JOIN user_city_access uca ON uca.city_id = z.city_id
         WHERE uca.user_id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM user_zone_access uza2
+            JOIN zones z2 ON uza2.zone_id = z2.zone_id
+            WHERE uza2.user_id = $1 AND z2.city_id = uca.city_id
+          )
       ),
-      assigned_cities AS (
-        SELECT city_id FROM user_city_access WHERE user_id = $1
-        UNION
-        SELECT DISTINCT z.city_id
-        FROM zones z
-        JOIN assigned_zones az ON az.zone_id = z.zone_id
-        WHERE z.city_id IS NOT NULL
+      -- Full-city access: user has city access AND no zone-level restrictions for that city.
+      -- Only these cities appear in the WHERE city-level check to prevent leaking
+      -- requests from unassigned zones that share the same city.
+      full_city_access AS (
+        SELECT uca.city_id
+        FROM user_city_access uca
+        WHERE uca.user_id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM user_zone_access uza2
+            JOIN zones z2 ON uza2.zone_id = z2.zone_id
+            WHERE uza2.user_id = $1 AND z2.city_id = uca.city_id
+          )
       )
     `;
     whereClause = `
       (
-        ${tableAlias}.city_id IN (SELECT city_id FROM assigned_cities)
+        ${tableAlias}.city_id IN (SELECT city_id FROM full_city_access)
         OR ${tableAlias}.zone_id IN (SELECT zone_id FROM assigned_zones)
         OR ${tableAlias}.ward_id IN (SELECT ward_id FROM assigned_wards)
         OR ${tableAlias}.ward_id IN (SELECT sector_id FROM assigned_sectors)

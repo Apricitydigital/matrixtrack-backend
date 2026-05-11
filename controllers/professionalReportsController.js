@@ -19,6 +19,15 @@ const ensureAttendanceReportColumns = async () => {
   attendanceReportColumnsEnsured = true;
 };
 
+const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
+
+const getValidatedDateRange = (startDate, endDate) => {
+  if (!startDate || !endDate) return null;
+  if (!isIsoDate(startDate) || !isIsoDate(endDate)) return null;
+  if (startDate > endDate) return null;
+  return { startDate, endDate };
+};
+
 /**
  * @desc    Get paginated list of professional attendance
  * @route   GET /api/admin/professional-attendance
@@ -99,7 +108,10 @@ const getAttendanceList = async (req, res) => {
         pa.date,
         pa.punch_in,
         pa.punch_out,
-        EXTRACT(EPOCH FROM (COALESCE(pa.punch_out, NOW()) - pa.punch_in)) / 3600 AS hours_worked,
+        CASE
+          WHEN pa.punch_in IS NULL OR pa.punch_out IS NULL THEN NULL
+          ELSE EXTRACT(EPOCH FROM (pa.punch_out - pa.punch_in)) / 3600
+        END AS hours_worked,
         pa.punch_in_latitude,
         pa.punch_in_longitude,
         pa.punch_out_latitude,
@@ -185,10 +197,14 @@ const getAttendanceList = async (req, res) => {
 const getAttendanceSummary = async (req, res) => {
   try {
     await ensureAttendanceReportColumns();
-    const { city_id, zone_id, ward_id, kothi_id, professional_id, date, month } = req.query;
-    
-    if (!date && (!month || !/^\d{4}-\d{2}$/.test(month))) {
-      return res.status(400).json({ success: false, message: "Either date (YYYY-MM-DD) or month (YYYY-MM) is required." });
+    const { city_id, zone_id, ward_id, kothi_id, professional_id, date, month, start_date, end_date } = req.query;
+    const dateRange = getValidatedDateRange(start_date, end_date);
+
+    if (!dateRange && !date && (!month || !/^\d{4}-\d{2}$/.test(month))) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide either date (YYYY-MM-DD), month (YYYY-MM), or start_date/end_date (YYYY-MM-DD)."
+      });
     }
 
     const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, 'pa');
@@ -196,7 +212,14 @@ const getAttendanceSummary = async (req, res) => {
     let filters = `AND ${whereClause} AND pa.professional_id IN (SELECT id FROM professional_employees WHERE is_active = true)`;
     let paramCount = params.length;
     
-    if (date) {
+    if (dateRange) {
+      paramCount++;
+      filters += ` AND pa.date >= $${paramCount}`;
+      params.push(dateRange.startDate);
+      paramCount++;
+      filters += ` AND pa.date <= $${paramCount}`;
+      params.push(dateRange.endDate);
+    } else if (date) {
       paramCount++;
       filters += ` AND pa.date = $${paramCount}`;
       params.push(date);
@@ -338,6 +361,289 @@ const getAttendanceSummary = async (req, res) => {
 };
 
 /**
+ * @desc    Get attendance count by employee for a date range
+ * @route   GET /api/admin/professional-attendance/date-range/summary
+ */
+const getDateRangeAttendanceSummary = async (req, res) => {
+  try {
+    await ensureAttendanceReportColumns();
+    const {
+      city_id,
+      zone_id,
+      ward_id,
+      kothi_id,
+      professional_id,
+      start_date,
+      end_date,
+      page = 1,
+      limit = 20
+    } = req.query;
+
+    const dateRange = getValidatedDateRange(start_date, end_date);
+    if (!dateRange) {
+      return res.status(400).json({
+        success: false,
+        message: "start_date and end_date are required in YYYY-MM-DD format, and start_date must be <= end_date."
+      });
+    }
+
+    const numericPage = Math.max(parseInt(page, 10) || 1, 1);
+    const numericLimit = Math.max(parseInt(limit, 10) || 20, 1);
+    const offset = (numericPage - 1) * numericLimit;
+
+    const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, 'pe');
+    let peFilters = `AND ${whereClause} AND pe.is_active = true`;
+    let paramCount = params.length;
+
+    if (city_id) {
+      paramCount++;
+      peFilters += ` AND pe.city_id = $${paramCount}`;
+      params.push(city_id);
+    }
+    if (zone_id) {
+      paramCount++;
+      peFilters += ` AND pe.zone_id = $${paramCount}`;
+      params.push(zone_id);
+    }
+    if (ward_id) {
+      paramCount++;
+      peFilters += `
+        AND (
+          pe.ward_id = $${paramCount}
+          OR EXISTS (
+            SELECT 1
+            FROM wards w_filter
+            WHERE w_filter.ward_id = $${paramCount}
+              AND w_filter.sector_id = pe.ward_id
+          )
+        )
+      `;
+      params.push(ward_id);
+    }
+    if (kothi_id) {
+      paramCount++;
+      peFilters += ` AND pe.kothi_id = $${paramCount}`;
+      params.push(kothi_id);
+    }
+    if (professional_id) {
+      paramCount++;
+      peFilters += ` AND pe.id = $${paramCount}`;
+      params.push(professional_id);
+    }
+
+    const startParam = paramCount + 1;
+    const endParam = paramCount + 2;
+    const pageParams = [dateRange.startDate, dateRange.endDate, numericLimit, offset];
+
+    const dataQuery = `
+      ${cte}
+      SELECT
+        pe.id AS professional_id,
+        pe.full_name,
+        COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
+        COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
+        z.zone_name,
+        c.city_name,
+        COUNT(pa.id) AS attendance_count,
+        COUNT(pa.id) FILTER (WHERE pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL) AS completed_days,
+        ROUND(
+          COALESCE(
+            SUM(
+              CASE
+                WHEN pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL
+                  THEN EXTRACT(EPOCH FROM (pa.punch_out - pa.punch_in)) / 3600
+                ELSE 0
+              END
+            ),
+            0
+          )::numeric,
+          2
+        ) AS total_hours_worked
+      FROM professional_employees pe
+      JOIN zones z ON pe.zone_id = z.zone_id
+      JOIN cities c ON pe.city_id = c.city_id
+      LEFT JOIN professional_attendance pa
+        ON pa.professional_id = pe.id
+       AND pa.date >= $${startParam}
+       AND pa.date <= $${endParam}
+      LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
+      LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
+      LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
+      LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
+      LEFT JOIN sectors sec ON pe.ward_id = sec.sector_id
+      LEFT JOIN wards w ON pe.ward_id = w.ward_id
+      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      WHERE 1=1 ${peFilters}
+      GROUP BY pe.id, pe.full_name, COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name), COALESCE(wk_req.ward_name, wk.ward_name), z.zone_name, c.city_name
+      HAVING COUNT(pa.id) > 0
+      ORDER BY COUNT(pa.id) DESC, pe.full_name ASC
+      LIMIT $${startParam + 2} OFFSET $${startParam + 3}
+    `;
+
+    const countQuery = `
+      ${cte}
+      SELECT COUNT(*) AS total
+      FROM (
+        SELECT pe.id
+        FROM professional_employees pe
+        LEFT JOIN professional_attendance pa
+          ON pa.professional_id = pe.id
+         AND pa.date >= $${startParam}
+         AND pa.date <= $${endParam}
+        WHERE 1=1 ${peFilters}
+        GROUP BY pe.id
+        HAVING COUNT(pa.id) > 0
+      ) scoped
+    `;
+
+    const finalParams = [...params, ...pageParams];
+    const countParams = [...params, dateRange.startDate, dateRange.endDate];
+
+    const [dataResult, countResult] = await Promise.all([
+      runQueryWithTimeout(dataQuery, finalParams),
+      runQueryWithTimeout(countQuery, countParams)
+    ]);
+
+    const total = parseInt(countResult.rows?.[0]?.total || 0, 10);
+
+    res.json({
+      success: true,
+      data: dataResult.rows.map((row) => ({
+        ...row,
+        attendance_count: parseInt(row.attendance_count || 0, 10),
+        completed_days: parseInt(row.completed_days || 0, 10),
+        total_hours_worked: parseFloat(row.total_hours_worked || 0).toFixed(2)
+      })),
+      pagination: {
+        page: numericPage,
+        limit: numericLimit,
+        total,
+        pages: Math.max(1, Math.ceil(total / numericLimit))
+      }
+    });
+  } catch (error) {
+    logger.error('[ProfessionalReports] getDateRangeAttendanceSummary error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error', error: error.message });
+  }
+};
+
+/**
+ * @desc    Get day-wise attendance details for one employee in date range
+ * @route   GET /api/admin/professional-attendance/date-range/details
+ */
+const getDateRangeAttendanceDetails = async (req, res) => {
+  try {
+    await ensureAttendanceReportColumns();
+    const { professional_id, start_date, end_date } = req.query;
+    const dateRange = getValidatedDateRange(start_date, end_date);
+
+    if (!professional_id) {
+      return res.status(400).json({ success: false, message: "professional_id is required." });
+    }
+    if (!dateRange) {
+      return res.status(400).json({
+        success: false,
+        message: "start_date and end_date are required in YYYY-MM-DD format, and start_date must be <= end_date."
+      });
+    }
+
+    const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, 'pe');
+    const verifyParams = [...params, professional_id];
+    const verifyQuery = `
+      ${cte}
+      SELECT
+        pe.id,
+        pe.full_name
+      FROM professional_employees pe
+      WHERE pe.id = $${verifyParams.length}
+        AND pe.is_active = true
+        AND ${whereClause}
+      LIMIT 1
+    `;
+
+    const verifyResult = await runQueryWithTimeout(verifyQuery, verifyParams);
+    if (verifyResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Employee not found or access denied." });
+    }
+
+    const detailsQuery = `
+      SELECT
+        pa.id AS attendance_id,
+        pa.professional_id,
+        pe.full_name,
+        pa.date,
+        pa.punch_in,
+        pa.punch_out,
+        CASE
+          WHEN pa.punch_in IS NULL OR pa.punch_out IS NULL THEN NULL
+          ELSE EXTRACT(EPOCH FROM (pa.punch_out - pa.punch_in)) / 3600
+        END AS hours_worked,
+        pa.punch_in_latitude,
+        pa.punch_in_longitude,
+        pa.punch_out_latitude,
+        pa.punch_out_longitude,
+        pa.punch_in_photo_url,
+        pa.punch_out_photo_url,
+        COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
+        COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
+        z.zone_name,
+        c.city_name
+      FROM professional_attendance pa
+      JOIN professional_employees pe ON pa.professional_id = pe.id
+      LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
+      LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
+      LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
+      LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
+      LEFT JOIN sectors sec ON pa.ward_id = sec.sector_id
+      LEFT JOIN wards w ON pa.ward_id = w.ward_id
+      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      JOIN zones z ON pe.zone_id = z.zone_id
+      JOIN cities c ON pe.city_id = c.city_id
+      WHERE pa.professional_id = $1
+        AND pa.date >= $2
+        AND pa.date <= $3
+      ORDER BY pa.date DESC, pa.punch_in DESC
+    `;
+
+    const detailsResult = await runQueryWithTimeout(detailsQuery, [
+      professional_id,
+      dateRange.startDate,
+      dateRange.endDate
+    ]);
+
+    const mappedRows = await Promise.all(
+      detailsResult.rows.map(async (row) => ({
+        ...row,
+        hours_worked: row.hours_worked == null ? '' : parseFloat(row.hours_worked).toFixed(2),
+        punch_in_photo_url: row.punch_in_photo_url ? await getSignedS3Url(row.punch_in_photo_url, 900) : null,
+        punch_out_photo_url: row.punch_out_photo_url ? await getSignedS3Url(row.punch_out_photo_url, 900) : null
+      }))
+    );
+
+    const totalDays = mappedRows.length;
+    const completedDays = mappedRows.filter((item) => item.hours_worked).length;
+    const totalHours = mappedRows.reduce((acc, item) => acc + (parseFloat(item.hours_worked) || 0), 0);
+
+    res.json({
+      success: true,
+      data: {
+        professional_id,
+        professional_name: verifyResult.rows[0].full_name,
+        start_date: dateRange.startDate,
+        end_date: dateRange.endDate,
+        total_days: totalDays,
+        completed_days: completedDays,
+        total_hours_worked: totalHours.toFixed(2),
+        records: mappedRows
+      }
+    });
+  } catch (error) {
+    logger.error('[ProfessionalReports] getDateRangeAttendanceDetails error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error', error: error.message });
+  }
+};
+
+/**
  * @desc    Get list of all professional employees
  * @route   GET /api/admin/professional-employees
  */
@@ -435,7 +741,7 @@ const getEmployeeAttendance = async (req, res) => {
     const query = `
       SELECT 
         date, punch_in, punch_out,
-        EXTRACT(EPOCH FROM (COALESCE(punch_out, NOW()) - punch_in)) / 3600 AS hours_worked
+        CASE WHEN punch_out IS NULL AND date < CURRENT_DATE THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(punch_out, NOW()) - punch_in)) / 3600 END AS hours_worked
       FROM professional_attendance
       WHERE professional_id = $1 
         AND EXTRACT(YEAR FROM date) = $2 
@@ -449,8 +755,8 @@ const getEmployeeAttendance = async (req, res) => {
       success: true,
       data: attResult.rows.map(row => ({
         ...row,
-        hours_worked: parseFloat(row.hours_worked).toFixed(2),
-        status: parseFloat(row.hours_worked) >= 4 ? 'present' : 'half-day'
+        hours_worked: row.hours_worked == null ? '-' : parseFloat(row.hours_worked).toFixed(2),
+        status: row.hours_worked == null ? 'absent' : (parseFloat(row.hours_worked) >= 4 ? 'present' : 'half-day')
       }))
     });
 
@@ -463,6 +769,8 @@ const getEmployeeAttendance = async (req, res) => {
 module.exports = {
   getAttendanceList,
   getAttendanceSummary,
+  getDateRangeAttendanceSummary,
+  getDateRangeAttendanceDetails,
   getEmployeesList,
   getEmployeeAttendance
 };

@@ -65,8 +65,10 @@ const getVisibilityCTE = () => `
     WHERE uza.user_id = $1
   ),
   assigned_zones AS (
+    -- Direct zone assignments
     SELECT zone_id FROM user_zone_access WHERE user_id = $1
     UNION
+    -- Zones inferred from ward/kothi assignments
     SELECT DISTINCT COALESCE(w.zone_id, s.zone_id) AS zone_id
     FROM wards w
     LEFT JOIN sectors s ON s.sector_id = w.sector_id
@@ -78,29 +80,39 @@ const getVisibilityCTE = () => `
     JOIN assigned_sectors sec ON sec.sector_id = s.sector_id
     WHERE s.zone_id IS NOT NULL
     UNION
+    -- City-level access: expand to ALL zones in that city ONLY when user has no zone restrictions for it
     SELECT DISTINCT z.zone_id
     FROM zones z
     JOIN user_city_access uca ON uca.city_id = z.city_id
     WHERE uca.user_id = $1
+      AND NOT EXISTS (
+        SELECT 1 FROM user_zone_access uza2
+        JOIN zones z2 ON uza2.zone_id = z2.zone_id
+        WHERE uza2.user_id = $1 AND z2.city_id = uca.city_id
+      )
   ),
-  assigned_cities AS (
-    SELECT city_id FROM user_city_access WHERE user_id = $1
-    UNION
-    SELECT DISTINCT z.city_id
-    FROM zones z
-    JOIN assigned_zones az ON az.zone_id = z.zone_id
-    WHERE z.city_id IS NOT NULL
+  -- Full-city access: user has city access AND no zone-level restrictions for that city
+  -- Used in WHERE clause to allow city-level matching only for truly unrestricted city access
+  full_city_access AS (
+    SELECT uca.city_id
+    FROM user_city_access uca
+    WHERE uca.user_id = $1
+      AND NOT EXISTS (
+        SELECT 1 FROM user_zone_access uza2
+        JOIN zones z2 ON uza2.zone_id = z2.zone_id
+        WHERE uza2.user_id = $1 AND z2.city_id = uca.city_id
+      )
   )
 `;
 
-// Visibility supports:
-// 1) direct ward assignment match (spr.ward_id as ward_id)
-// 2) sector-based assignment match (spr.ward_id as sector_id)
-// 3) zone/city upper hierarchy match
-// 4) legacy kothi_id values that may equal ward_id
+// Visibility rules (strictly scoped — no accidental city-wide leak):
+// 1) full_city_access: user has city assigned with NO zone restrictions → sees all in that city
+// 2) assigned_zones: user sees requests matching their assigned zones (or zones inferred from kothis/wards)
+// 3) direct ward/kothi match
+// 4) sector-based match
 const visibilityWhereClause = `
   (
-    spr.city_id IN (SELECT city_id FROM assigned_cities)
+    spr.city_id IN (SELECT city_id FROM full_city_access)
     OR spr.zone_id IN (SELECT zone_id FROM assigned_zones)
     OR spr.ward_id IN (SELECT ward_id FROM assigned_wards)
     OR spr.ward_id IN (SELECT sector_id FROM assigned_sectors)
@@ -251,7 +263,7 @@ const getRequestDetails = async (req, res) => {
       LEFT JOIN wards w ON spr.kothi_id = w.ward_id
       WHERE spr.id = $${idParamIndex} AND ${isAdmin ? 'TRUE' : visibilityWhereClause}
     `;
-    
+
     const detailParams = isAdmin ? [id] : [supervisorId, id];
     const { rows } = await pool.query(query, detailParams);
 
@@ -322,7 +334,7 @@ const approveRequest = async (req, res) => {
       WHERE spr.id = $${idParamIndex} AND ${isAdmin ? 'TRUE' : visibilityWhereClause}
       FOR UPDATE
     `;
-    
+
     const checkParams = isAdmin ? [id] : [supervisorId, id];
     const { rows } = await client.query(checkQuery, checkParams);
     if (rows.length === 0) {
@@ -406,10 +418,12 @@ const approveRequest = async (req, res) => {
     const insertPeQuery = `
       INSERT INTO professional_employees (${insertCols.join(', ')})
       VALUES (${placeholders})
+      ON CONFLICT (id) DO UPDATE SET is_active = true, updated_at = NOW()
       RETURNING id
     `;
 
     await client.query(insertPeQuery, insertVals);
+
 
     // 4. Log the action
     await client.query(`
@@ -421,10 +435,14 @@ const approveRequest = async (req, res) => {
 
     // Send approval SMS (non-blocking for API success).
     const credentialMessage = [
-      'MatrixTrack: Professional access approved.',
+      `Hi ${request.full_name},`,
+      '',
+      'Your MatrixTrack access has been approved successfully.',
+      '',
       `Email: ${request.email}`,
       `Password: ${plainTextPassword}`,
-      'Please login and change your password after first sign-in.'
+      '',
+      'Welcome to MatrixTrack!🎉'
     ].join('\n');
     let approvalSmsSent = false;
     let approvalSmsError = null;
@@ -505,7 +523,7 @@ const rejectRequest = async (req, res) => {
       WHERE spr.id = $${idParamIndex} AND ${isAdmin ? 'TRUE' : visibilityWhereClause}
       FOR UPDATE
     `;
-    
+
     const checkParams = isAdmin ? [id] : [supervisorId, id];
     const { rows } = await client.query(checkQuery, checkParams);
     if (rows.length === 0) {
@@ -542,7 +560,7 @@ const rejectRequest = async (req, res) => {
     `, [id, supervisorId, note]);
 
     await client.query('COMMIT');
-    
+
     const rejectionMessage =
       request.status === 'approved'
         ? `MatrixTrack: Your professional access has been revoked.\nReason: ${note}`
@@ -617,7 +635,7 @@ const getLogs = async (req, res) => {
 
     const logParams = isAdmin ? [] : [supervisorId];
     const { rows } = await pool.query(query, logParams);
-    
+
     res.json({ success: true, data: rows });
 
   } catch (error) {

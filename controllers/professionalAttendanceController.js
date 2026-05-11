@@ -261,7 +261,7 @@ const getMonthlyAttendance = async (req, res) => {
         date, 
         punch_in, 
         punch_out,
-        EXTRACT(EPOCH FROM (COALESCE(punch_out, NOW()) - punch_in)) / 3600 AS hours_worked
+        CASE WHEN punch_out IS NULL AND date < CURRENT_DATE THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(punch_out, NOW()) - punch_in)) / 3600 END AS hours_worked
       FROM professional_attendance
       WHERE professional_id = $1 
         AND EXTRACT(YEAR FROM date) = $2 
@@ -273,7 +273,8 @@ const getMonthlyAttendance = async (req, res) => {
 
     let totalWorkingDays = 0;
     let totalPresent = 0;
-    let totalAbsent = 0; // Requires calculating total days in month vs present days
+    let totalHalfDay = 0;
+    let totalAbsent = 0;
 
     // Basic calculation
     const daysInMonth = new Date(yyyy, mm, 0).getDate();
@@ -294,18 +295,33 @@ const getMonthlyAttendance = async (req, res) => {
       const isFuture = new Date(dStr) > new Date();
 
       if (record) {
-        const hours = parseFloat(record.hours_worked);
-        const status = hours >= 4 ? 'present' : 'half-day'; // Arbitrary logic: > 4h = present
+        let hours = 0;
+        let status = 'absent';
+        let displayHours = '-';
+
+        if (record.punch_in && record.punch_out) {
+          // Fully completed session — use stored hours_worked
+          hours = record.hours_worked != null ? parseFloat(record.hours_worked) : 0;
+          status = hours >= 4 ? 'present' : 'half-day';
+          displayHours = hours.toFixed(2);
+        } else if (record.punch_in && !record.punch_out) {
+          // Punched in but no punch-out — counts as present, hours shown as '-'
+          status = 'present';
+          displayHours = '-'; // Don't show live working time if punch-out not done
+        }
+        // If neither punch_in nor punch_out, status stays 'absent'
+
         
         records.push({
           date: dStr,
           punch_in: record.punch_in,
           punch_out: record.punch_out,
-          hours_worked: hours.toFixed(2),
+          hours_worked: displayHours,
           status
         });
         
-        if (status === 'present' || status === 'half-day') totalPresent++;
+        if (status === 'present') totalPresent++;
+        else if (status === 'half-day') totalHalfDay++;
         totalWorkingDays++;
 
       } else if (!isFuture) {
@@ -326,6 +342,7 @@ const getMonthlyAttendance = async (req, res) => {
       data: records.reverse(), // Newest first
       summary: {
         total_present: totalPresent,
+        total_half_day: totalHalfDay,
         total_absent: totalAbsent,
         total_working_days: totalWorkingDays
       }

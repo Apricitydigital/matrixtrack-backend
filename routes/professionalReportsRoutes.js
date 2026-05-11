@@ -5,6 +5,8 @@ const { authorize } = require('../middleware/permissionMiddleware');
 const {
   getAttendanceList,
   getAttendanceSummary,
+  getDateRangeAttendanceSummary,
+  getDateRangeAttendanceDetails,
   getEmployeesList,
   getEmployeeAttendance
 } = require('../controllers/professionalReportsController');
@@ -38,6 +40,8 @@ router.get('/professional-attendance', authorize('professional-attendance', 'vie
  * @route   GET /api/admin/professional-attendance/summary
  */
 router.get('/professional-attendance/summary', authorize('professional-attendance', 'view'), getAttendanceSummary);
+router.get('/professional-attendance/date-range/summary', authorize('professional-attendance', 'view'), getDateRangeAttendanceSummary);
+router.get('/professional-attendance/date-range/details', authorize('professional-attendance', 'view'), getDateRangeAttendanceDetails);
 
 /**
  * @route   GET /api/admin/professional-employees
