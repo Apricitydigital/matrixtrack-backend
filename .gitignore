@@ -13,3 +13,4 @@ run_query.js
 
 #test files
 test_*.js
+supervisor_errors.log
