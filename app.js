@@ -144,7 +144,7 @@ const markSentTodayWeekly = (key) => {
 };
 
 const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
-const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
+// const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
 
 const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
@@ -279,6 +279,7 @@ if (isPrimaryCronInstance) {
   // ISOLATED: own lock ID (812347), own tracking file
   // Recipients: defined inside msg91SupervisorDailyReport.js
   // =============================================
+  /*
   const LAST_RUN_FILE_SUP = path.join(__dirname, "whatsapp_report_supervisor_last_run.txt");
   const hasSentTodaySup = (key) => {
     try {
@@ -331,6 +332,7 @@ if (isPrimaryCronInstance) {
     },
     { timezone: "Asia/Kolkata" }
   );
+  */
 
 } else {
   console.log(
