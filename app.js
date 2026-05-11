@@ -4,7 +4,6 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const path = require("path");
 const cron = require("node-cron");
-const { sendDailyWhatsAppReport } = require("./utils/msg91WhatsApp");
 const { runAutoPunchOut } = require("./utils/autoPunchOutScheduler");
 const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
@@ -20,44 +19,11 @@ process.on("uncaughtException", (error) => {
   console.error("UNCAUGHT EXCEPTION:", error);
 });
 
-// =======================
-// 🧪 TEST MODE CONFIG
-// =======================
-// Dedup recipients so accidental repeats in env don't trigger multiple sends
-const parseRecipients = (value) =>
-  [...new Set(String(value || "").split(",").map((v) => v.trim()).filter(Boolean))];
-const DEFAULT_RECIPIENTS = ["9131042937", "8319776925", "8982622996", "9111899909", "9371222202", "9229499999", "9340553792", "8007773301", "83088541510", "9730779278", "9689931759", "7620661125", "7722004567", "9013990014", "8349733213"];
-const TEST_RECIPIENTS = parseRecipients(process.env.WHATSAPP_RECIPIENTS).length ? parseRecipients(process.env.WHATSAPP_RECIPIENTS) : DEFAULT_RECIPIENTS;
+// const DEFAULT_TEST_NUMBERS = ["918827232995", "919131042937", "918982622996", "919111899909"];
+const NEW_REPORT_WEEKLY_RECIPIENTS = ["918827232995"];
 
-// ========= WHATSAPP DEDUP (one run per day) =========
-const LAST_RUN_FILE = path.join(__dirname, "whatsapp_report_last_run.txt");
 const todayKey = () =>
   new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-const hasSentToday = (key) => {
-  try {
-    const stored = fs.readFileSync(LAST_RUN_FILE, "utf8").trim();
-    return stored === key;
-  } catch (err) {
-    return false;
-  }
-};
-const markSentToday = (key) => {
-  try {
-    fs.writeFileSync(LAST_RUN_FILE, key, "utf8");
-  } catch (err) {
-    console.error("Unable to record WhatsApp send date:", err.message);
-  }
-};
-
-// DB-based lock so cron runs once even when multiple instances are up
-const WHATSAPP_CRON_LOCK_ID = 812345; // arbitrary unique key
-const acquireCronLock = async (client) => {
-  const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [WHATSAPP_CRON_LOCK_ID]);
-  return Boolean(rows[0]?.locked);
-};
-const releaseCronLock = async (client) => {
-  await client.query("SELECT pg_advisory_unlock($1)", [WHATSAPP_CRON_LOCK_ID]);
-};
 
 
 // Import Routes
@@ -103,20 +69,36 @@ const parseOrigins = (value) =>
 const envOrigins = parseOrigins(process.env.FRONTEND_ORIGINS) || [];
 const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
 
+const isPrimaryCronInstance =
+  !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === "0";
+
 // Nightly auto-heal for face embeddings (defaults ON; set AUTO_HEAL_CRON_ENABLED=false to disable)
 const AUTO_HEAL_CRON_ENABLED = process.env.AUTO_HEAL_CRON_ENABLED !== "false";
-if (AUTO_HEAL_CRON_ENABLED) {
+if (AUTO_HEAL_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     "10 3 * * *", // 03:10 IST daily
-    () => {
-      const scriptPath = path.join(__dirname, "auto_heal_faces.js");
-      const child = spawn(process.execPath, [scriptPath], {
-        stdio: "inherit",
-        env: process.env,
-      });
-      child.on("exit", (code) => {
-        console.log(`[AutoHealCron] auto_heal_faces.js exited with code ${code}`);
-      });
+    async () => {
+      const client = await pool.connect();
+      try {
+        const AUTO_HEAL_LOCK_ID = 812349;
+        const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [AUTO_HEAL_LOCK_ID]);
+        if (!rows[0]?.locked) return;
+
+        console.log("[AutoHealCron] Starting face healing process...");
+        const scriptPath = path.join(__dirname, "auto_heal_faces.js");
+        const child = spawn(process.execPath, [scriptPath], {
+          stdio: "inherit",
+          env: process.env,
+        });
+        child.on("exit", async (code) => {
+          console.log(`[AutoHealCron] auto_heal_faces.js exited with code ${code}`);
+          await client.query("SELECT pg_advisory_unlock($1)", [AUTO_HEAL_LOCK_ID]);
+        });
+      } catch (err) {
+        console.error("[AutoHealCron] Error:", err.message);
+      } finally {
+        client.release();
+      }
     },
     { timezone: "Asia/Kolkata" }
   );
@@ -142,46 +124,93 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // 🔔 REPORT / WHATSAPP CRON
 // ⏰ 9:30 AM IST
 // =======================
-const isPrimaryCronInstance =
-  !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === "0";
+
+// ========= WHATSAPP WEEKLY DEDUP =========
+const LAST_RUN_FILE_WEEKLY = path.join(__dirname, "whatsapp_report_weekly_last_run.txt");
+const hasSentTodayWeekly = (key) => {
+  try {
+    const stored = fs.readFileSync(LAST_RUN_FILE_WEEKLY, "utf8").trim();
+    return stored === key;
+  } catch (err) {
+    return false;
+  }
+};
+const markSentTodayWeekly = (key) => {
+  try {
+    fs.writeFileSync(LAST_RUN_FILE_WEEKLY, key, "utf8");
+  } catch (err) {
+    console.error("Unable to record Weekly WhatsApp send date:", err.message);
+  }
+};
+
+const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
+// const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
+const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
+
+const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
+const hasSentTodayDailyFinal = (key) => {
+  try {
+    const stored = fs.readFileSync(LAST_RUN_FILE_DAILY_FINAL, "utf8").trim();
+    return stored === key;
+  } catch (err) {
+    return false;
+  }
+};
+const markSentTodayDailyFinal = (key) => {
+  try {
+    fs.writeFileSync(LAST_RUN_FILE_DAILY_FINAL, key, "utf8");
+  } catch (err) {
+    console.error("Unable to record Daily Final WhatsApp send date:", err.message);
+  }
+};
 
 if (isPrimaryCronInstance) {
+
+  // Daily Final Report Cron (9:30 AM IST) - ISOLATED
   cron.schedule(
     "30 09 * * *",
     async () => {
-      console.log('[WhatsApp Cron] Daily attendance report triggered');
+      console.log('[WhatsApp Daily Final Cron] Daily final attendance report triggered');
       const client = await pool.connect();
       let lockAcquired = false;
+      const FINAL_DAILY_LOCK_ID = 812350; // Unique ID
       try {
-        lockAcquired = await acquireCronLock(client);
+        const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [FINAL_DAILY_LOCK_ID]);
+        lockAcquired = Boolean(rows[0]?.locked);
+
         if (!lockAcquired) {
-          console.log("[WhatsApp Cron] Another instance is handling send; skipping.");
+          console.log("[WhatsApp Daily Final Cron] Another instance is handling send; skipping.");
           return;
         }
 
         const runKey = todayKey();
-        if (hasSentToday(runKey)) {
-          console.log("[WhatsApp Cron] Already sent today, skipping.");
+        if (hasSentTodayDailyFinal(runKey)) {
+          console.log("[WhatsApp Daily Final Cron] Already sent today, skipping.");
           return;
         }
 
-        for (const mobile of TEST_RECIPIENTS) {
+        const recipients = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999","918349733213"];
+        
+        for (const mobile of recipients) {
           try {
-            const { reportData } = await sendDailyWhatsAppReport({
+            const { reportData } = await sendDailyWhatsAppReportFinal({
               phoneNumber: mobile,
             });
-            console.log('[WhatsApp Cron] Sent to:', mobile, reportData.date);
+            console.log('[WhatsApp Daily Final Cron] Sent to:', mobile, reportData.date);
           } catch (error) {
-            console.error('[WhatsApp Cron] Failed for:', mobile, error.message);
+            console.error('[WhatsApp Daily Final Cron] Failed for:', mobile, error.message);
           }
         }
 
-        markSentToday(runKey);
+        markSentTodayDailyFinal(runKey);
+
+        await client.query("SELECT pg_advisory_unlock($1)", [FINAL_DAILY_LOCK_ID]);
+        lockAcquired = false;
       } catch (err) {
-        console.error('[WhatsApp Cron] Cron error:', err.message);
+        console.error('[WhatsApp Daily Final Cron] Cron error:', err.message);
       } finally {
         if (lockAcquired) {
-          await releaseCronLock(client);
+          await client.query("SELECT pg_advisory_unlock($1)", [FINAL_DAILY_LOCK_ID]);
         }
         client.release();
       }
@@ -190,6 +219,121 @@ if (isPrimaryCronInstance) {
       timezone: "Asia/Kolkata",
     }
   );
+
+  // Weekly Performance Report Cron (Every Monday at 10:00 AM IST)
+  cron.schedule(
+    "00 10 * * 1",
+    async () => {
+      console.log('[WhatsApp Weekly Cron] Weekly performance report triggered');
+      const client = await pool.connect();
+      let lockAcquired = false;
+      const WEEKLY_LOCK_ID = 812348; // Unique ID for this report
+      try {
+        const { rows } = await client.query(
+          "SELECT pg_try_advisory_lock($1) AS locked", [WEEKLY_LOCK_ID]
+        );
+        lockAcquired = Boolean(rows[0]?.locked);
+        if (!lockAcquired) {
+          console.log("[WhatsApp Weekly Cron] Another instance is handling send; skipping.");
+          return;
+        }
+
+        const runKey = todayKey();
+        if (hasSentTodayWeekly(runKey)) {
+          console.log("[WhatsApp Weekly Cron] Already sent today; skipping.");
+          return;
+        }
+
+        // Recipients are defined at the top of app.js as NEW_REPORT_WEEKLY_RECIPIENTS
+        for (const mobile of NEW_REPORT_WEEKLY_RECIPIENTS) {
+          try {
+            const { reportData } = await sendWeeklyWhatsAppReport({
+              phoneNumber: mobile,
+            });
+            console.log('[WhatsApp Weekly Cron] Sent to:', mobile, reportData.period);
+          } catch (error) {
+            console.error('[WhatsApp Weekly Cron] Failed for:', mobile, error.message);
+          }
+        }
+
+        markSentTodayWeekly(runKey);
+
+        await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+        lockAcquired = false;
+      } catch (err) {
+        console.error('[WhatsApp Weekly Cron] Cron error:', err.message);
+      } finally {
+        if (lockAcquired) {
+          await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+        }
+        client.release();
+      }
+    },
+    {
+      timezone: "Asia/Kolkata",
+    }
+  );
+
+  // =============================================
+  // Supervisor Daily Report Cron (8:00 PM IST)
+  // ISOLATED: own lock ID (812347), own tracking file
+  // Recipients: defined inside msg91SupervisorDailyReport.js
+  // =============================================
+  /*
+  const LAST_RUN_FILE_SUP = path.join(__dirname, "whatsapp_report_supervisor_last_run.txt");
+  const hasSentTodaySup = (key) => {
+    try {
+      const stored = fs.readFileSync(LAST_RUN_FILE_SUP, "utf8").trim();
+      return stored === key;
+    } catch (_) { return false; }
+  };
+  const markSentTodaySup = (key) => {
+    try { fs.writeFileSync(LAST_RUN_FILE_SUP, key, "utf8"); }
+    catch (err) { console.error("[SupervisorCron] Unable to record run date:", err.message); }
+  };
+
+  cron.schedule(
+    "00 20 * * *",          // 8:00 PM IST daily
+    async () => {
+      console.log("[SupervisorCron] Supervisor daily report triggered.");
+      const client = await pool.connect();
+      let lockAcquired = false;
+      const SUP_LOCK_ID = 812347;   // unique — never reuse this number
+      try {
+        const { rows } = await client.query(
+          "SELECT pg_try_advisory_lock($1) AS locked", [SUP_LOCK_ID]
+        );
+        lockAcquired = Boolean(rows[0]?.locked);
+        if (!lockAcquired) {
+          console.log("[SupervisorCron] Another instance running; skipping.");
+          return;
+        }
+
+        const runKey = todayKey();
+        if (hasSentTodaySup(runKey)) {
+          console.log("[SupervisorCron] Already sent today; skipping.");
+          return;
+        }
+
+        const result = await sendSupervisorDailyReport();
+        markSentTodaySup(runKey);
+        console.log(`[SupervisorCron] Done. Processed ${result.count} supervisors for ${result.isoDate}.`);
+
+        await client.query("SELECT pg_advisory_unlock($1)", [SUP_LOCK_ID]);
+        lockAcquired = false;
+      } catch (err) {
+        console.error("[SupervisorCron] Error:", err.message);
+      } finally {
+        if (lockAcquired) {
+          await client.query("SELECT pg_advisory_unlock($1)", [SUP_LOCK_ID]);
+        }
+        client.release();
+      }
+    },
+    { timezone: "Asia/Kolkata" }
+  );
+  */
+
 } else {
   console.log(
     `[WhatsApp Cron] Skipping cron registration on cluster instance ${process.env.NODE_APP_INSTANCE}`
@@ -210,7 +354,7 @@ if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
     AUTO_PUNCHOUT_CRON_EXPR,
     async () => {
       console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
-      
+
 
 
       const WINDOW_MS = 10 * 60 * 1000; // 10 minutes

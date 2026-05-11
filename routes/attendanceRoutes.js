@@ -122,7 +122,6 @@ router.get("/short-report", async (req, res) => {
   const scope = req.cityScope || { all: false, ids: [] };
 
   try {
-    // Verify city exists
     const cityCheck = await pool.query(
       "SELECT city_id FROM cities WHERE city_name = $1",
       [cityName]
@@ -132,14 +131,12 @@ router.get("/short-report", async (req, res) => {
     }
     const reqCityId = cityCheck.rows[0].city_id;
 
-    // Scope check — compare as strings to avoid int/string mismatch
     if (!scope.all && !scope.ids.map(String).includes(String(reqCityId))) {
       return res
         .status(403)
         .json({ error: "Forbidden: city not assigned to this user." });
     }
 
-    // Build dynamic WHERE clauses
     const params = [cityName, zoneName, targetDate];
     let extraClause = "";
 
@@ -166,55 +163,139 @@ router.get("/short-report", async (req, res) => {
 
     const { rows } = await pool.query(
       `SELECT
-        c.city_name,
-        z.zone_name,
-        s.sector_name                                    AS ward_name,
-        w.ward_name                                      AS kothi_name,
-        COALESCE(
-          STRING_AGG(DISTINCT u.name, ', ' ORDER BY u.name), ''
-        )                                                AS supervisor_names,
-        COALESCE(
-          STRING_AGG(DISTINCT dept.department_name, ', ' ORDER BY dept.department_name), ''
-        )                                                AS departments,
-        COUNT(DISTINCT e.emp_id)                         AS total_registered_employees,
-        COUNT(
-          DISTINCT CASE
-            WHEN a.date::date = $3::date AND a.punch_in_time IS NOT NULL THEN e.emp_id
-          END
-        )                                                AS total_present_employees,
-        COUNT(
-          DISTINCT CASE
-            WHEN a.leave_type IS NOT NULL THEN e.emp_id
-          END
-        )                                                AS total_leave_employees,
-        ARRAY_REMOVE(ARRAY_AGG(DISTINCT e.emp_id), NULL) AS registered_emp_ids,
-        ARRAY_REMOVE(
-          ARRAY_AGG(DISTINCT CASE
-            WHEN a.date::date = $3::date AND a.punch_in_time IS NOT NULL THEN e.emp_id
-          END),
-          NULL
-        )                                                AS present_emp_ids,
-        ARRAY_REMOVE(
-          ARRAY_AGG(DISTINCT CASE
-            WHEN a.leave_type IS NOT NULL THEN e.emp_id
-          END),
-          NULL
-        )                                                AS leave_emp_ids
-      FROM public.wards w
-      JOIN public.zones          z    ON w.zone_id   = z.zone_id
-      JOIN public.cities         c    ON z.city_id   = c.city_id
-      LEFT JOIN public.sectors   s    ON w.sector_id = s.sector_id
-      LEFT JOIN public.employee  e    ON e.ward_id   = w.ward_id
-      LEFT JOIN public.designation des ON e.designation_id = des.designation_id
-      LEFT JOIN public.department  dept ON des.department_id = dept.department_id
-      LEFT JOIN public.supervisor_ward sw ON sw.ward_id = w.ward_id
-      LEFT JOIN public.users       u    ON u.user_id   = sw.supervisor_id
-      LEFT JOIN public.attendance  a    ON a.emp_id    = e.emp_id
-      WHERE c.city_name = $1
-        AND z.zone_name = $2
-        ${extraClause}
-      GROUP BY c.city_name, z.zone_name, s.sector_name, w.ward_id, w.ward_name
-      ORDER BY s.sector_name ASC NULLS LAST, w.ward_name ASC`,
+    c.city_name,
+    z.zone_name,
+    s.sector_name AS ward_name,
+    w.ward_name AS kothi_name,
+
+    COALESCE(
+      STRING_AGG(DISTINCT u.name, ', ' ORDER BY u.name),
+      ''
+    ) AS supervisor_names,
+
+    COALESCE(
+      STRING_AGG(DISTINCT dept.department_name, ', ' ORDER BY dept.department_name),
+      ''
+    ) AS departments,
+
+    COUNT(DISTINCT e.emp_id) AS total_registered_employees,
+
+    COUNT(
+      DISTINCT CASE
+        WHEN a.punch_in_time IS NOT NULL
+        THEN e.emp_id
+      END
+    ) AS total_present_employees,
+
+    COUNT(
+      DISTINCT CASE
+        WHEN a.leave_type IS NOT NULL
+        THEN e.emp_id
+      END
+    ) AS total_leave_employees,
+
+    COUNT(
+      DISTINCT CASE
+        WHEN a.punch_out_time IS NOT NULL
+          AND (a.auto_punched_out IS FALSE OR a.auto_punched_out IS NULL)
+        THEN e.emp_id
+      END
+    ) AS manual_punch_out_count,
+
+    COUNT(
+      DISTINCT CASE
+        WHEN a.punch_out_time IS NOT NULL
+          AND a.auto_punched_out IS TRUE
+        THEN e.emp_id
+      END
+    ) AS auto_punch_out_count,
+
+    COUNT(
+      DISTINCT CASE
+        WHEN a.punch_out_time IS NOT NULL
+        THEN e.emp_id
+      END
+    ) AS total_completed_punch_out,
+
+    ARRAY_REMOVE(
+      ARRAY_AGG(DISTINCT e.emp_id),
+      NULL
+    ) AS registered_emp_ids,
+
+    ARRAY_REMOVE(
+      ARRAY_AGG(
+        DISTINCT CASE
+          WHEN a.punch_in_time IS NOT NULL
+          THEN e.emp_id
+        END
+      ),
+      NULL
+    ) AS present_emp_ids,
+
+    ARRAY_REMOVE(
+      ARRAY_AGG(
+        DISTINCT CASE
+          WHEN a.leave_type IS NOT NULL
+          THEN e.emp_id
+        END
+      ),
+      NULL
+    ) AS leave_emp_ids
+
+  FROM public.wards w
+
+  JOIN public.zones z
+    ON w.zone_id = z.zone_id
+
+  JOIN public.cities c
+    ON z.city_id = c.city_id
+
+  LEFT JOIN public.sectors s
+    ON w.sector_id = s.sector_id
+
+  LEFT JOIN public.employee e
+    ON e.ward_id = w.ward_id
+
+  LEFT JOIN public.designation des
+    ON e.designation_id = des.designation_id
+
+  LEFT JOIN public.department dept
+    ON des.department_id = dept.department_id
+
+  LEFT JOIN public.supervisor_ward sw
+    ON sw.ward_id = w.ward_id
+
+  LEFT JOIN public.users u
+    ON u.user_id = sw.supervisor_id
+
+  LEFT JOIN (
+    SELECT DISTINCT ON (emp_id)
+      emp_id,
+      date,
+      punch_in_time,
+      punch_out_time,
+      auto_punched_out,
+      leave_type
+    FROM public.attendance
+    WHERE date::date = $3::date
+    ORDER BY emp_id, attendance_id DESC
+  ) a
+    ON a.emp_id = e.emp_id
+
+  WHERE c.city_name = $1
+    AND z.zone_name = $2
+    ${extraClause}
+
+  GROUP BY
+    c.city_name,
+    z.zone_name,
+    s.sector_name,
+    w.ward_id,
+    w.ward_name
+
+  ORDER BY
+    s.sector_name ASC NULLS LAST,
+    w.ward_name ASC`,
       params
     );
 
