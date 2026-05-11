@@ -149,6 +149,8 @@ const detectSingleFace = async (base64Image, stage = 'front') => {
   const roll = Number(face?.Pose?.Roll ?? 0);
   const pitch = Number(face?.Pose?.Pitch ?? 0);
   const eyesOpen = face?.EyesOpen?.Value !== false;
+  const eyesOpenValue = face?.EyesOpen?.Value;
+  const eyesOpenConfidence = Number(face?.EyesOpen?.Confidence ?? 0);
   const faceOccluded = face?.FaceOccluded?.Value === true;
   const sunglasses = face?.Sunglasses?.Value === true;
 
@@ -173,7 +175,7 @@ const detectSingleFace = async (base64Image, stage = 'front') => {
     };
   }
 
-  if (!eyesOpen) {
+  if (stage !== 'blink' && !eyesOpen) {
     return { ok: false, message: 'Please keep your eyes open and retake the selfie.' };
   }
 
@@ -191,6 +193,9 @@ const detectSingleFace = async (base64Image, stage = 'front') => {
       brightness,
       sharpness,
       faceConfidence,
+      eyesOpen,
+      eyesOpenValue,
+      eyesOpenConfidence,
     },
   };
 };
@@ -275,7 +280,8 @@ const runLivenessPrecheck = async (selfieBase64, options = {}) => {
 
   const frameAResult = await detectSingleFace(frameA, 'front');
   if (!frameAResult.ok) return frameAResult;
-  const frameBResult = await detectSingleFace(frameB, direction === 'left' ? 'left' : 'right');
+  const stageForB = direction === 'blink' ? 'blink' : (direction === 'left' ? 'left' : 'right');
+  const frameBResult = await detectSingleFace(frameB, stageForB);
   if (!frameBResult.ok) return frameBResult;
 
   const samePerson = await verifyFramesBelongToSamePerson(frameAResult.buffer, frameBResult.buffer);
@@ -290,6 +296,19 @@ const runLivenessPrecheck = async (selfieBase64, options = {}) => {
   const yawB = Number(frameBResult.metrics?.yaw ?? 0);
   const yawDelta = yawB - yawA;
   const minDelta = LIVENESS_CONFIG.minChallengeYawDelta;
+
+  if (direction === 'blink') {
+    const eyesOpenA = frameAResult.metrics?.eyesOpen === true || frameAResult.metrics?.eyesOpenValue === true;
+    const eyesOpenB = frameBResult.metrics?.eyesOpen === true || frameBResult.metrics?.eyesOpenValue === true;
+
+    if (!eyesOpenA) {
+      return { ok: false, message: 'Please keep eyes open in step 1 and retry.' };
+    }
+    if (eyesOpenB) {
+      return { ok: false, message: 'Blink not detected. Please blink in step 2 and retry.' };
+    }
+    return { ok: true };
+  }
 
   if (direction === 'right_left' || direction === 'right-left') {
     if (!frameC) {
