@@ -138,37 +138,48 @@ const fetchWeeklyReportData = async () => {
     ORDER BY avg_perf DESC;
   `;
 
-  const [overview, peak, areaLeaders, stars, supervisors] = await Promise.all([
-    pool.query(overviewQuery, [startDate, endDate, REPORT_CITY]),
-    pool.query(peakQuery, [startDate, endDate, REPORT_CITY]),
-    pool.query(areaLeaderQuery, [startDate, endDate, REPORT_CITY]),
-    pool.query(starEmpQuery, [startDate, endDate, REPORT_CITY]),
-    pool.query(supervisorQuery, [startDate, endDate, REPORT_CITY]),
-  ]);
+  const client = await pool.connect();
+  try {
+    // Increase timeout for this session to 60 seconds as weekly aggregation is heavy
+    await client.query("SET statement_timeout = '60s'");
 
-  const stats = overview.rows[0] || { avg_reg: 0, avg_pres: 0 };
-  const peakData = peak.rows[0] || { hour_block: "N/A", count: 0 };
-  const avgPresPct = stats.avg_reg > 0 ? Math.round((stats.avg_pres / stats.avg_reg) * 100) : 0;
+    const [overview, peak, areaLeaders, stars, supervisors] = await Promise.all([
+      client.query(overviewQuery, [startDate, endDate, REPORT_CITY]),
+      client.query(peakQuery, [startDate, endDate, REPORT_CITY]),
+      client.query(areaLeaderQuery, [startDate, endDate, REPORT_CITY]),
+      client.query(starEmpQuery, [startDate, endDate, REPORT_CITY]),
+      client.query(supervisorQuery, [startDate, endDate, REPORT_CITY]),
+    ]);
 
-  const topZone = areaLeaders.rows.reduce((prev, current) => (prev.perf > current.perf) ? prev : current, areaLeaders.rows[0]);
-  const topWard = areaLeaders.rows[0];
-  const topKothis = areaLeaders.rows.slice(0, 3);
+    // Reset timeout just in case (though connection is released)
+    await client.query("SET statement_timeout = '30s'");
 
-  return {
-    city: REPORT_CITY,
-    period: getWeeklyDates().displayPeriod,
-    avgReg: stats.avg_reg || 0,
-    avgPres: stats.avg_pres || 0,
-    avgPresPct,
-    peakTime: peakData.hour_block,
-    peakCount: peakData.count,
-    topZone: topZone?.zone_name || "N/A",
-    topWard: topWard?.ward_name || "N/A",
-    topKothis: topKothis.map(k => k.ward_name),
-    starEmployees: stars.rows.map(s => s.name),
-    topSupervisor: supervisors.rows[0]?.supervisor_name || "N/A",
-    bottomSupervisors: supervisors.rows.slice(-3).reverse().map(s => s.supervisor_name)
-  };
+    const stats = overview.rows[0] || { avg_reg: 0, avg_pres: 0 };
+    const peakData = peak.rows[0] || { hour_block: "N/A", count: 0 };
+    const avgPresPct = stats.avg_reg > 0 ? Math.round((stats.avg_pres / stats.avg_reg) * 100) : 0;
+
+    const topZone = areaLeaders.rows.reduce((prev, current) => (prev.perf > current.perf) ? prev : current, areaLeaders.rows[0]);
+    const topWard = areaLeaders.rows[0];
+    const topKothis = areaLeaders.rows.slice(0, 3);
+
+    return {
+      city: REPORT_CITY,
+      period: getWeeklyDates().displayPeriod,
+      avgReg: stats.avg_reg || 0,
+      avgPres: stats.avg_pres || 0,
+      avgPresPct,
+      peakTime: peakData.hour_block,
+      peakCount: peakData.count,
+      topZone: topZone?.zone_name || "N/A",
+      topWard: topWard?.ward_name || "N/A",
+      topKothis: topKothis.map(k => k.ward_name),
+      starEmployees: stars.rows.map(s => s.name),
+      topSupervisor: supervisors.rows[0]?.supervisor_name || "N/A",
+      bottomSupervisors: supervisors.rows.slice(-3).reverse().map(s => s.supervisor_name)
+    };
+  } finally {
+    client.release();
+  }
 };
 
 const sendWeeklyWhatsAppReport = async ({ phoneNumber }) => {
@@ -203,10 +214,10 @@ const sendWeeklyWhatsAppReport = async ({ phoneNumber }) => {
               body_13: { type: "text", value: String(data.starEmployees[0] || "N/A") },
               body_14: { type: "text", value: String(data.starEmployees[1] || "N/A") },
               body_15: { type: "text", value: String(data.starEmployees[2] || "N/A") },
-              body_16: { type: "text", value: `[By Attendance] ${data.topSupervisor}` },
+              body_16: { type: "text", value: String(data.topSupervisor || "N/A") },
               body_17: { type: "text", value: String(data.bottomSupervisors[0] || "N/A") },
               body_18: { type: "text", value: String(data.bottomSupervisors[1] || "N/A") },
-              body_19: { type: "text", value: String(data.bottomSupervisors[2] || "N/A") },
+              body_19: { type: "text", value: `${data.bottomSupervisors[2] || "N/A"}. (Note: Supervisor ranking is based on avg. team attendance over 7 days)` },
             },
           },
         ],

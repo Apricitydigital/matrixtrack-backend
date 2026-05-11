@@ -12,7 +12,7 @@ const SUPPORTED_GROUPINGS = new Set([
 
 const ExcelJS = require('exceljs');
 
-const buildExcelDocument = async (rows, headers) => {
+const buildExcelDocument = async (rows, headers, summaryRowData = null) => {
   if (!headers?.length) {
     throw new Error("Headers are required");
   }
@@ -55,6 +55,23 @@ const buildExcelDocument = async (rows, headers) => {
       });
     });
 
+    if (summaryRowData) {
+      sheet.addRow([]); // Spacer row
+      const summaryRow = sheet.addRow(summaryRowData);
+      summaryRow.font = { bold: true };
+      summaryRow.eachCell((cell) => {
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFF0F7FF' }
+        };
+        cell.border = {
+          top: { style: 'thin' },
+          bottom: { style: 'double' }
+        };
+      });
+    }
+
     sheet.columns.forEach(column => {
       let maxLength = column.header ? column.header.length : 10;
       column.eachCell({ includeEmpty: false }, cell => {
@@ -68,8 +85,9 @@ const buildExcelDocument = async (rows, headers) => {
   }
 
   const headerRow = sheet.getRow(1);
-  headerRow.font = { bold: true };
-  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } }; // Slate 800
+  headerRow.alignment = { vertical: 'middle', horizontal: 'left' };
 
   return await workbook.xlsx.writeBuffer();
 };
@@ -385,8 +403,11 @@ const groupingConfigs = {
       des.designation_name,
       0 AS supervisor_id,
       COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
-      COALESCE(u.name, 'Self') AS punched_in_by,
-      COALESCE(u1.name, 'Self') AS punched_out_by
+      COALESCE(u.name, '-') AS punched_in_by,
+      CASE 
+        WHEN a.is_auto_punch_out = true THEN 'System (Auto)'
+        ELSE COALESCE(u1.name, '-')
+      END AS punched_out_by
     `,
     orderBy: "a.date DESC, a.attendance_id DESC",
     csvHeaders: [
@@ -395,14 +416,14 @@ const groupingConfigs = {
       { key: "zone_name", label: "Zone", formatter: (val) => val || "-" },
       { key: "ward_name", label: "Ward", formatter: (val) => val || "-" },
       { key: "employee_name", label: "Employee Name", formatter: (val) => val || "-" },
-      { key: "emp_code", label: "EmpCode", formatter: (val) => val ? `="${val}"` : "-" },
+      { key: "emp_code", label: "Emp Code", formatter: (val) => val ? `="${val}"` : "-" },
       { key: "contact_no", label: "Contact No.", formatter: (val) => val ? `="${val}"` : "-" },
-      { key: "punch_in_time", label: "In Time", formatter: (val) => val || "-" },
-      { key: "punched_in_by", label: "PunchedIn By", formatter: (val, row) => row.punch_in_time ? val : "-" },
+      { key: "punch_in_time", label: "Punch In Time", formatter: (val) => val || "-" },
+      { key: "punched_in_by", label: "Punched In By", formatter: (val, row) => row.punch_in_time ? val : "-" },
       { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
       { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}", "${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}")` : "-" },
-      { key: "punch_out_time", label: "Out Time", formatter: (val) => val || "-" },
-      { key: "punched_out_by", label: "PunchedOut By", formatter: (val, row) => row.punch_out_time ? val : "-" },
+      { key: "punch_out_time", label: "Punch Out Time", formatter: (val) => val || "-" },
+      { key: "punched_out_by", label: "Punched Out By", formatter: (val, row) => row.punch_out_time ? val : "-" },
       { key: "out_address", label: "Out Address", formatter: (val) => val || "-" },
       { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}", "${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}")` : "-" },
     ],
@@ -977,7 +998,22 @@ const createAttendanceDownloadHandler =
           typeof groupConfig.csvHeaders === "function"
             ? groupConfig.csvHeaders({ locationExpression })
             : groupConfig.csvHeaders;
-        const excelBuffer = await buildExcelDocument(allRows, headers);
+
+        let summaryRowData = null;
+        if (requestedGrouping === "detail" && allRows.length > 0) {
+          const totalRecords = allRows.length;
+          const presentCount = allRows.filter(r => r.punch_in_time && r.punch_in_time !== '-').length;
+          
+          summaryRowData = {};
+          headers.forEach(h => {
+            if (h.key === "sr_no") summaryRowData[h.key] = "TOTAL";
+            else if (h.key === "employee_name") summaryRowData[h.key] = `Records: ${totalRecords}`;
+            else if (h.key === "punch_in_time") summaryRowData[h.key] = `Present: ${presentCount}`;
+            else summaryRowData[h.key] = "";
+          });
+        }
+
+        const excelBuffer = await buildExcelDocument(allRows, headers, summaryRowData);
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
         const filename = `attendance-${groupConfig.filenameSuffix}-report-${timestamp}.xlsx`;
 

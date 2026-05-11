@@ -1,4 +1,6 @@
 const express = require("express");
+const bcrypt = require("bcryptjs");
+const { randomUUID } = require("crypto");
 const pool = require("../config/db");
 const authenticateUser = require("../middleware/authMiddleware");
 const {
@@ -23,6 +25,405 @@ const requireAdmin = (req, res, next) => {
 router.use(authenticateUser);
 router.use(attachCityScope);
 router.use(requireAdmin);
+
+const parseInteger = (value) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : null;
+};
+
+const fetchTransferKeyMatch = async (transferKey, keyName = null) => {
+  const params = [true];
+  let whereClause = "is_active = $1";
+
+  if (keyName) {
+    params.push(keyName.trim());
+    whereClause += ` AND key_name = $${params.length}`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT key_id, key_name, key_hash
+     FROM employee_transfer_keys
+     WHERE ${whereClause}`,
+    params
+  );
+
+  for (const row of rows) {
+    const isMatch = await bcrypt.compare(transferKey, row.key_hash);
+    if (isMatch) {
+      return row;
+    }
+  }
+
+  return null;
+};
+
+const getTransferDestination = async (destinationWardId) => {
+  const { rows } = await pool.query(
+    `SELECT
+      w.ward_id,
+      w.ward_name,
+      s.sector_id,
+      s.sector_name,
+      z.zone_id,
+      z.zone_name,
+      c.city_id,
+      c.city_name
+    FROM wards w
+    LEFT JOIN sectors s ON s.sector_id = w.sector_id
+    JOIN zones z ON z.zone_id = w.zone_id
+    JOIN cities c ON c.city_id = z.city_id
+    WHERE w.ward_id = $1`,
+    [destinationWardId]
+  );
+
+  return rows[0] || null;
+};
+
+const getActorName = async (userId) => {
+  const { rows } = await pool.query(
+    "SELECT name FROM users WHERE user_id = $1 LIMIT 1",
+    [userId]
+  );
+  return rows[0]?.name || `User ${userId}`;
+};
+
+// ===== EMPLOYEE MIGRATION =====
+
+router.get("/migration/context", async (req, res) => {
+  try {
+    const [citiesResult, zonesResult, sectorsResult, kothisResult, supervisorsResult] =
+      await Promise.all([
+        pool.query("SELECT city_id, city_name FROM cities ORDER BY city_name ASC"),
+        pool.query(
+          `SELECT z.zone_id, z.zone_name, z.city_id, c.city_name
+           FROM zones z
+           JOIN cities c ON c.city_id = z.city_id
+           ORDER BY c.city_name ASC, z.zone_name ASC`
+        ),
+        pool.query(
+          `SELECT s.sector_id, s.sector_name, s.zone_id, z.zone_name, z.city_id, c.city_name
+           FROM sectors s
+           JOIN zones z ON z.zone_id = s.zone_id
+           JOIN cities c ON c.city_id = z.city_id
+           ORDER BY c.city_name ASC, z.zone_name ASC, s.sector_name ASC`
+        ),
+        pool.query(
+          `SELECT w.ward_id, w.ward_name, w.sector_id, s.sector_name, w.zone_id, z.zone_name, z.city_id, c.city_name
+           FROM wards w
+           LEFT JOIN sectors s ON s.sector_id = w.sector_id
+           JOIN zones z ON z.zone_id = w.zone_id
+           JOIN cities c ON c.city_id = z.city_id
+           ORDER BY c.city_name ASC, z.zone_name ASC, s.sector_name ASC NULLS LAST, w.ward_name ASC`
+        ),
+        pool.query(
+          `SELECT user_id, name, emp_code
+           FROM users
+           WHERE role = 'supervisor'
+           ORDER BY name ASC`
+        ),
+      ]);
+
+    res.json({
+      cities: citiesResult.rows,
+      zones: zonesResult.rows,
+      sectors: sectorsResult.rows,
+      kothis: kothisResult.rows,
+      supervisors: supervisorsResult.rows,
+    });
+  } catch (error) {
+    console.error("Migration context error:", error);
+    res.status(500).json({ error: "Unable to load migration context" });
+  }
+});
+
+router.get("/migration/keys", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+        k.key_id,
+        k.key_name,
+        k.is_active,
+        k.created_at,
+        k.updated_at,
+        k.created_by,
+        u.name AS created_by_name
+      FROM employee_transfer_keys k
+      LEFT JOIN users u ON u.user_id = k.created_by
+      ORDER BY k.created_at DESC`
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error("Migration key list error:", error);
+    res.status(500).json({ error: "Unable to load transfer keys" });
+  }
+});
+
+router.post("/migration/keys", async (req, res) => {
+  try {
+    const keyName = String(req.body?.keyName || "").trim();
+    const keyValue = String(req.body?.keyValue || "");
+    const isActive = req.body?.isActive !== false;
+
+    if (!keyName) {
+      return res.status(400).json({ error: "keyName is required" });
+    }
+
+    if (keyValue.length < 4) {
+      return res
+        .status(400)
+        .json({ error: "keyValue must be at least 4 characters" });
+    }
+
+    const keyHash = await bcrypt.hash(keyValue, 10);
+    const createdBy = parseInteger(req.user?.user_id);
+
+    const { rows } = await pool.query(
+      `INSERT INTO employee_transfer_keys (key_name, key_hash, created_by, is_active)
+       VALUES ($1, $2, $3, $4)
+       RETURNING key_id, key_name, is_active, created_by, created_at, updated_at`,
+      [keyName, keyHash, createdBy, isActive]
+    );
+
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Transfer key name already exists" });
+    }
+    console.error("Create migration key error:", error);
+    res.status(500).json({ error: "Unable to create transfer key" });
+  }
+});
+
+router.get("/migration/history", async (req, res) => {
+  try {
+    const limit = Math.min(
+      500,
+      Math.max(1, parseInteger(req.query?.limit) || 100)
+    );
+
+    const { rows } = await pool.query(
+      `SELECT
+        transfer_id,
+        transfer_batch_id,
+        transfer_mode,
+        emp_id,
+        emp_code,
+        employee_name,
+        from_city_name,
+        from_zone_name,
+        from_sector_name,
+        from_kothi_name,
+        to_city_name,
+        to_zone_name,
+        to_sector_name,
+        to_kothi_name,
+        transfer_key_name,
+        transferred_by_user_id,
+        transferred_by_name,
+        transferred_at
+      FROM employee_transfer_history
+      ORDER BY transferred_at DESC
+      LIMIT $1`,
+      [limit]
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error("Migration history error:", error);
+    res.status(500).json({ error: "Unable to load transfer history" });
+  }
+});
+
+router.post("/migration/transfer", async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
+  try {
+    const destinationWardId = parseInteger(req.body?.destinationWardId);
+    const transferKey = String(req.body?.transferKey || "");
+    const requestedKeyName = req.body?.keyName
+      ? String(req.body.keyName).trim()
+      : null;
+    const supervisorId = parseInteger(req.body?.supervisorId);
+    const selectedEmpIds = Array.isArray(req.body?.employeeIds)
+      ? req.body.employeeIds.map(parseInteger).filter((id) => id !== null)
+      : [];
+
+    if (!destinationWardId) {
+      return res.status(400).json({ error: "destinationWardId is required" });
+    }
+
+    if (!transferKey) {
+      return res.status(400).json({ error: "transferKey is required" });
+    }
+
+    const mode =
+      selectedEmpIds.length > 0
+        ? "employee_selection"
+        : supervisorId
+          ? "supervisor_selection"
+          : null;
+
+    if (!mode) {
+      return res.status(400).json({
+        error:
+          "Provide employeeIds for selection transfer or supervisorId for supervisor transfer",
+      });
+    }
+
+    const verifiedKey = await fetchTransferKeyMatch(transferKey, requestedKeyName);
+    if (!verifiedKey) {
+      return res.status(403).json({ error: "Invalid transfer key" });
+    }
+
+    const destination = await getTransferDestination(destinationWardId);
+    if (!destination) {
+      return res.status(404).json({ error: "Destination kothi not found" });
+    }
+
+    let sourceEmployees = [];
+    if (mode === "employee_selection") {
+      const employeeLookup = await client.query(
+        `SELECT
+          e.emp_id,
+          e.emp_code,
+          e.name AS employee_name,
+          e.ward_id AS from_kothi_id,
+          w.ward_name AS from_kothi_name,
+          s.sector_id AS from_sector_id,
+          s.sector_name AS from_sector_name,
+          z.zone_id AS from_zone_id,
+          z.zone_name AS from_zone_name,
+          c.city_id AS from_city_id,
+          c.city_name AS from_city_name
+        FROM employee e
+        LEFT JOIN wards w ON w.ward_id = e.ward_id
+        LEFT JOIN sectors s ON s.sector_id = w.sector_id
+        LEFT JOIN zones z ON z.zone_id = w.zone_id
+        LEFT JOIN cities c ON c.city_id = z.city_id
+        WHERE e.emp_id = ANY($1::int[])`,
+        [selectedEmpIds]
+      );
+      sourceEmployees = employeeLookup.rows;
+    } else {
+      const supervisorEmployees = await client.query(
+        `SELECT DISTINCT
+          e.emp_id,
+          e.emp_code,
+          e.name AS employee_name,
+          e.ward_id AS from_kothi_id,
+          w.ward_name AS from_kothi_name,
+          s.sector_id AS from_sector_id,
+          s.sector_name AS from_sector_name,
+          z.zone_id AS from_zone_id,
+          z.zone_name AS from_zone_name,
+          c.city_id AS from_city_id,
+          c.city_name AS from_city_name
+        FROM supervisor_ward sw
+        JOIN employee e ON e.ward_id = sw.ward_id
+        LEFT JOIN wards w ON w.ward_id = e.ward_id
+        LEFT JOIN sectors s ON s.sector_id = w.sector_id
+        LEFT JOIN zones z ON z.zone_id = w.zone_id
+        LEFT JOIN cities c ON c.city_id = z.city_id
+        WHERE sw.supervisor_id = $1`,
+        [supervisorId]
+      );
+      sourceEmployees = supervisorEmployees.rows;
+    }
+
+    if (!sourceEmployees.length) {
+      return res.status(404).json({ error: "No employees found for transfer" });
+    }
+
+    const affectedEmployees = sourceEmployees.filter(
+      (row) => parseInteger(row.from_kothi_id) !== destinationWardId
+    );
+
+    if (!affectedEmployees.length) {
+      return res.status(200).json({
+        message: "No employee required transfer. Already in selected kothi.",
+        transferredCount: 0,
+      });
+    }
+
+    const transferEmpIds = affectedEmployees
+      .map((row) => parseInteger(row.emp_id))
+      .filter((id) => id !== null);
+
+    const actorUserId = parseInteger(req.user?.user_id);
+    const actorName = await getActorName(actorUserId);
+    const transferBatchId = randomUUID();
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    await client.query(
+      `UPDATE employee
+       SET ward_id = $1
+       WHERE emp_id = ANY($2::int[])`,
+      [destinationWardId, transferEmpIds]
+    );
+
+    for (const emp of affectedEmployees) {
+      await client.query(
+        `INSERT INTO employee_transfer_history (
+          emp_id, emp_code, employee_name,
+          from_city_id, from_city_name, from_zone_id, from_zone_name, from_sector_id, from_sector_name, from_kothi_id, from_kothi_name,
+          to_city_id, to_city_name, to_zone_id, to_zone_name, to_sector_id, to_sector_name, to_kothi_id, to_kothi_name,
+          transfer_mode, transfer_batch_id, transfer_key_name, transferred_by_user_id, transferred_by_name
+        ) VALUES (
+          $1, $2, $3,
+          $4, $5, $6, $7, $8, $9, $10, $11,
+          $12, $13, $14, $15, $16, $17, $18, $19,
+          $20, $21::uuid, $22, $23, $24
+        )`,
+        [
+          emp.emp_id,
+          emp.emp_code || null,
+          emp.employee_name || null,
+          emp.from_city_id || null,
+          emp.from_city_name || null,
+          emp.from_zone_id || null,
+          emp.from_zone_name || null,
+          emp.from_sector_id || null,
+          emp.from_sector_name || null,
+          emp.from_kothi_id || null,
+          emp.from_kothi_name || null,
+          destination.city_id,
+          destination.city_name,
+          destination.zone_id,
+          destination.zone_name,
+          destination.sector_id || null,
+          destination.sector_name || null,
+          destination.ward_id,
+          destination.ward_name,
+          mode,
+          transferBatchId,
+          verifiedKey.key_name,
+          actorUserId,
+          actorName,
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    res.json({
+      message: "Employees transferred successfully",
+      transferredCount: affectedEmployees.length,
+      transferBatchId,
+      transferMode: mode,
+      transferKeyName: verifiedKey.key_name,
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+    console.error("Employee transfer error:", error);
+    res.status(500).json({ error: "Unable to complete employee transfer" });
+  } finally {
+    client.release();
+  }
+});
 
 // ===== DASHBOARD ANALYTICS =====
 
