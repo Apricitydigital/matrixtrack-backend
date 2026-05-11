@@ -112,10 +112,11 @@ router.post("/download", handleAttendanceDownload);
 // Short Attendance summarized report - supports optional wardId (sector) and kothiId filters
 router.get("/short-report", async (req, res) => {
   const { cityName, zoneName, wardId, kothiId, date } = req.query;
+
   if (!cityName || !zoneName) {
-    return res
-      .status(400)
-      .json({ error: "cityName and zoneName query params are required." });
+    return res.status(400).json({
+      error: "cityName and zoneName query params are required.",
+    });
   }
 
   const targetDate = date || formatDateIST();
@@ -123,12 +124,18 @@ router.get("/short-report", async (req, res) => {
 
   try {
     const cityCheck = await pool.query(
-      "SELECT city_id FROM cities WHERE city_name = $1",
+      `SELECT city_id
+       FROM cities
+       WHERE city_name = $1`,
       [cityName]
     );
+
     if (cityCheck.rows.length === 0) {
-      return res.status(404).json({ error: "City not found" });
+      return res.status(404).json({
+        error: "City not found",
+      });
     }
+
     const reqCityId = cityCheck.rows[0].city_id;
 
     if (!scope.all && !scope.ids.map(String).includes(String(reqCityId))) {
@@ -140,24 +147,33 @@ router.get("/short-report", async (req, res) => {
     const params = [cityName, zoneName, targetDate];
     let extraClause = "";
 
+    // Ward/Sector filter
     if (wardId && wardId !== "all") {
       params.push(Number(wardId));
       extraClause += ` AND w.sector_id = $${params.length}`;
     }
 
+    // Kothi filter
     if (kothiId && kothiId !== "all") {
       const kothiIds = String(kothiId)
         .split(",")
         .map((id) => Number(id.trim()))
         .filter((id) => !isNaN(id) && id > 0);
+
       if (kothiIds.length > 0) {
         params.push(kothiIds);
         extraClause += ` AND w.ward_id = ANY($${params.length})`;
       }
     }
 
+    // City scope filter
     if (!scope.all) {
-      params.push(scope.ids.map(Number).filter((id) => !isNaN(id)));
+      params.push(
+        scope.ids
+          .map(Number)
+          .filter((id) => !isNaN(id))
+      );
+
       extraClause += ` AND c.city_id = ANY($${params.length})`;
     }
 
@@ -299,10 +315,32 @@ router.get("/short-report", async (req, res) => {
       params
     );
 
-    res.json(rows);
+      GROUP BY
+          c.city_name,
+          z.zone_name,
+          s.sector_name,
+          w.ward_id,
+          w.ward_name
+
+      ORDER BY
+          s.sector_name ASC NULLS LAST,
+          w.ward_name ASC
+    `;
+
+    const { rows } = await pool.query(query, params);
+
+    return res.json(rows);
+
   } catch (error) {
-    console.error("Error fetching short attendance report:", error.message, error.stack);
-    res.status(500).json({ error: "Unable to fetch short attendance report." });
+    console.error(
+      "Error fetching short attendance report:",
+      error.message,
+      error.stack
+    );
+
+    return res.status(500).json({
+      error: "Unable to fetch short attendance report.",
+    });
   }
 });
 
