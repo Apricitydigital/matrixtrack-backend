@@ -112,10 +112,11 @@ router.post("/download", handleAttendanceDownload);
 // Short Attendance summarized report - supports optional wardId (sector) and kothiId filters
 router.get("/short-report", async (req, res) => {
   const { cityName, zoneName, wardId, kothiId, date } = req.query;
+
   if (!cityName || !zoneName) {
-    return res
-      .status(400)
-      .json({ error: "cityName and zoneName query params are required." });
+    return res.status(400).json({
+      error: "cityName and zoneName query params are required.",
+    });
   }
 
   const targetDate = date || formatDateIST();
@@ -124,104 +125,201 @@ router.get("/short-report", async (req, res) => {
   try {
     // Verify city exists
     const cityCheck = await pool.query(
-      "SELECT city_id FROM cities WHERE city_name = $1",
+      `SELECT city_id
+       FROM cities
+       WHERE city_name = $1`,
       [cityName]
     );
+
     if (cityCheck.rows.length === 0) {
-      return res.status(404).json({ error: "City not found" });
+      return res.status(404).json({
+        error: "City not found",
+      });
     }
+
     const reqCityId = cityCheck.rows[0].city_id;
 
-    // Scope check — compare as strings to avoid int/string mismatch
-    if (!scope.all && !scope.ids.map(String).includes(String(reqCityId))) {
-      return res
-        .status(403)
-        .json({ error: "Forbidden: city not assigned to this user." });
+    // Scope validation
+    if (
+      !scope.all &&
+      !scope.ids.map(String).includes(String(reqCityId))
+    ) {
+      return res.status(403).json({
+        error: "Forbidden: city not assigned to this user.",
+      });
     }
 
-    // Build dynamic WHERE clauses
+    // Dynamic filters
     const params = [cityName, zoneName, targetDate];
     let extraClause = "";
 
+    // Ward/Sector filter
     if (wardId && wardId !== "all") {
       params.push(Number(wardId));
       extraClause += ` AND w.sector_id = $${params.length}`;
     }
 
+    // Kothi filter
     if (kothiId && kothiId !== "all") {
       const kothiIds = String(kothiId)
         .split(",")
         .map((id) => Number(id.trim()))
         .filter((id) => !isNaN(id) && id > 0);
+
       if (kothiIds.length > 0) {
         params.push(kothiIds);
         extraClause += ` AND w.ward_id = ANY($${params.length})`;
       }
     }
 
+    // City scope filter
     if (!scope.all) {
-      params.push(scope.ids.map(Number).filter((id) => !isNaN(id)));
+      params.push(
+        scope.ids
+          .map(Number)
+          .filter((id) => !isNaN(id))
+      );
+
       extraClause += ` AND c.city_id = ANY($${params.length})`;
     }
 
-    const { rows } = await pool.query(
-      `SELECT
-        c.city_name,
-        z.zone_name,
-        s.sector_name                                    AS ward_name,
-        w.ward_name                                      AS kothi_name,
-        COALESCE(
-          STRING_AGG(DISTINCT u.name, ', ' ORDER BY u.name), ''
-        )                                                AS supervisor_names,
-        COALESCE(
-          STRING_AGG(DISTINCT dept.department_name, ', ' ORDER BY dept.department_name), ''
-        )                                                AS departments,
-        COUNT(DISTINCT e.emp_id)                         AS total_registered_employees,
-        COUNT(
-          DISTINCT CASE
-            WHEN a.date::date = $3::date AND a.punch_in_time IS NOT NULL THEN e.emp_id
-          END
-        )                                                AS total_present_employees,
-        COUNT(
-          DISTINCT CASE
-            WHEN a.leave_type IS NOT NULL THEN e.emp_id
-          END
-        )                                                AS total_leave_employees,
-        ARRAY_REMOVE(ARRAY_AGG(DISTINCT e.emp_id), NULL) AS registered_emp_ids,
-        ARRAY_REMOVE(
-          ARRAY_AGG(DISTINCT CASE
-            WHEN a.date::date = $3::date AND a.punch_in_time IS NOT NULL THEN e.emp_id
-          END),
-          NULL
-        )                                                AS present_emp_ids,
-        ARRAY_REMOVE(
-          ARRAY_AGG(DISTINCT CASE
-            WHEN a.leave_type IS NOT NULL THEN e.emp_id
-          END),
-          NULL
-        )                                                AS leave_emp_ids
+    const query = `
+      WITH attendance_today AS (
+        SELECT
+          emp_id,
+          punch_in_time,
+          leave_type
+        FROM public.attendance
+        WHERE date >= $3::date
+          AND date < ($3::date + INTERVAL '1 day')
+      )
+
+      SELECT
+          c.city_name,
+
+          z.zone_name,
+
+          s.sector_name AS ward_name,
+
+          w.ward_name AS kothi_name,
+
+          COALESCE(
+              STRING_AGG(
+                  DISTINCT u.name,
+                  ', ' ORDER BY u.name
+              ),
+              ''
+          ) AS supervisor_names,
+
+          COALESCE(
+              STRING_AGG(
+                  DISTINCT dept.department_name,
+                  ', ' ORDER BY dept.department_name
+              ),
+              ''
+          ) AS departments,
+
+          COUNT(DISTINCT e.emp_id)
+              AS total_registered_employees,
+
+          COUNT(
+              DISTINCT CASE
+                  WHEN a.punch_in_time IS NOT NULL
+                  THEN e.emp_id
+              END
+          ) AS total_present_employees,
+
+          COUNT(
+              DISTINCT CASE
+                  WHEN a.leave_type IS NOT NULL
+                  THEN e.emp_id
+              END
+          ) AS total_leave_employees,
+
+          ARRAY_REMOVE(
+              ARRAY_AGG(DISTINCT e.emp_id),
+              NULL
+          ) AS registered_emp_ids,
+
+          ARRAY_REMOVE(
+              ARRAY_AGG(
+                  DISTINCT CASE
+                      WHEN a.punch_in_time IS NOT NULL
+                      THEN e.emp_id
+                  END
+              ),
+              NULL
+          ) AS present_emp_ids,
+
+          ARRAY_REMOVE(
+              ARRAY_AGG(
+                  DISTINCT CASE
+                      WHEN a.leave_type IS NOT NULL
+                      THEN e.emp_id
+                  END
+              ),
+              NULL
+          ) AS leave_emp_ids
+
       FROM public.wards w
-      JOIN public.zones          z    ON w.zone_id   = z.zone_id
-      JOIN public.cities         c    ON z.city_id   = c.city_id
-      LEFT JOIN public.sectors   s    ON w.sector_id = s.sector_id
-      LEFT JOIN public.employee  e    ON e.ward_id   = w.ward_id
-      LEFT JOIN public.designation des ON e.designation_id = des.designation_id
-      LEFT JOIN public.department  dept ON des.department_id = dept.department_id
-      LEFT JOIN public.supervisor_ward sw ON sw.ward_id = w.ward_id
-      LEFT JOIN public.users       u    ON u.user_id   = sw.supervisor_id
-      LEFT JOIN public.attendance  a    ON a.emp_id    = e.emp_id
+
+      JOIN public.zones z
+          ON w.zone_id = z.zone_id
+
+      JOIN public.cities c
+          ON z.city_id = c.city_id
+
+      LEFT JOIN public.sectors s
+          ON w.sector_id = s.sector_id
+
+      LEFT JOIN public.employee e
+          ON e.ward_id = w.ward_id
+
+      LEFT JOIN public.designation des
+          ON e.designation_id = des.designation_id
+
+      LEFT JOIN public.department dept
+          ON des.department_id = dept.department_id
+
+      LEFT JOIN public.supervisor_ward sw
+          ON sw.ward_id = w.ward_id
+
+      LEFT JOIN public.users u
+          ON u.user_id = sw.supervisor_id
+
+      LEFT JOIN attendance_today a
+          ON a.emp_id = e.emp_id
+
       WHERE c.city_name = $1
         AND z.zone_name = $2
         ${extraClause}
-      GROUP BY c.city_name, z.zone_name, s.sector_name, w.ward_id, w.ward_name
-      ORDER BY s.sector_name ASC NULLS LAST, w.ward_name ASC`,
-      params
+
+      GROUP BY
+          c.city_name,
+          z.zone_name,
+          s.sector_name,
+          w.ward_id,
+          w.ward_name
+
+      ORDER BY
+          s.sector_name ASC NULLS LAST,
+          w.ward_name ASC
+    `;
+
+    const { rows } = await pool.query(query, params);
+
+    return res.json(rows);
+
+  } catch (error) {
+    console.error(
+      "Error fetching short attendance report:",
+      error.message,
+      error.stack
     );
 
-    res.json(rows);
-  } catch (error) {
-    console.error("Error fetching short attendance report:", error.message, error.stack);
-    res.status(500).json({ error: "Unable to fetch short attendance report." });
+    return res.status(500).json({
+      error: "Unable to fetch short attendance report.",
+    });
   }
 });
 
