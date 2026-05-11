@@ -415,10 +415,14 @@ const approveRequest = async (req, res) => {
     pushCol('is_active', true);
 
     const placeholders = insertVals.map((_, idx) => `$${idx + 1}`).join(', ');
+    const conflictAssignments = ['is_active = true'];
+    if (peColumns.has('updated_at')) {
+      conflictAssignments.push('updated_at = NOW()');
+    }
     const insertPeQuery = `
       INSERT INTO professional_employees (${insertCols.join(', ')})
       VALUES (${placeholders})
-      ON CONFLICT (id) DO UPDATE SET is_active = true, updated_at = NOW()
+      ON CONFLICT (id) DO UPDATE SET ${conflictAssignments.join(', ')}
       RETURNING id
     `;
 

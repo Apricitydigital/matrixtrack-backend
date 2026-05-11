@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const logger = require('../utils/logger');
 const { verifyFaceMatch } = require('../utils/faceService');
+const { rekognition, DetectFacesCommand, CompareFacesCommand } = require('../config/awsConfig');
 const { getSignedS3Url, uploadToS3 } = require('../utils/s3SelfPunch');
 
 let attendanceColumnsEnsured = false;
@@ -26,6 +27,318 @@ const parseNumericCoordinate = (value) => {
   return Number.isFinite(numeric) ? numeric : null;
 };
 
+const livenessEnvNumber = (name, fallback) => {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const LIVENESS_CONFIG = {
+  enabled: String(process.env.PROFESSIONAL_LIVENESS_ENABLED ?? 'true').toLowerCase() !== 'false',
+  allowMultipleFaces: String(process.env.PROFESSIONAL_LIVENESS_ALLOW_MULTI_FACE ?? 'true').toLowerCase() !== 'false',
+  requireActiveChallenge: String(process.env.PROFESSIONAL_LIVENESS_REQUIRE_ACTIVE_CHALLENGE ?? 'true').toLowerCase() !== 'false',
+  smartMode: String(process.env.PROFESSIONAL_LIVENESS_SMART_MODE ?? 'true').toLowerCase() !== 'false',
+  minFaceConfidence: livenessEnvNumber('PROFESSIONAL_LIVENESS_MIN_FACE_CONFIDENCE', 85),
+  minBrightness: livenessEnvNumber('PROFESSIONAL_LIVENESS_MIN_BRIGHTNESS', 35),
+  minSharpness: livenessEnvNumber('PROFESSIONAL_LIVENESS_MIN_SHARPNESS', 35),
+  maxYaw: livenessEnvNumber('PROFESSIONAL_LIVENESS_MAX_YAW', 25),
+  maxRoll: livenessEnvNumber('PROFESSIONAL_LIVENESS_MAX_ROLL', 25),
+  maxPitch: livenessEnvNumber('PROFESSIONAL_LIVENESS_MAX_PITCH', 20),
+  smartMinFaceConfidence: livenessEnvNumber('PROFESSIONAL_LIVENESS_SMART_MIN_FACE_CONFIDENCE', 92),
+  smartMinBrightness: livenessEnvNumber('PROFESSIONAL_LIVENESS_SMART_MIN_BRIGHTNESS', 42),
+  smartMinSharpness: livenessEnvNumber('PROFESSIONAL_LIVENESS_SMART_MIN_SHARPNESS', 42),
+  smartMaxYaw: livenessEnvNumber('PROFESSIONAL_LIVENESS_SMART_MAX_YAW', 12),
+  smartMaxRoll: livenessEnvNumber('PROFESSIONAL_LIVENESS_SMART_MAX_ROLL', 10),
+  smartMaxPitch: livenessEnvNumber('PROFESSIONAL_LIVENESS_SMART_MAX_PITCH', 10),
+  minChallengeYawDelta: livenessEnvNumber('PROFESSIONAL_LIVENESS_MIN_CHALLENGE_YAW_DELTA', 12),
+  minFrameSimilarity: livenessEnvNumber('PROFESSIONAL_LIVENESS_MIN_FRAME_SIMILARITY', 80),
+};
+
+const parseLivenessFrames = (rawFrames) => {
+  if (Array.isArray(rawFrames)) {
+    return rawFrames.filter((item) => typeof item === 'string' && item.trim().length > 0);
+  }
+
+  if (typeof rawFrames === 'string' && rawFrames.trim()) {
+    try {
+      const parsed = JSON.parse(rawFrames);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item) => typeof item === 'string' && item.trim().length > 0);
+      }
+    } catch (_) {
+      return [];
+    }
+  }
+
+  return [];
+};
+
+const getChallengeFrameForFaceMatch = (rawFrames) => {
+  const parsed = parseLivenessFrames(rawFrames);
+  if (parsed.length < 2) return null;
+  const [, frameB] = parsed;
+  return frameB || null;
+};
+
+const decodeBase64Image = (value) => {
+  const base64Data = String(value || '').replace(/^data:image\/\w+;base64,/, '');
+  return Buffer.from(base64Data, 'base64');
+};
+
+const getFaceArea = (face) => {
+  const box = face?.BoundingBox || {};
+  return Number(box.Width || 0) * Number(box.Height || 0);
+};
+
+const pickPrimaryFace = (faces = []) => {
+  if (!faces.length) return null;
+  return faces.reduce((best, face) => {
+    if (!best) return face;
+    const bestArea = getFaceArea(best);
+    const faceArea = getFaceArea(face);
+    if (faceArea > bestArea) return face;
+    if (faceArea < bestArea) return best;
+    return Number(face?.Confidence || 0) > Number(best?.Confidence || 0) ? face : best;
+  }, null);
+};
+
+const detectSingleFace = async (base64Image, stage = 'front') => {
+  const imageBuffer = decodeBase64Image(base64Image);
+  if (!imageBuffer.length) {
+    return { ok: false, message: 'Invalid selfie image provided.' };
+  }
+
+  let detectResult;
+  try {
+    detectResult = await rekognition.send(
+      new DetectFacesCommand({
+        Image: { Bytes: imageBuffer },
+        Attributes: ['ALL'],
+      })
+    );
+  } catch (error) {
+    logger.error('[Attendance] Liveness pre-check failed', error.message || error);
+    return { ok: false, message: 'Liveness service unavailable. Please try again.' };
+  }
+
+  const faces = detectResult?.FaceDetails ?? [];
+  if (!faces.length) {
+    return {
+      ok: false,
+      message: 'No clear face detected. Please retake selfie.',
+    };
+  }
+
+  if (!LIVENESS_CONFIG.allowMultipleFaces && faces.length !== 1) {
+    return {
+      ok: false,
+      message: 'Only one face should be visible in frame.',
+    };
+  }
+
+  const face = pickPrimaryFace(faces);
+  if (!face) {
+    return {
+      ok: false,
+      message: 'No clear face detected. Please retake selfie.',
+    };
+  }
+  const brightness = Number(face?.Quality?.Brightness ?? 0);
+  const sharpness = Number(face?.Quality?.Sharpness ?? 0);
+  const faceConfidence = Number(face?.Confidence ?? 0);
+  const yaw = Number(face?.Pose?.Yaw ?? 0);
+  const roll = Number(face?.Pose?.Roll ?? 0);
+  const pitch = Number(face?.Pose?.Pitch ?? 0);
+  const eyesOpen = face?.EyesOpen?.Value !== false;
+  const faceOccluded = face?.FaceOccluded?.Value === true;
+  const sunglasses = face?.Sunglasses?.Value === true;
+
+  if (
+    brightness < LIVENESS_CONFIG.minBrightness ||
+    sharpness < LIVENESS_CONFIG.minSharpness ||
+    faceConfidence < LIVENESS_CONFIG.minFaceConfidence
+  ) {
+    return { ok: false, message: 'Face quality is too low. Use better lighting and hold camera steady.' };
+  }
+
+  const poseExceeded =
+    Math.abs(roll) > LIVENESS_CONFIG.maxRoll ||
+    Math.abs(pitch) > LIVENESS_CONFIG.maxPitch ||
+    (stage === 'front' ? Math.abs(yaw) > LIVENESS_CONFIG.maxYaw : Math.abs(yaw) > 50);
+  if (poseExceeded) {
+    return {
+      ok: false,
+      message: stage === 'front'
+        ? 'Please keep your face straight and centered in frame.'
+        : 'Please keep your face clearly visible and steady in frame.',
+    };
+  }
+
+  if (!eyesOpen) {
+    return { ok: false, message: 'Please keep your eyes open and retake the selfie.' };
+  }
+
+  if (faceOccluded || sunglasses) {
+    return { ok: false, message: 'Face appears covered. Remove mask/sunglasses and retry.' };
+  }
+
+  return {
+    ok: true,
+    buffer: imageBuffer,
+    metrics: {
+      yaw,
+      roll,
+      pitch,
+      brightness,
+      sharpness,
+      faceConfidence,
+    },
+  };
+};
+
+const verifyFramesBelongToSamePerson = async (sourceBuffer, targetBuffer) => {
+  try {
+    const response = await rekognition.send(
+      new CompareFacesCommand({
+        SourceImage: { Bytes: sourceBuffer },
+        TargetImage: { Bytes: targetBuffer },
+        SimilarityThreshold: LIVENESS_CONFIG.minFrameSimilarity,
+      })
+    );
+
+    if (!response?.FaceMatches?.length) {
+      return { ok: false, similarity: 0 };
+    }
+
+    const best = response.FaceMatches.reduce(
+      (prev, current) => (Number(prev?.Similarity || 0) > Number(current?.Similarity || 0) ? prev : current),
+      response.FaceMatches[0]
+    );
+    return {
+      ok: Number(best?.Similarity || 0) >= LIVENESS_CONFIG.minFrameSimilarity,
+      similarity: Number(best?.Similarity || 0),
+    };
+  } catch (error) {
+    logger.error('[Attendance] Liveness frame comparison failed', error.message || error);
+    return { ok: false, similarity: 0 };
+  }
+};
+
+const runLivenessPrecheck = async (selfieBase64, options = {}) => {
+  if (!LIVENESS_CONFIG.enabled) {
+    return { ok: true, skipped: true };
+  }
+
+  const parsedFrames = parseLivenessFrames(options?.livenessFrames);
+  const primaryResult = await detectSingleFace(selfieBase64, 'front');
+  if (!primaryResult.ok) {
+    return primaryResult;
+  }
+
+  const primaryMetrics = primaryResult.metrics || {};
+  const isSmartSuspicious =
+    Number(primaryMetrics.faceConfidence ?? 0) < LIVENESS_CONFIG.smartMinFaceConfidence ||
+    Number(primaryMetrics.brightness ?? 0) < LIVENESS_CONFIG.smartMinBrightness ||
+    Number(primaryMetrics.sharpness ?? 0) < LIVENESS_CONFIG.smartMinSharpness ||
+    Math.abs(Number(primaryMetrics.yaw ?? 0)) > LIVENESS_CONFIG.smartMaxYaw ||
+    Math.abs(Number(primaryMetrics.roll ?? 0)) > LIVENESS_CONFIG.smartMaxRoll ||
+    Math.abs(Number(primaryMetrics.pitch ?? 0)) > LIVENESS_CONFIG.smartMaxPitch;
+
+  const challengeRequired = LIVENESS_CONFIG.requireActiveChallenge || (LIVENESS_CONFIG.smartMode && isSmartSuspicious);
+
+  if (!challengeRequired) {
+    return { ok: true };
+  }
+
+  if (parsedFrames.length < 2) {
+    return {
+      ok: false,
+      needsChallenge: true,
+      message: 'Quick live challenge required. Please capture one more selfie with head turn.',
+    };
+  }
+
+  const [frameA, frameB, frameC] = parsedFrames;
+  if (!frameA || !frameB) {
+    return {
+      ok: false,
+      needsChallenge: true,
+      message: 'Live challenge incomplete. Capture both selfie steps and retry.',
+    };
+  }
+  if (frameA === frameB) {
+    return {
+      ok: false,
+      message: 'Live challenge failed. Capture two different selfies.',
+    };
+  }
+  const direction = String(options?.livenessChallenge || '').trim().toLowerCase();
+
+  const frameAResult = await detectSingleFace(frameA, 'front');
+  if (!frameAResult.ok) return frameAResult;
+  const frameBResult = await detectSingleFace(frameB, direction === 'left' ? 'left' : 'right');
+  if (!frameBResult.ok) return frameBResult;
+
+  const samePerson = await verifyFramesBelongToSamePerson(frameAResult.buffer, frameBResult.buffer);
+  if (!samePerson.ok) {
+    return {
+      ok: false,
+      message: 'Live challenge failed. Face mismatch across steps.',
+    };
+  }
+
+  const yawA = Number(frameAResult.metrics?.yaw ?? 0);
+  const yawB = Number(frameBResult.metrics?.yaw ?? 0);
+  const yawDelta = yawB - yawA;
+  const minDelta = LIVENESS_CONFIG.minChallengeYawDelta;
+
+  if (direction === 'right_left' || direction === 'right-left') {
+    if (!frameC) {
+      return {
+        ok: false,
+        needsChallenge: true,
+        message: 'Final live check required. Capture LEFT-turn selfie and retry.',
+      };
+    }
+
+    const frameCResult = await detectSingleFace(frameC, 'left');
+    if (!frameCResult.ok) return frameCResult;
+
+    const samePersonBC = await verifyFramesBelongToSamePerson(frameBResult.buffer, frameCResult.buffer);
+    if (!samePersonBC.ok) {
+      return {
+        ok: false,
+        message: 'Live challenge failed. Face mismatch on final step.',
+      };
+    }
+
+    const yawC = Number(frameCResult.metrics?.yaw ?? 0);
+    const yawDeltaRight = yawB - yawA;
+    const yawDeltaLeft = yawC - yawB;
+
+    if (!(yawDeltaRight >= minDelta)) {
+      return { ok: false, message: 'Please turn your head RIGHT in step 2 and retry.' };
+    }
+    if (!(yawDeltaLeft <= -minDelta)) {
+      return { ok: false, message: 'Please turn your head LEFT in final step and retry.' };
+    }
+    return { ok: true };
+  }
+
+  if (direction === 'left') {
+    if (!(yawDelta <= -minDelta)) {
+      return { ok: false, message: 'Please turn your head LEFT in step 2 and retry.' };
+    }
+  } else if (direction === 'right') {
+    if (!(yawDelta >= minDelta)) {
+      return { ok: false, message: 'Please turn your head RIGHT in step 2 and retry.' };
+    }
+  } else if (Math.abs(yawDelta) < minDelta) {
+    return { ok: false, message: 'Head movement not detected. Please follow live challenge and retry.' };
+  }
+
+  return { ok: true };
+};
+
 const uploadPunchPhotoIfPossible = async ({ professionalId, dayKey, type, selfieBase64 }) => {
   if (!selfieBase64) return null;
   try {
@@ -47,7 +360,7 @@ const uploadPunchPhotoIfPossible = async ({ professionalId, dayKey, type, selfie
  */
 const punchIn = async (req, res) => {
   const { professional_id, ward_id, zone_id, city_id } = req.professional;
-  const { selfie_base64, latitude, longitude } = req.body;
+  const { selfie_base64, latitude, longitude, liveness_frames, liveness_challenge } = req.body;
 
   if (!selfie_base64) {
     return res.status(400).json({ success: false, message: 'selfie_base64 is required.' });
@@ -73,7 +386,29 @@ const punchIn = async (req, res) => {
       return res.status(409).json({ success: false, message: 'You have already punched in today.' });
     }
 
-    // 2. Get the reference selfie from professional profile
+    // 2. Liveness pre-check to reduce photo spoof attempts
+    const liveness = await runLivenessPrecheck(selfie_base64, {
+      livenessFrames: liveness_frames,
+      livenessChallenge: liveness_challenge,
+    });
+    if (!liveness.ok) {
+      if (liveness.needsChallenge) {
+        await client.query('ROLLBACK');
+        return res.status(428).json({
+          success: false,
+          code: 'LIVENESS_CHALLENGE_REQUIRED',
+          message: liveness.message || 'Quick live challenge required.',
+        });
+      }
+      await client.query('ROLLBACK');
+      return res.status(422).json({
+        success: false,
+        code: 'LIVENESS_FAILED',
+        message: liveness.message || 'Liveness check failed. Please retry with a live selfie.',
+      });
+    }
+
+    // 3. Get the reference selfie from professional profile
     const profileQuery = `SELECT selfie_url FROM professional_employees WHERE id = $1 AND is_active = true`;
     const profileResult = await client.query(profileQuery, [professional_id]);
 
@@ -84,7 +419,7 @@ const punchIn = async (req, res) => {
 
     const { selfie_url: sourceS3Key } = profileResult.rows[0];
 
-    // 3. Perform Face Verification
+    // 4. Perform Face Verification
     let matchResult;
     try {
       matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80);
@@ -103,6 +438,27 @@ const punchIn = async (req, res) => {
       });
     }
 
+    const challengeFrame = getChallengeFrameForFaceMatch(liveness_frames);
+    if (challengeFrame) {
+      let challengeMatchResult;
+      try {
+        challengeMatchResult = await verifyFaceMatch(sourceS3Key, challengeFrame, 80);
+      } catch (faceErr) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ success: false, message: faceErr.message });
+      }
+
+      if (!challengeMatchResult.isMatch) {
+        await client.query('ROLLBACK');
+        logger.warn(`[Attendance] Challenge frame face match failed for ${professional_id}. Confidence: ${challengeMatchResult.confidence}`);
+        return res.status(403).json({
+          success: false,
+          message: 'Live challenge face not recognized. Please retry.',
+          confidence: challengeMatchResult.confidence
+        });
+      }
+    }
+
     const punchInPhotoKey = await uploadPunchPhotoIfPossible({
       professionalId: professional_id,
       dayKey: today,
@@ -110,7 +466,7 @@ const punchIn = async (req, res) => {
       selfieBase64: selfie_base64
     });
 
-    // 4. Insert Punch In record
+    // 5. Insert Punch In record
     const insertQuery = `
       INSERT INTO professional_attendance (
         professional_id, date, punch_in, ward_id, zone_id, city_id,
@@ -152,7 +508,7 @@ const punchIn = async (req, res) => {
  */
 const punchOut = async (req, res) => {
   const { professional_id } = req.professional;
-  const { selfie_base64, latitude, longitude } = req.body;
+  const { selfie_base64, latitude, longitude, liveness_frames, liveness_challenge } = req.body;
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
   if (!selfie_base64) {
@@ -162,7 +518,27 @@ const punchOut = async (req, res) => {
   try {
     await ensureProfessionalAttendanceColumns(pool);
 
-    // 1. Get the reference selfie from professional profile
+    // 1. Liveness pre-check to reduce photo spoof attempts
+    const liveness = await runLivenessPrecheck(selfie_base64, {
+      livenessFrames: liveness_frames,
+      livenessChallenge: liveness_challenge,
+    });
+    if (!liveness.ok) {
+      if (liveness.needsChallenge) {
+        return res.status(428).json({
+          success: false,
+          code: 'LIVENESS_CHALLENGE_REQUIRED',
+          message: liveness.message || 'Quick live challenge required.',
+        });
+      }
+      return res.status(422).json({
+        success: false,
+        code: 'LIVENESS_FAILED',
+        message: liveness.message || 'Liveness check failed. Please retry with a live selfie.',
+      });
+    }
+
+    // 2. Get the reference selfie from professional profile
     const profileQuery = `SELECT selfie_url FROM professional_employees WHERE id = $1 AND is_active = true`;
     const profileResult = await pool.query(profileQuery, [professional_id]);
 
@@ -172,7 +548,7 @@ const punchOut = async (req, res) => {
 
     const { selfie_url: sourceS3Key } = profileResult.rows[0];
 
-    // 2. Perform Face Verification before punch out
+    // 3. Perform Face Verification before punch out
     let matchResult;
     try {
       matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80);
@@ -187,6 +563,25 @@ const punchOut = async (req, res) => {
         message: 'Face not recognized. Please ensure good lighting and try again.',
         confidence: matchResult.confidence
       });
+    }
+
+    const challengeFrame = getChallengeFrameForFaceMatch(liveness_frames);
+    if (challengeFrame) {
+      let challengeMatchResult;
+      try {
+        challengeMatchResult = await verifyFaceMatch(sourceS3Key, challengeFrame, 80);
+      } catch (faceErr) {
+        return res.status(400).json({ success: false, message: faceErr.message });
+      }
+
+      if (!challengeMatchResult.isMatch) {
+        logger.warn(`[Attendance] Punch-out challenge frame match failed for ${professional_id}. Confidence: ${challengeMatchResult.confidence}`);
+        return res.status(403).json({
+          success: false,
+          message: 'Live challenge face not recognized. Please retry.',
+          confidence: challengeMatchResult.confidence
+        });
+      }
     }
 
     const punchOutPhotoKey = await uploadPunchPhotoIfPossible({
