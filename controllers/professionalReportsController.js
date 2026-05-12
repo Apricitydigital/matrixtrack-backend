@@ -3,6 +3,7 @@ const { buildVisibilityScope } = require('../utils/professionalAccess');
 const { getSignedS3Url } = require('../utils/s3SelfPunch');
 const logger = require('../utils/logger');
 const pool = require('../config/db');
+const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSchema');
 
 let attendanceReportColumnsEnsured = false;
 const ensureAttendanceReportColumns = async () => {
@@ -35,6 +36,8 @@ const getValidatedDateRange = (startDate, endDate) => {
 const getAttendanceList = async (req, res) => {
   try {
     await ensureAttendanceReportColumns();
+    await ensureProfessionalLeaveSchema();
+    await ensureProfessionalLeaveSchema();
     const { city_id, zone_id, ward_id, kothi_id, professional_id, date, month, page = 1, limit = 50 } = req.query;
     const offset = (page - 1) * limit;
 
@@ -43,6 +46,7 @@ const getAttendanceList = async (req, res) => {
     let peFilters = `AND ${whereClause} AND pe.is_active = true`;
     let paramCount = params.length;
     let paFilters = '';
+    let leaveDateParamIndex = null;
 
     if (city_id) {
       paramCount++;
@@ -87,6 +91,7 @@ const getAttendanceList = async (req, res) => {
       paramCount++;
       paFilters += ` AND pa.date = $${paramCount}`;
       params.push(date);
+      leaveDateParamIndex = paramCount;
     } else if (month) {
       // YYYY-MM format
       const [yyyy, mm] = month.split('-');
@@ -98,6 +103,7 @@ const getAttendanceList = async (req, res) => {
       params.push(mm);
     }
 
+    const leaveDateExpr = leaveDateParamIndex ? `$${leaveDateParamIndex}::date` : "NULL::date";
     const query = `
       ${cte}
       SELECT
@@ -105,7 +111,7 @@ const getAttendanceList = async (req, res) => {
         pe.id as professional_id,
         pe.full_name,
         pe.mobile,
-        pa.date,
+        COALESCE(pa.date, leave_row.requested_date) as date,
         pa.punch_in,
         pa.punch_out,
         CASE
@@ -118,6 +124,11 @@ const getAttendanceList = async (req, res) => {
         pa.punch_out_longitude,
         pa.punch_in_photo_url,
         pa.punch_out_photo_url,
+        leave_row.leave_type,
+        leave_row.status AS leave_status,
+        leave_row.review_note AS leave_review_note,
+        leave_row.reviewed_at AS leave_reviewed_at,
+        leave_reviewer.name AS leave_reviewed_by_name,
         pe.selfie_url as profile_selfie_url,
         COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
         COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
@@ -132,6 +143,18 @@ const getAttendanceList = async (req, res) => {
         ORDER BY pa_inner.date DESC, pa_inner.punch_in DESC
         LIMIT 1
       ) pa ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT plr.*
+        FROM professional_leave_requests plr
+        WHERE plr.professional_id = pe.id
+          AND (
+            (pa.date IS NOT NULL AND plr.requested_date = pa.date)
+            OR (${leaveDateExpr} IS NOT NULL AND plr.requested_date = ${leaveDateExpr})
+          )
+        ORDER BY plr.requested_at DESC
+        LIMIT 1
+      ) leave_row ON TRUE
+      LEFT JOIN users leave_reviewer ON leave_reviewer.user_id = leave_row.reviewed_by
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
@@ -142,7 +165,7 @@ const getAttendanceList = async (req, res) => {
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
       WHERE 1=1 ${peFilters}
-      ORDER BY COALESCE(pa.date, DATE '1900-01-01') DESC, pe.full_name ASC
+      ORDER BY COALESCE(pa.date, leave_row.requested_date, DATE '1900-01-01') DESC, pe.full_name ASC
       LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
     `;
 
@@ -445,6 +468,8 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         z.zone_name,
         c.city_name,
         COUNT(pa.id) AS attendance_count,
+        COALESCE(leave_agg.leave_days, 0) AS leave_days,
+        leave_agg.latest_reviewer_name AS leave_reviewed_by_name,
         COUNT(pa.id) FILTER (WHERE pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL) AS completed_days,
         ROUND(
           COALESCE(
@@ -466,6 +491,16 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         ON pa.professional_id = pe.id
        AND pa.date >= $${startParam}
        AND pa.date <= $${endParam}
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) FILTER (WHERE plr.status = 'approved') AS leave_days,
+          MAX(u.name) AS latest_reviewer_name
+        FROM professional_leave_requests plr
+        LEFT JOIN users u ON u.user_id = plr.reviewed_by
+        WHERE plr.professional_id = pe.id
+          AND plr.requested_date >= $${startParam}
+          AND plr.requested_date <= $${endParam}
+      ) leave_agg ON TRUE
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
@@ -474,9 +509,9 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       LEFT JOIN wards w ON pe.ward_id = w.ward_id
       LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
       WHERE 1=1 ${peFilters}
-      GROUP BY pe.id, pe.full_name, COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name), COALESCE(wk_req.ward_name, wk.ward_name), z.zone_name, c.city_name
-      HAVING COUNT(pa.id) > 0
-      ORDER BY COUNT(pa.id) DESC, pe.full_name ASC
+      GROUP BY pe.id, pe.full_name, COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name), COALESCE(wk_req.ward_name, wk.ward_name), z.zone_name, c.city_name, leave_agg.leave_days, leave_agg.latest_reviewer_name
+      HAVING COUNT(pa.id) > 0 OR COALESCE(leave_agg.leave_days, 0) > 0
+      ORDER BY (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0)) DESC, pe.full_name ASC
       LIMIT $${startParam + 2} OFFSET $${startParam + 3}
     `;
 
@@ -490,9 +525,16 @@ const getDateRangeAttendanceSummary = async (req, res) => {
           ON pa.professional_id = pe.id
          AND pa.date >= $${startParam}
          AND pa.date <= $${endParam}
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*) FILTER (WHERE plr.status = 'approved') AS leave_days
+          FROM professional_leave_requests plr
+          WHERE plr.professional_id = pe.id
+            AND plr.requested_date >= $${startParam}
+            AND plr.requested_date <= $${endParam}
+        ) leave_agg ON TRUE
         WHERE 1=1 ${peFilters}
         GROUP BY pe.id
-        HAVING COUNT(pa.id) > 0
+        HAVING COUNT(pa.id) > 0 OR COALESCE(MAX(leave_agg.leave_days), 0) > 0
       ) scoped
     `;
 
@@ -511,6 +553,8 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       data: dataResult.rows.map((row) => ({
         ...row,
         attendance_count: parseInt(row.attendance_count || 0, 10),
+        leave_days: parseInt(row.leave_days || 0, 10),
+        leave_reviewed_by_name: row.leave_reviewed_by_name || null,
         completed_days: parseInt(row.completed_days || 0, 10),
         total_hours_worked: parseFloat(row.total_hours_worked || 0).toFixed(2)
       })),
@@ -534,6 +578,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
 const getDateRangeAttendanceDetails = async (req, res) => {
   try {
     await ensureAttendanceReportColumns();
+    await ensureProfessionalLeaveSchema();
     const { professional_id, start_date, end_date } = req.query;
     const dateRange = getValidatedDateRange(start_date, end_date);
 
@@ -567,11 +612,15 @@ const getDateRangeAttendanceDetails = async (req, res) => {
     }
 
     const detailsQuery = `
+      WITH calendar_days AS (
+        SELECT gs::date AS date
+        FROM generate_series($2::date, $3::date, INTERVAL '1 day') AS gs
+      )
       SELECT
         pa.id AS attendance_id,
-        pa.professional_id,
+        pe.id AS professional_id,
         pe.full_name,
-        pa.date,
+        cd.date,
         pa.punch_in,
         pa.punch_out,
         CASE
@@ -584,25 +633,34 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         pa.punch_out_longitude,
         pa.punch_in_photo_url,
         pa.punch_out_photo_url,
+        plr.leave_type,
+        plr.status AS leave_status,
+        plr.review_note AS leave_review_note,
+        plr.reviewed_at AS leave_reviewed_at,
+        leave_reviewer.name AS leave_reviewed_by_name,
         COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
         COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
         z.zone_name,
         c.city_name
-      FROM professional_attendance pa
-      JOIN professional_employees pe ON pa.professional_id = pe.id
+      FROM calendar_days cd
+      JOIN professional_employees pe ON pe.id = $1
+      LEFT JOIN professional_attendance pa
+        ON pa.professional_id = pe.id
+       AND pa.date = cd.date
+      LEFT JOIN professional_leave_requests plr
+        ON plr.professional_id = pe.id
+       AND plr.requested_date = cd.date
+      LEFT JOIN users leave_reviewer ON leave_reviewer.user_id = plr.reviewed_by
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
       LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
-      LEFT JOIN sectors sec ON pa.ward_id = sec.sector_id
-      LEFT JOIN wards w ON pa.ward_id = w.ward_id
+      LEFT JOIN sectors sec ON pe.ward_id = sec.sector_id
+      LEFT JOIN wards w ON pe.ward_id = w.ward_id
       LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
-      WHERE pa.professional_id = $1
-        AND pa.date >= $2
-        AND pa.date <= $3
-      ORDER BY pa.date DESC, pa.punch_in DESC
+      ORDER BY cd.date DESC, pa.punch_in DESC NULLS LAST
     `;
 
     const detailsResult = await runQueryWithTimeout(detailsQuery, [
@@ -623,6 +681,8 @@ const getDateRangeAttendanceDetails = async (req, res) => {
     const totalDays = mappedRows.length;
     const completedDays = mappedRows.filter((item) => item.hours_worked).length;
     const totalHours = mappedRows.reduce((acc, item) => acc + (parseFloat(item.hours_worked) || 0), 0);
+    const leaveApprovedDays = mappedRows.filter((item) => item.leave_status === "approved").length;
+    const leavePendingDays = mappedRows.filter((item) => item.leave_status === "pending").length;
 
     res.json({
       success: true,
@@ -633,6 +693,8 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         end_date: dateRange.endDate,
         total_days: totalDays,
         completed_days: completedDays,
+        leave_approved_days: leaveApprovedDays,
+        leave_pending_days: leavePendingDays,
         total_hours_worked: totalHours.toFixed(2),
         records: mappedRows
       }

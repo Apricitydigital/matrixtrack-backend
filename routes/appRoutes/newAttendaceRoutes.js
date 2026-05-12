@@ -971,7 +971,8 @@ async function streamToBuffer(readable) {
 async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) {
   if (!faceEmbedding) return null;
   const faceKey = resolveS3ObjectKey(faceEmbedding);
-  const buckets = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET].filter(Boolean);
+  const defaultBucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+  const buckets = [...new Set([AWS_S3_BUCKET, SECONDARY_S3_BUCKET, defaultBucket].filter(Boolean))];
 
   if (faceKey) {
     for (const bucket of buckets) {
@@ -1017,9 +1018,20 @@ async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) 
     }
   }
 
-  // Final fallback: fetch via public URL
   const publicUrl = buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
   if (publicUrl) {
+    if (isBackblazeUrl(publicUrl)) {
+      const backblazeRef = parseBackblazeUrl(publicUrl);
+      if (backblazeRef && hasBackblazeCredentials()) {
+        try {
+          const { stream } = await fetchBackblazeStream(backblazeRef.bucket, backblazeRef.key);
+          return await streamToBuffer(stream);
+        } catch (_err) {
+          // Fall through to axios if Backblaze auth fails
+        }
+      }
+    }
+
     try {
       const resp = await axios.get(publicUrl, { responseType: "arraybuffer" });
       return Buffer.from(resp.data);
@@ -1143,8 +1155,10 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
 
   // Try primary/secondary buckets first so we avoid an extra HTTP hop
   if (faceKey) {
-    const candidates = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET].filter(Boolean);
-    for (const bucket of candidates) {
+    const defaultBucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+    const candidates = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET, defaultBucket].filter(Boolean);
+    const uniqueCandidates = [...new Set(candidates)];
+    for (const bucket of uniqueCandidates) {
       try {
         const resp = await s3.send(
           new GetObjectCommand({ Bucket: bucket, Key: faceKey })
@@ -1153,7 +1167,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
         sourceImage = { Bytes: buffer };
         break;
       } catch (_err) {
-        // continue to next bucket
+        console.error(`ensureFaceMatch: direct S3 fetch failed for bucket ${bucket}, key ${faceKey}:`, _err?.message || _err);
       }
     }
   }
@@ -1167,7 +1181,8 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
       empCode ? `${empCode}/` : null,
     ].filter(Boolean);
 
-    const buckets = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET].filter(Boolean);
+    const defaultBucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+    const buckets = [...new Set([AWS_S3_BUCKET, SECONDARY_S3_BUCKET, defaultBucket].filter(Boolean))];
     for (const bucket of buckets) {
       for (const prefix of candidatePrefixes) {
         try {
@@ -1203,24 +1218,42 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
     }
   }
 
-  // Fallback: fetch via public URL (covers Backblaze/CloudFront/secondary buckets)
+  // Fallback: fetch via public URL or Backblaze private fetch
   if (!sourceImage) {
     const publicUrl = buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
     if (publicUrl) {
-      try {
-        const resp = await axios.get(publicUrl, { responseType: "arraybuffer" });
-        sourceImage = { Bytes: Buffer.from(resp.data) };
-      } catch (err) {
-        console.error("ensureFaceMatch: public fetch failed", err?.message || err);
+      if (isBackblazeUrl(publicUrl)) {
+        const backblazeRef = parseBackblazeUrl(publicUrl);
+        if (backblazeRef && hasBackblazeCredentials()) {
+          try {
+            const { stream } = await fetchBackblazeStream(backblazeRef.bucket, backblazeRef.key);
+            const buffer = await streamToBuffer(stream);
+            sourceImage = { Bytes: buffer };
+          } catch (err) {
+            console.error("ensureFaceMatch: backblaze fetch failed", err?.message || err);
+          }
+        }
+      }
+
+      if (!sourceImage) {
+        try {
+          const resp = await axios.get(publicUrl, { responseType: "arraybuffer" });
+          sourceImage = { Bytes: Buffer.from(resp.data) };
+        } catch (err) {
+          console.error("ensureFaceMatch: public fetch failed", err?.message || err);
+        }
       }
     }
   }
 
   if (!sourceImage) {
     console.warn(
-      `ensureFaceMatch: source face not found for emp ${employeeId}; skipping face verification`
+      `ensureFaceMatch: source face not found for emp ${employeeId}; failing face verification`
     );
-    return null; // do not block punch; caller will proceed without face similarity
+    const err = new Error("Enrolled face image could not be loaded from storage");
+    err.statusCode = 412;
+    err.details = "Please re-enroll the employee face before marking attendance.";
+    throw err;
   }
 
   if (!AWS_S3_BUCKET) {
@@ -1912,6 +1945,13 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         matchedExternalId,
         requestedEmpId,
       });
+
+      if (employeeRecord && requestedEmpId && String(employeeRecord.emp_id) !== String(requestedEmpId)) {
+        return res.status(401).json({
+          error: "Face mismatch",
+          suggestion: "The scanned face does not match the selected employee."
+        });
+      }
     }
 
     // Hard fallback: if the app provided emp_id, trust it and rely on direct face verification later

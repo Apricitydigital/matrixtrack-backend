@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const { verifyFaceMatch } = require('../utils/faceService');
 const { rekognition, DetectFacesCommand, CompareFacesCommand } = require('../config/awsConfig');
 const { getSignedS3Url, uploadToS3 } = require('../utils/s3SelfPunch');
+const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSchema');
 
 let attendanceColumnsEnsured = false;
 
@@ -26,6 +27,9 @@ const parseNumericCoordinate = (value) => {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 };
+
+const getTodayIST = () =>
+  new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
 const livenessEnvNumber = (name, fallback) => {
   const parsed = Number(process.env[name]);
@@ -385,12 +389,30 @@ const punchIn = async (req, res) => {
     return res.status(400).json({ success: false, message: 'selfie_base64 is required.' });
   }
 
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const today = getTodayIST();
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await ensureProfessionalAttendanceColumns(client);
+    await ensureProfessionalLeaveSchema();
+
+    const leaveCheck = await client.query(
+      `SELECT leave_type
+       FROM professional_leave_requests
+       WHERE professional_id = $1
+         AND requested_date = $2
+         AND status = 'approved'
+       LIMIT 1`,
+      [professional_id, today]
+    );
+    if (leaveCheck.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        success: false,
+        message: `You are on approved ${leaveCheck.rows[0].leave_type} leave for today.`,
+      });
+    }
 
     // 1. Check if already punched in today
     const checkQuery = `
@@ -528,7 +550,7 @@ const punchIn = async (req, res) => {
 const punchOut = async (req, res) => {
   const { professional_id } = req.professional;
   const { selfie_base64, latitude, longitude, liveness_frames, liveness_challenge } = req.body;
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const today = getTodayIST();
 
   if (!selfie_base64) {
     return res.status(400).json({ success: false, message: 'selfie_base64 is required for punch out.' });
@@ -536,6 +558,23 @@ const punchOut = async (req, res) => {
 
   try {
     await ensureProfessionalAttendanceColumns(pool);
+    await ensureProfessionalLeaveSchema();
+
+    const leaveCheck = await pool.query(
+      `SELECT leave_type
+       FROM professional_leave_requests
+       WHERE professional_id = $1
+         AND requested_date = $2
+         AND status = 'approved'
+       LIMIT 1`,
+      [professional_id, today]
+    );
+    if (leaveCheck.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `You are on approved ${leaveCheck.rows[0].leave_type} leave for today.`,
+      });
+    }
 
     // 1. Liveness pre-check to reduce photo spoof attempts
     const liveness = await runLivenessPrecheck(selfie_base64, {
@@ -670,6 +709,7 @@ const getMonthlyAttendance = async (req, res) => {
   const [yyyy, mm] = month.split('-');
 
   try {
+    await ensureProfessionalLeaveSchema();
     const query = `
       SELECT 
         date, 
@@ -684,11 +724,37 @@ const getMonthlyAttendance = async (req, res) => {
     `;
 
     const { rows } = await pool.query(query, [professional_id, yyyy, mm]);
+    const leaveResult = await pool.query(
+      `SELECT
+         id,
+         requested_date,
+         leave_type,
+         status,
+         reason,
+         requested_at,
+         reviewed_at,
+         review_note,
+         u.name AS reviewed_by_name
+       FROM professional_leave_requests plr
+       LEFT JOIN users u ON u.user_id = plr.reviewed_by
+       WHERE plr.professional_id = $1
+         AND EXTRACT(YEAR FROM plr.requested_date) = $2
+         AND EXTRACT(MONTH FROM plr.requested_date) = $3`,
+      [professional_id, yyyy, mm]
+    );
+    const leaveByDate = {};
+    leaveResult.rows.forEach((row) => {
+      const key = new Date(row.requested_date).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      leaveByDate[key] = row;
+    });
 
     let totalWorkingDays = 0;
     let totalPresent = 0;
     let totalHalfDay = 0;
     let totalAbsent = 0;
+    let totalLeaveApproved = 0;
+    let totalLeavePending = 0;
+    let totalLeaveRejected = 0;
 
     // Basic calculation
     const daysInMonth = new Date(yyyy, mm, 0).getDate();
@@ -731,23 +797,34 @@ const getMonthlyAttendance = async (req, res) => {
           punch_in: record.punch_in,
           punch_out: record.punch_out,
           hours_worked: displayHours,
-          status
+          status,
+          leave: leaveByDate[dStr] || null,
         });
         
         if (status === 'present') totalPresent++;
         else if (status === 'half-day') totalHalfDay++;
         totalWorkingDays++;
 
-      } else if (!isFuture) {
+      } else if (!isFuture || leaveByDate[dStr]) {
+        const leave = leaveByDate[dStr] || null;
+        let status = 'absent';
+        if (leave?.status === 'approved') status = 'leave-approved';
+        if (leave?.status === 'pending') status = 'leave-pending';
+        if (leave?.status === 'rejected') status = 'leave-rejected';
+
         records.push({
           date: dStr,
           punch_in: null,
           punch_out: null,
-          hours_worked: '0.00',
-          status: 'absent'
+          hours_worked: status.startsWith('leave-') ? '-' : '0.00',
+          status,
+          leave,
         });
-        totalAbsent++;
-        totalWorkingDays++;
+        if (status === 'absent' && !isFuture) totalAbsent++;
+        if (status === 'leave-approved') totalLeaveApproved++;
+        if (status === 'leave-pending') totalLeavePending++;
+        if (status === 'leave-rejected') totalLeaveRejected++;
+        if (!isFuture) totalWorkingDays++;
       }
     }
 
@@ -758,6 +835,9 @@ const getMonthlyAttendance = async (req, res) => {
         total_present: totalPresent,
         total_half_day: totalHalfDay,
         total_absent: totalAbsent,
+        total_leave_approved: totalLeaveApproved,
+        total_leave_pending: totalLeavePending,
+        total_leave_rejected: totalLeaveRejected,
         total_working_days: totalWorkingDays
       }
     });

@@ -10,6 +10,11 @@ const {
   getEmployeesList,
   getEmployeeAttendance
 } = require('../controllers/professionalReportsController');
+const {
+  getLeaveRequests,
+  approveLeaveRequest,
+  rejectLeaveRequest,
+} = require("../controllers/professionalLeaveManagementController");
 
 const router = express.Router();
 
@@ -52,5 +57,20 @@ router.get('/professional-employees', getEmployeesList);
  * @route   GET /api/admin/professional-employees/:id/attendance
  */
 router.get('/professional-employees/:id/attendance', getEmployeeAttendance);
+
+/**
+ * @route   GET /api/admin/professional-leave/requests
+ */
+router.get("/professional-leave/requests", authorize("professional-leave-mgmt", "view"), getLeaveRequests);
+
+/**
+ * @route   POST /api/admin/professional-leave/requests/:id/approve
+ */
+router.post("/professional-leave/requests/:id/approve", authorize("professional-leave-mgmt", "write"), approveLeaveRequest);
+
+/**
+ * @route   POST /api/admin/professional-leave/requests/:id/reject
+ */
+router.post("/professional-leave/requests/:id/reject", authorize("professional-leave-mgmt", "write"), rejectLeaveRequest);
 
 module.exports = router;

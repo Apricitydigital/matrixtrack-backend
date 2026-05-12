@@ -98,6 +98,18 @@ const BASE_PERMISSIONS = [
     description: "View professional employee attendance dashboard",
   },
   {
+    module: "professional-leave-mgmt",
+    action: "view",
+    label: "View Professional Leave Management",
+    description: "View professional leave requests and leave decisions",
+  },
+  {
+    module: "professional-leave-mgmt",
+    action: "write",
+    label: "Manage Professional Leave Management",
+    description: "Approve and reject professional leave requests",
+  },
+  {
     module: "master",
     action: "view",
     label: "View Master Data",

@@ -9,6 +9,12 @@ const {
   getMonthlyAttendance, 
   getProfile 
 } = require('../controllers/professionalAttendanceController');
+const {
+  requestLeave,
+  getMyLeaveRequests,
+  getMyNotifications,
+  markNotificationRead,
+} = require("../controllers/professionalLeaveController");
 
 const router = express.Router();
 
@@ -31,5 +37,11 @@ router.get('/profile', getProfile);
 router.post('/attendance/punch-in', punchIn);
 router.post('/attendance/punch-out', punchOut);
 router.get('/attendance/monthly', getMonthlyAttendance);
+
+// Professional leave and notifications
+router.post("/leave/request", requestLeave);
+router.get("/leave/requests", getMyLeaveRequests);
+router.get("/notifications", getMyNotifications);
+router.post("/notifications/:id/read", markNotificationRead);
 
 module.exports = router;
