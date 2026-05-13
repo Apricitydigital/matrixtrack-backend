@@ -177,22 +177,47 @@ router.get(
       const selectedCityId = req.query.cityId;
 
       let query = `
-        SELECT
-          u.user_id,
-          u.name AS supervisor_name,
-          u.phone,
-          u.email,
-          c.city_name,
-          STRING_AGG(DISTINCT z.zone_name, ', ') AS zones,
-          STRING_AGG(DISTINCT w.ward_name, ', ') AS kothis,
-          COUNT(DISTINCT e.emp_id) AS total_employee_count
-        FROM supervisor_ward sw
-        JOIN users u ON sw.supervisor_id = u.user_id
-        JOIN wards w ON sw.ward_id = w.ward_id
-        JOIN zones z ON w.zone_id = z.zone_id
-        JOIN cities c ON z.city_id = c.city_id
-        LEFT JOIN employee e ON e.ward_id = w.ward_id
-      `;
+  SELECT
+    u.user_id,
+    u.name AS supervisor_name,
+    u.phone,
+    u.email,
+    c.city_name,
+
+    STRING_AGG(DISTINCT z.zone_name, ', ') AS zones,
+
+    -- NEW WARD COLUMN
+    STRING_AGG(
+      DISTINCT COALESCE(s.sector_name, 'No Ward'),
+      ', '
+    ) AS wards,
+
+    -- EXISTING KOTHI COLUMN
+    STRING_AGG(DISTINCT w.ward_name, ', ') AS kothis,
+
+    COUNT(DISTINCT e.emp_id) AS total_employee_count
+
+  FROM supervisor_ward sw
+
+  JOIN users u
+    ON sw.supervisor_id = u.user_id
+
+  JOIN wards w
+    ON sw.ward_id = w.ward_id
+
+  JOIN zones z
+    ON w.zone_id = z.zone_id
+
+  JOIN cities c
+    ON z.city_id = c.city_id
+
+  -- IMPORTANT FIX
+  LEFT JOIN sectors s
+    ON s.zone_id = z.zone_id
+
+  LEFT JOIN employee e
+    ON e.ward_id = w.ward_id
+`;
 
       const conditions = ["u.role = 'supervisor'"];  // ← ADDED
       const queryParams = [];
