@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const jwt = require('jsonwebtoken');
 const { sendSms } = require('../utils/smsNotifier');
 const logger = require('../utils/logger');
+const PROFESSIONAL_JWT_EXPIRES_IN = process.env.PROFESSIONAL_JWT_EXPIRES_IN || '45d';
 
 // In-memory OTP store: { mobile → { otp, expiresAt, attempts } }
 // For production, use Redis or DB table for persistence across restarts.
@@ -153,7 +154,7 @@ const verifyOtp = async (req, res) => {
       face_locked: professional.face_locked
     };
 
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '12h' });
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: PROFESSIONAL_JWT_EXPIRES_IN });
 
     logger.info(`[OTPAuth] OTP login successful for professional_id: ${professional.id}`);
 

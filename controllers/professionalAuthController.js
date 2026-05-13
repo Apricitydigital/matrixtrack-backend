@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 let professionalPasswordColumnCache = null;
+const PROFESSIONAL_JWT_EXPIRES_IN = process.env.PROFESSIONAL_JWT_EXPIRES_IN || '45d';
 
 const getProfessionalPasswordColumn = async () => {
   if (professionalPasswordColumnCache) {
@@ -77,7 +78,7 @@ const login = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials.' });
     }
 
-    // Generate JWT (12 hours expiry as requested)
+    // Generate JWT for app professional session
     const payload = {
       professional_id: professional.id,
       ward_id: professional.ward_id,
@@ -86,7 +87,7 @@ const login = async (req, res) => {
       face_locked: professional.face_locked
     };
 
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '12h' });
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: PROFESSIONAL_JWT_EXPIRES_IN });
 
     logger.info(`[ProfessionalAuth] Login successful for professional_id: ${professional.id}`);
 

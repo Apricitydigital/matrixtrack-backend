@@ -17,7 +17,9 @@ const ensureProfessionalAttendanceColumns = async (client) => {
       ADD COLUMN IF NOT EXISTS punch_out_latitude DOUBLE PRECISION,
       ADD COLUMN IF NOT EXISTS punch_out_longitude DOUBLE PRECISION,
       ADD COLUMN IF NOT EXISTS punch_in_photo_url VARCHAR(1024),
-      ADD COLUMN IF NOT EXISTS punch_out_photo_url VARCHAR(1024)
+      ADD COLUMN IF NOT EXISTS punch_out_photo_url VARCHAR(1024),
+      ADD COLUMN IF NOT EXISTS auto_punched_out BOOLEAN DEFAULT false,
+      ADD COLUMN IF NOT EXISTS out_address TEXT
   `);
 
   attendanceColumnsEnsured = true;

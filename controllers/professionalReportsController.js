@@ -15,7 +15,9 @@ const ensureAttendanceReportColumns = async () => {
       ADD COLUMN IF NOT EXISTS punch_out_latitude DOUBLE PRECISION,
       ADD COLUMN IF NOT EXISTS punch_out_longitude DOUBLE PRECISION,
       ADD COLUMN IF NOT EXISTS punch_in_photo_url VARCHAR(1024),
-      ADD COLUMN IF NOT EXISTS punch_out_photo_url VARCHAR(1024)
+      ADD COLUMN IF NOT EXISTS punch_out_photo_url VARCHAR(1024),
+      ADD COLUMN IF NOT EXISTS auto_punched_out BOOLEAN DEFAULT false,
+      ADD COLUMN IF NOT EXISTS out_address TEXT
   `);
   attendanceReportColumnsEnsured = true;
 };
@@ -111,9 +113,13 @@ const getAttendanceList = async (req, res) => {
         pe.id as professional_id,
         pe.full_name,
         pe.mobile,
+        pe.email,
         COALESCE(pa.date, leave_row.requested_date) as date,
         pa.punch_in,
         pa.punch_out,
+        pa.auto_punched_out,
+        pa.auto_punched_out AS is_auto_punch_out,
+        pa.out_address,
         CASE
           WHEN pa.punch_in IS NULL OR pa.punch_out IS NULL THEN NULL
           ELSE EXTRACT(EPOCH FROM (pa.punch_out - pa.punch_in)) / 3600
@@ -463,6 +469,8 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       SELECT
         pe.id AS professional_id,
         pe.full_name,
+        pe.mobile,
+        pe.email,
         COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
         COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
         z.zone_name,
@@ -509,8 +517,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       LEFT JOIN wards w ON pe.ward_id = w.ward_id
       LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
       WHERE 1=1 ${peFilters}
-      GROUP BY pe.id, pe.full_name, COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name), COALESCE(wk_req.ward_name, wk.ward_name), z.zone_name, c.city_name, leave_agg.leave_days, leave_agg.latest_reviewer_name
-      HAVING COUNT(pa.id) > 0 OR COALESCE(leave_agg.leave_days, 0) > 0
+      GROUP BY pe.id, pe.full_name, pe.mobile, pe.email, COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name), COALESCE(wk_req.ward_name, wk.ward_name), z.zone_name, c.city_name, leave_agg.leave_days, leave_agg.latest_reviewer_name
       ORDER BY (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0)) DESC, pe.full_name ASC
       LIMIT $${startParam + 2} OFFSET $${startParam + 3}
     `;
@@ -518,28 +525,12 @@ const getDateRangeAttendanceSummary = async (req, res) => {
     const countQuery = `
       ${cte}
       SELECT COUNT(*) AS total
-      FROM (
-        SELECT pe.id
-        FROM professional_employees pe
-        LEFT JOIN professional_attendance pa
-          ON pa.professional_id = pe.id
-         AND pa.date >= $${startParam}
-         AND pa.date <= $${endParam}
-        LEFT JOIN LATERAL (
-          SELECT COUNT(*) FILTER (WHERE plr.status = 'approved') AS leave_days
-          FROM professional_leave_requests plr
-          WHERE plr.professional_id = pe.id
-            AND plr.requested_date >= $${startParam}
-            AND plr.requested_date <= $${endParam}
-        ) leave_agg ON TRUE
-        WHERE 1=1 ${peFilters}
-        GROUP BY pe.id
-        HAVING COUNT(pa.id) > 0 OR COALESCE(MAX(leave_agg.leave_days), 0) > 0
-      ) scoped
+      FROM professional_employees pe
+      WHERE 1=1 ${peFilters}
     `;
 
     const finalParams = [...params, ...pageParams];
-    const countParams = [...params, dateRange.startDate, dateRange.endDate];
+    const countParams = [...params];
 
     const [dataResult, countResult] = await Promise.all([
       runQueryWithTimeout(dataQuery, finalParams),
@@ -623,6 +614,9 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         cd.date,
         pa.punch_in,
         pa.punch_out,
+        pa.auto_punched_out,
+        pa.auto_punched_out AS is_auto_punch_out,
+        pa.out_address,
         CASE
           WHEN pa.punch_in IS NULL OR pa.punch_out IS NULL THEN NULL
           ELSE EXTRACT(EPOCH FROM (pa.punch_out - pa.punch_in)) / 3600
