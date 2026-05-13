@@ -80,8 +80,8 @@ const fetchCityReportData = async (date) => {
       rampStats.onLeave += onLeave;
     }
 
-    // Road Sweeping PMC Breakdown (Strictly 'Road Sweeper')
-    if (/road\s*sweeper/i.test(designation)) {
+    // Road Sweeping PMC Breakdown (Road Sweeper + Supervisor/Mukadam combined)
+    if (/road\s*sweeper/i.test(designation) || /supervisor.*mukadam|mukadam.*supervisor/i.test(designation)) {
       pmcStats.total += total;
       pmcStats.present += present;
       pmcStats.onLeave += onLeave;
