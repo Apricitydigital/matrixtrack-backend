@@ -66,9 +66,22 @@ const sendOtp = async (req, res) => {
 
     // Send SMS
     try {
+      const otpHashes = [
+        String(process.env.ANDROID_SMS_APP_HASH || ''),
+        String(process.env.ANDROID_SMS_APP_HASH_RELEASE || '')
+      ]
+        .join(',')
+        .split(/[,\s]+/)
+        .map((token) => token.trim())
+        .filter(Boolean)
+        .filter((token, idx, arr) => arr.indexOf(token) === idx);
+      const otpMessage = otpHashes.length > 0
+        ? `<#> MatrixTrack Professional OTP: ${otp}\n${otpHashes.join('\n')}`
+        : `${otp} is your MatrixTrack Professional OTP. Valid for 5 minutes.`;
+
       await sendSms({
         phone: `+91${normalizedMobile}`,
-        message: `Your MatrixTrack login OTP is ${otp}. Valid for 5 minutes. Do not share with anyone.`,
+        message: otpMessage,
         context: 'professional_otp_login'
       });
       logger.info(`[OTPAuth] OTP sent to mobile ending ...${normalizedMobile.slice(-4)}`);
