@@ -49,6 +49,55 @@ const requestLeave = async (req, res) => {
       return res.status(404).json({ success: false, message: "Professional profile not found or inactive." });
     }
 
+    // Check leave balance (only enforce if an allocation exists for this leave type)
+    const allocResult = await client.query(
+      `SELECT period, allocated_count FROM professional_leave_allocations
+       WHERE professional_id = $1 AND leave_type = $2
+       ORDER BY
+         CASE period
+           WHEN 'monthly' THEN 1
+           WHEN 'quarterly' THEN 2
+           WHEN 'half_yearly' THEN 3
+           WHEN 'yearly' THEN 4
+           ELSE 5
+         END
+       LIMIT 1`,
+      [professional_id, leaveType]
+    );
+
+    if (allocResult.rows.length > 0) {
+      const alloc = allocResult.rows[0];
+      const getPeriodStart = (period) => {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = now.getMonth();
+        if (period === 'monthly') return new Date(year, month, 1);
+        if (period === 'quarterly') return new Date(year, Math.floor(month / 3) * 3, 1);
+        if (period === 'half_yearly') return month < 6 ? new Date(year, 0, 1) : new Date(year, 6, 1);
+        return new Date(year, 0, 1);
+      };
+      const periodStart = getPeriodStart(alloc.period);
+      const usedResult = await client.query(
+        `SELECT COUNT(*) AS used
+         FROM professional_leave_requests
+         WHERE professional_id = $1
+           AND leave_type = $2
+           AND status = 'approved'
+           AND requested_date >= $3`,
+        [professional_id, leaveType, periodStart.toISOString().slice(0, 10)]
+      );
+      const used = parseInt(usedResult.rows[0]?.used || 0, 10);
+      const remaining = alloc.allocated_count - used;
+      if (remaining <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          message: `You have used all your ${leaveType} leave quota (${alloc.allocated_count} per ${alloc.period}). No remaining balance.`,
+          remaining: 0,
+        });
+      }
+    }
+
     const existing = await client.query(
       `SELECT id, status
        FROM professional_leave_requests
@@ -179,7 +228,36 @@ const getMyLeaveRequests = async (req, res) => {
       params
     );
 
-    return res.json({ success: true, data: rows });
+    // Fetch leave balance per type
+    const getPeriodStart = (period) => {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth();
+      if (period === 'monthly') return new Date(year, month, 1);
+      if (period === 'quarterly') return new Date(year, Math.floor(month / 3) * 3, 1);
+      if (period === 'half_yearly') return month < 6 ? new Date(year, 0, 1) : new Date(year, 6, 1);
+      return new Date(year, 0, 1);
+    };
+    const allocResult = await pool.query(
+      'SELECT leave_type, period, allocated_count FROM professional_leave_allocations WHERE professional_id = $1',
+      [professional_id]
+    );
+    const balance = {};
+    for (const alloc of allocResult.rows) {
+      const periodStart = getPeriodStart(alloc.period);
+      const usedRes = await pool.query(
+        `SELECT COUNT(*) AS used FROM professional_leave_requests
+         WHERE professional_id = $1 AND leave_type = $2 AND status = 'approved' AND requested_date >= $3`,
+        [professional_id, alloc.leave_type, periodStart.toISOString().slice(0, 10)]
+      );
+      const used = parseInt(usedRes.rows[0]?.used || 0, 10);
+      const remaining = Math.max(0, alloc.allocated_count - used);
+      if (balance[alloc.leave_type] === undefined || remaining < balance[alloc.leave_type].remaining) {
+        balance[alloc.leave_type] = { leave_type: alloc.leave_type, period: alloc.period, allocated: alloc.allocated_count, used, remaining };
+      }
+    }
+
+    return res.json({ success: true, data: rows, balance: Object.values(balance) });
   } catch (error) {
     logger.error("[ProfessionalLeave] getMyLeaveRequests error:", error);
     return res.status(500).json({ success: false, message: "Unable to fetch leave requests." });

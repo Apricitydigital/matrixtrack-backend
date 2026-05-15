@@ -319,7 +319,7 @@ const approveRequest = async (req, res) => {
   const requesterRole = String(req.user?.role || '').toLowerCase();
   const isAdmin = requesterRole === 'admin';
   const { id } = req.params;
-  const { note } = req.body;
+  const { note, week_off_days, allocations } = req.body;
 
   const client = await pool.connect();
   try {
@@ -392,6 +392,7 @@ const approveRequest = async (req, res) => {
     pushCol('full_name', request.full_name);
     pushCol('mobile', request.mobile || '');
     pushCol('email', request.email);
+    pushCol('emp_code', request.emp_code || null);
 
     if (peColumns.has('password_hash')) {
       insertCols.push('password_hash');
@@ -427,6 +428,57 @@ const approveRequest = async (req, res) => {
     `;
 
     await client.query(insertPeQuery, insertVals);
+
+    // 3b. Save week off days if provided
+    if (Array.isArray(week_off_days)) {
+      const validDays = week_off_days.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
+      await client.query(`
+        INSERT INTO professional_week_off (professional_id, week_off_days, created_by, updated_by)
+        VALUES ($1, $2, $3, $3)
+        ON CONFLICT (professional_id) DO UPDATE
+          SET week_off_days = EXCLUDED.week_off_days,
+              updated_by = EXCLUDED.updated_by,
+              updated_at = NOW()
+      `, [request.id, validDays, supervisorId || null]);
+    }
+
+    // 3c. Save leave allocations if provided
+    if (Array.isArray(allocations) && allocations.length > 0) {
+      for (const alloc of allocations) {
+        const leaveType = String(alloc.leave_type || '').toUpperCase();
+        const period = String(alloc.period || '').toLowerCase();
+        const count = parseInt(alloc.allocated_count, 10);
+        const validTypes = new Set(['MEDICAL', 'CASUAL', 'PAID']);
+        const validPeriods = new Set(['monthly', 'quarterly', 'half_yearly', 'yearly']);
+        if (!validTypes.has(leaveType) || !validPeriods.has(period) || isNaN(count) || count < 0) continue;
+        await client.query(`
+          INSERT INTO professional_leave_allocations
+            (professional_id, leave_type, period, allocated_count, created_by, updated_by)
+          VALUES ($1, $2, $3, $4, $5, $5)
+          ON CONFLICT (professional_id, leave_type, period) DO UPDATE
+            SET allocated_count = EXCLUDED.allocated_count,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+        `, [request.id, leaveType, period, count, supervisorId || null]);
+      }
+      // Log the initial allocation
+      const actorRes = supervisorId ? await client.query(
+        'SELECT name FROM users WHERE user_id = $1 LIMIT 1', [supervisorId]
+      ) : { rows: [] };
+      const actorName = actorRes.rows[0]?.name || 'Supervisor';
+      await client.query(`
+        INSERT INTO professional_leave_allocation_logs
+          (professional_id, actor_user_id, actor_name, change_summary, old_values, new_values)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [
+        request.id,
+        supervisorId || null,
+        actorName,
+        'Initial leave allocations set during approval',
+        null,
+        JSON.stringify({ allocations, week_off_days: week_off_days || [] })
+      ]);
+    }
 
 
     // 4. Log the action

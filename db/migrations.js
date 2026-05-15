@@ -50,6 +50,69 @@ async function runMigrations() {
     await ensureProfessionalLeaveSchema();
     console.log("[Migration] Professional leave schema ready.");
 
+    // ── emp_code columns ────────────────────────────────────────────────────
+    await client.query(`
+      ALTER TABLE self_punch_requests
+        ADD COLUMN IF NOT EXISTS emp_code VARCHAR(50)
+    `);
+    await client.query(`
+      ALTER TABLE professional_employees
+        ADD COLUMN IF NOT EXISTS emp_code VARCHAR(50)
+    `);
+    console.log("[Migration] emp_code columns ready.");
+
+    // ── Leave allocation tables ─────────────────────────────────────────────
+    await client.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS professional_leave_allocations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        professional_id UUID NOT NULL REFERENCES professional_employees(id) ON DELETE CASCADE,
+        leave_type VARCHAR(24) NOT NULL CHECK (leave_type IN ('MEDICAL','CASUAL','PAID')),
+        period VARCHAR(16) NOT NULL CHECK (period IN ('monthly','quarterly','half_yearly','yearly')),
+        allocated_count INTEGER NOT NULL DEFAULT 0 CHECK (allocated_count >= 0),
+        created_by INTEGER REFERENCES users(user_id),
+        updated_by INTEGER REFERENCES users(user_id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (professional_id, leave_type, period)
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS professional_week_off (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        professional_id UUID UNIQUE NOT NULL REFERENCES professional_employees(id) ON DELETE CASCADE,
+        week_off_days INTEGER[] NOT NULL DEFAULT '{}',
+        created_by INTEGER REFERENCES users(user_id),
+        updated_by INTEGER REFERENCES users(user_id),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS professional_leave_allocation_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        professional_id UUID NOT NULL REFERENCES professional_employees(id) ON DELETE CASCADE,
+        actor_user_id INTEGER REFERENCES users(user_id),
+        actor_name TEXT,
+        change_summary TEXT NOT NULL,
+        old_values JSONB,
+        new_values JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_prof_leave_alloc_prof
+      ON professional_leave_allocations (professional_id)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_prof_leave_alloc_logs_prof
+      ON professional_leave_allocation_logs (professional_id, created_at DESC)
+    `);
+    console.log("[Migration] Leave allocation tables ready.");
+
     console.log("[Migration] All migrations complete.");
   } catch (err) {
     console.error("[Migration] Migration error (non-fatal):", err.message);

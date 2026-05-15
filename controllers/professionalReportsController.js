@@ -112,6 +112,7 @@ const getAttendanceList = async (req, res) => {
         pa.id as attendance_id,
         pe.id as professional_id,
         pe.full_name,
+        pe.emp_code,
         pe.mobile,
         pe.email,
         COALESCE(pa.date, leave_row.requested_date) as date,
@@ -469,12 +470,15 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       SELECT
         pe.id AS professional_id,
         pe.full_name,
+        pe.emp_code,
         pe.mobile,
         pe.email,
         COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
         COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
         z.zone_name,
         c.city_name,
+
+        -- Attendance & leave
         COUNT(pa.id) AS attendance_count,
         COALESCE(leave_agg.leave_days, 0) AS leave_days,
         leave_agg.latest_reviewer_name AS leave_reviewed_by_name,
@@ -491,7 +495,17 @@ const getDateRangeAttendanceSummary = async (req, res) => {
             0
           )::numeric,
           2
-        ) AS total_hours_worked
+        ) AS total_hours_worked,
+
+        -- Total calendar days in selected range
+        ($${endParam}::date - $${startParam}::date + 1) AS total_range_days,
+
+        -- Week off days: count calendar days in range that fall on the employee's configured week-off day numbers
+        COALESCE(weekoff_agg.week_off_count, 0) AS week_off_days_count,
+
+        -- Working days = total range days - week off days
+        ($${endParam}::date - $${startParam}::date + 1) - COALESCE(weekoff_agg.week_off_count, 0) AS working_days
+
       FROM professional_employees pe
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
@@ -509,6 +523,17 @@ const getDateRangeAttendanceSummary = async (req, res) => {
           AND plr.requested_date >= $${startParam}
           AND plr.requested_date <= $${endParam}
       ) leave_agg ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(gs.d) AS week_off_count
+        FROM generate_series($${startParam}::date, $${endParam}::date, INTERVAL '1 day') AS gs(d)
+        WHERE EXTRACT(DOW FROM gs.d)::int = ANY(
+          SELECT UNNEST(pwo.week_off_days)
+          FROM professional_week_off pwo
+          WHERE pwo.professional_id = pe.id
+          LIMIT 1
+        )
+      ) weekoff_agg ON TRUE
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
@@ -517,7 +542,12 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       LEFT JOIN wards w ON pe.ward_id = w.ward_id
       LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
       WHERE 1=1 ${peFilters}
-      GROUP BY pe.id, pe.full_name, pe.mobile, pe.email, COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name), COALESCE(wk_req.ward_name, wk.ward_name), z.zone_name, c.city_name, leave_agg.leave_days, leave_agg.latest_reviewer_name
+      GROUP BY pe.id, pe.full_name, pe.emp_code, pe.mobile, pe.email,
+               COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name),
+               COALESCE(wk_req.ward_name, wk.ward_name),
+               z.zone_name, c.city_name,
+               leave_agg.leave_days, leave_agg.latest_reviewer_name,
+               weekoff_agg.week_off_count
       ORDER BY (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0)) DESC, pe.full_name ASC
       LIMIT $${startParam + 2} OFFSET $${startParam + 3}
     `;
@@ -541,14 +571,33 @@ const getDateRangeAttendanceSummary = async (req, res) => {
 
     res.json({
       success: true,
-      data: dataResult.rows.map((row) => ({
-        ...row,
-        attendance_count: parseInt(row.attendance_count || 0, 10),
-        leave_days: parseInt(row.leave_days || 0, 10),
-        leave_reviewed_by_name: row.leave_reviewed_by_name || null,
-        completed_days: parseInt(row.completed_days || 0, 10),
-        total_hours_worked: parseFloat(row.total_hours_worked || 0).toFixed(2)
-      })),
+      data: dataResult.rows.map((row) => {
+        const attendanceDays  = parseInt(row.attendance_count || 0, 10);
+        const leaveDays       = parseInt(row.leave_days || 0, 10);
+        const completedDays   = parseInt(row.completed_days || 0, 10);
+        const totalRangeDays  = parseInt(row.total_range_days || 0, 10);
+        const weekOffDays     = parseInt(row.week_off_days_count || 0, 10);
+        const workingDays     = parseInt(row.working_days || 0, 10);
+        // Half day also counted as full for salary purposes (attendance_count = any punch-in)
+        const effectivePresent = attendanceDays + leaveDays;
+        const absentDays       = Math.max(workingDays - effectivePresent, 0);
+        const payableDays      = effectivePresent; // what HR uses for salary calculation
+
+        return {
+          ...row,
+          attendance_count:        attendanceDays,
+          leave_days:              leaveDays,
+          leave_reviewed_by_name:  row.leave_reviewed_by_name || null,
+          completed_days:          completedDays,
+          total_hours_worked:      parseFloat(row.total_hours_worked || 0).toFixed(2),
+          total_range_days:        totalRangeDays,
+          week_off_days_count:     weekOffDays,
+          working_days:            workingDays,
+          effective_present:       effectivePresent,
+          absent_days:             absentDays,
+          payable_days:            payableDays,
+        };
+      }),
       pagination: {
         page: numericPage,
         limit: numericLimit,
@@ -561,6 +610,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal server error', error: error.message });
   }
 };
+
 
 /**
  * @desc    Get day-wise attendance details for one employee in date range
@@ -611,6 +661,7 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         pa.id AS attendance_id,
         pe.id AS professional_id,
         pe.full_name,
+        pe.emp_code,
         cd.date,
         pa.punch_in,
         pa.punch_out,
@@ -716,7 +767,7 @@ const getEmployeesList = async (req, res) => {
     const query = `
       ${cte}
       SELECT
-        pe.id, pe.full_name as name, pe.mobile, pe.is_active, pe.face_locked, pe.created_at,
+        pe.id, pe.full_name as name, pe.emp_code, pe.mobile, pe.is_active, pe.face_locked, pe.created_at,
         COALESCE(sec.sector_name, w.ward_name) AS ward_name, z.zone_name, c.city_name,
         wk.ward_name as kothi_name
       FROM professional_employees pe

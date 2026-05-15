@@ -80,9 +80,11 @@ const resolveValidKothiId = async (client, kothiIdRaw) => {
 const validateInput = (reqBody, reqFiles) => {
   const errors = {};
 
-  const { full_name, mobile, email, aadhar_number, city_id, zone_id, ward_id } = reqBody;
+  const { full_name, mobile, email, aadhar_number, city_id, zone_id, ward_id, emp_code } = reqBody;
 
   if (!full_name || !sanitizeString(full_name)) errors.full_name = "Full name is required.";
+
+  if (!emp_code || !String(emp_code).trim()) errors.emp_code = "Employee code is required.";
   
   if (!mobile || !/^\d{10}$/.test(mobile)) {
     errors.mobile = "Mobile must be a valid 10-digit number.";
@@ -132,8 +134,11 @@ const submitRequest = async (req, res) => {
     city_id,
     zone_id,
     ward_id,
-    kothi_id
+    kothi_id,
+    emp_code
   } = req.body;
+
+  const sanitizedEmpCode = sanitizeString(emp_code) || null;
 
   const sanitizedFullName = sanitizeString(full_name);
   const sanitizedEmail = sanitizeString(email);
@@ -196,8 +201,8 @@ const submitRequest = async (req, res) => {
         id, full_name, mobile, email, aadhar_number, 
         aadhar_doc_url, selfie_url, 
         city_id, zone_id, ward_id, kothi_id, 
-        status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
+        emp_code, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending')
       RETURNING id;
     `;
     
@@ -219,7 +224,8 @@ const submitRequest = async (req, res) => {
       parseInt(city_id, 10),
       parseInt(zone_id, 10),
       parseInt(ward_id, 10),
-      safeKothiId
+      safeKothiId,
+      sanitizedEmpCode
     ]);
 
     // 5. Insert Log Entry

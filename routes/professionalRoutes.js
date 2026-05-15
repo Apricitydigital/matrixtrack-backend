@@ -15,6 +15,7 @@ const {
   getMyNotifications,
   markNotificationRead,
 } = require("../controllers/professionalLeaveController");
+const { getMyLeaveBalance } = require('../controllers/professionalLeaveAllocationsController');
 
 const router = express.Router();
 
@@ -41,6 +42,7 @@ router.get('/attendance/monthly', getMonthlyAttendance);
 // Professional leave and notifications
 router.post("/leave/request", requestLeave);
 router.get("/leave/requests", getMyLeaveRequests);
+router.get("/leave/balance", getMyLeaveBalance);
 router.get("/notifications", getMyNotifications);
 router.post("/notifications/:id/read", markNotificationRead);
 

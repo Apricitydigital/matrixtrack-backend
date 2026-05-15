@@ -15,6 +15,11 @@ const {
   approveLeaveRequest,
   rejectLeaveRequest,
 } = require("../controllers/professionalLeaveManagementController");
+const {
+  getLeaveAllocations,
+  setLeaveAllocations,
+  getAllocationLogs,
+} = require('../controllers/professionalLeaveAllocationsController');
 
 const router = express.Router();
 
@@ -72,5 +77,20 @@ router.post("/professional-leave/requests/:id/approve", authorize("professional-
  * @route   POST /api/admin/professional-leave/requests/:id/reject
  */
 router.post("/professional-leave/requests/:id/reject", authorize("professional-leave-mgmt", "write"), rejectLeaveRequest);
+
+/**
+ * @route   GET /api/admin/professional-leave/allocations/:id
+ */
+router.get('/professional-leave/allocations/:id', authorize("professional-leave-allocation", "view"), getLeaveAllocations);
+
+/**
+ * @route   PUT /api/admin/professional-leave/allocations/:id
+ */
+router.put('/professional-leave/allocations/:id', authorize("professional-leave-allocation", "write"), setLeaveAllocations);
+
+/**
+ * @route   GET /api/admin/professional-leave/allocations/:id/logs
+ */
+router.get('/professional-leave/allocations/:id/logs', authorize("professional-leave-allocation", "view"), getAllocationLogs);
 
 module.exports = router;
