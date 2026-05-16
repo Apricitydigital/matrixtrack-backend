@@ -22,6 +22,9 @@ const userRoutes = require("./userRoutes");
 const sectorRoutes = require("./sectorRoutes");
 const geofencingRoutes = require("./geofencingRoutes");
 const supervisorAuditRoutes = require("./supervisorAuditRoutes");
+const supervisorAadharRoutes = require("./supervisorAadharRoutes");
+const supervisorPhotoRoutes = require("./supervisorPhotoRoutes");
+const otpRoutes = require("./otpRoutes");
 const appRoutes = require("./appRoutes/index");
 
 // Protected Route
@@ -47,6 +50,9 @@ router.use("/rbac", rbacRoutes);
 router.use("/whatsapp", whatsappRoutes);
 router.use("/user", userRoutes);
 router.use("/supervisor-audit", supervisorAuditRoutes);
+router.use("/supervisor-aadhar", supervisorAadharRoutes);
+router.use("/supervisor-photo", supervisorPhotoRoutes);
+router.use("/otp", otpRoutes);
 // Compatibility mount so /api/app/* works even if appRoutes isn't mounted in app.js.
 router.use("/app", appRoutes);
 

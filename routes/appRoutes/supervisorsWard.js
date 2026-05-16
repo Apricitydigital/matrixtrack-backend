@@ -483,9 +483,8 @@ const fetchSupervisorEmployees = async (
     LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM supervisor_kothi sk WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1) AS is_assigned) sup_kothi_rbac ON TRUE
     -- zone access should be checked against the employee's ward's zone, not a non-existent e.zone_id
     LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM user_zone_access uz WHERE uz.zone_id = w.zone_id AND uz.user_id = $1) AS is_assigned) zone_rbac ON TRUE
-    LEFT JOIN (
+    LEFT JOIN LATERAL (
       SELECT  
-        a.emp_id,
         MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
@@ -521,9 +520,8 @@ const fetchSupervisorEmployees = async (
           END
         )) AS last_punch_epoch
       FROM attendance a
-      WHERE a.date::date BETWEEN $2::date AND $3::date
-      GROUP BY a.emp_id
-    ) summary ON summary.emp_id = e.emp_id`
+      WHERE a.emp_id = e.emp_id AND a.date::date BETWEEN $2::date AND $3::date
+    ) summary ON TRUE`
   ];
 
   let whereClauses = [`($4::int IS NULL OR c.city_id = $4::int)`];

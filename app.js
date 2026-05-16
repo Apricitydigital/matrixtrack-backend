@@ -31,6 +31,8 @@ const authRoutes = require("./routes/authRoutes");
 const allRoutes = require("./routes/index");
 const appRoutes = require("./routes/appRoutes/index");
 const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
+const supervisorAadharRoutes = require("./routes/supervisorAadharRoutes");
+const supervisorPhotoRoutes = require("./routes/supervisorPhotoRoutes");
 
 const app = express();
 
@@ -387,6 +389,37 @@ app.get("/", (req, res) => {
 });
 
 // Auth Routes
+app.post("/api/auth/check-duplicate", async (req, res) => {
+  const { email, emp_code, phone, aadhar_number } = req.body;
+  try {
+    let emailExists = false;
+    let empCodeExists = false;
+    let phoneExists = false;
+    let aadharExists = false;
+
+    if (email) {
+      const emailCheck = await pool.query("SELECT user_id FROM users WHERE email = $1 LIMIT 1", [email.trim().toLowerCase()]);
+      emailExists = emailCheck.rowCount > 0;
+    }
+    if (emp_code) {
+      const empCodeCheck = await pool.query("SELECT user_id FROM users WHERE emp_code = $1 LIMIT 1", [emp_code.trim()]);
+      empCodeExists = empCodeCheck.rowCount > 0;
+    }
+    if (phone) {
+      const phoneCheck = await pool.query("SELECT user_id FROM users WHERE phone = $1 LIMIT 1", [phone.trim()]);
+      phoneExists = phoneCheck.rowCount > 0;
+    }
+    if (aadhar_number) {
+      const aadharCheck = await pool.query("SELECT user_id FROM users WHERE aadhar_number = $1 LIMIT 1", [aadhar_number.trim()]);
+      aadharExists = aadharCheck.rowCount > 0;
+    }
+
+    res.json({ emailExists, empCodeExists, phoneExists, aadharExists });
+  } catch (error) {
+    console.error("Duplicate check error:", error);
+    res.status(500).json({ error: "Check failed" });
+  }
+});
 app.use("/api/auth", authRoutes);
 
 // Other Routes
@@ -395,6 +428,8 @@ app.use("/api", allRoutes);
 // App Routes
 app.use("/api/app", appRoutes);
 app.use("/api/app/attendance/employee", selfAttendanceRoutes);
+app.use("/api/supervisor-aadhar", supervisorAadharRoutes);
+app.use("/api/supervisor-photo", supervisorPhotoRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 5000;
