@@ -20,7 +20,8 @@ process.on("uncaughtException", (error) => {
 });
 
 // const DEFAULT_TEST_NUMBERS = ["918827232995", "919131042937", "918982622996", "919111899909"];
-const NEW_REPORT_WEEKLY_RECIPIENTS = ["918827232995"];
+// const NEW_REPORT_WEEKLY_RECIPIENTS = ["918827232995"];
+const WEEKLY_REPORT_NEW_RECIPIENTS = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999","918349733213"];
 
 const todayKey = () =>
   new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
@@ -144,6 +145,7 @@ const markSentTodayWeekly = (key) => {
 };
 
 const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
+const { sendWeeklyWhatsAppReportNew } = require("./utils/msg91WhatsAppWeeklyNew");
 // const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
 
@@ -220,51 +222,70 @@ if (isPrimaryCronInstance) {
     }
   );
 
-  // Weekly Performance Report Cron (Every Monday at 10:00 AM IST)
+
+  // =============================================
+  // NEW WEEKLY PERFORMANCE REPORT (9:45 AM IST) - ISOLATED
+  // ISOLATED: own lock ID (812351), own tracking file
+  // =============================================
+  const LAST_RUN_FILE_WEEKLY_NEW = path.join(__dirname, "whatsapp_report_weekly_new_last_run.txt");
+  const hasSentTodayWeeklyNew = (key) => {
+    try {
+      const stored = fs.readFileSync(LAST_RUN_FILE_WEEKLY_NEW, "utf8").trim();
+      return stored === key;
+    } catch (err) {
+      return false;
+    }
+  };
+  const markSentTodayWeeklyNew = (key) => {
+    try {
+      fs.writeFileSync(LAST_RUN_FILE_WEEKLY_NEW, key, "utf8");
+    } catch (err) {
+      console.error("Unable to record Weekly New WhatsApp send date:", err.message);
+    }
+  };
+
   cron.schedule(
-    "00 10 * * 1",
+    "45 09 * * 1", // Every Monday at 9:45 AM IST
     async () => {
-      console.log('[WhatsApp Weekly Cron] Weekly performance report triggered');
+      console.log('[WhatsApp Weekly New Cron] Weekly NEW performance report triggered');
       const client = await pool.connect();
       let lockAcquired = false;
-      const WEEKLY_LOCK_ID = 812348; // Unique ID for this report
+      const WEEKLY_NEW_LOCK_ID = 812351; // Unique ID
       try {
-        const { rows } = await client.query(
-          "SELECT pg_try_advisory_lock($1) AS locked", [WEEKLY_LOCK_ID]
-        );
+        const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [WEEKLY_NEW_LOCK_ID]);
         lockAcquired = Boolean(rows[0]?.locked);
+
         if (!lockAcquired) {
-          console.log("[WhatsApp Weekly Cron] Another instance is handling send; skipping.");
+          console.log("[WhatsApp Weekly New Cron] Another instance is handling send; skipping.");
           return;
         }
 
         const runKey = todayKey();
-        if (hasSentTodayWeekly(runKey)) {
-          console.log("[WhatsApp Weekly Cron] Already sent today; skipping.");
+        if (hasSentTodayWeeklyNew(runKey)) {
+          console.log("[WhatsApp Weekly New Cron] Already sent today, skipping.");
           return;
         }
 
-        // Recipients are defined at the top of app.js as NEW_REPORT_WEEKLY_RECIPIENTS
-        for (const mobile of NEW_REPORT_WEEKLY_RECIPIENTS) {
+        for (const mobile of WEEKLY_REPORT_NEW_RECIPIENTS) {
           try {
-            const { reportData } = await sendWeeklyWhatsAppReport({
+            const { reportData } = await sendWeeklyWhatsAppReportNew({
               phoneNumber: mobile,
             });
-            console.log('[WhatsApp Weekly Cron] Sent to:', mobile, reportData.period);
+            console.log('[WhatsApp Weekly New Cron] Sent to:', mobile, reportData.period);
           } catch (error) {
-            console.error('[WhatsApp Weekly Cron] Failed for:', mobile, error.message);
+            console.error('[WhatsApp Weekly New Cron] Failed for:', mobile, error.message);
           }
         }
 
-        markSentTodayWeekly(runKey);
+        markSentTodayWeeklyNew(runKey);
 
-        await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+        await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_NEW_LOCK_ID]);
         lockAcquired = false;
       } catch (err) {
-        console.error('[WhatsApp Weekly Cron] Cron error:', err.message);
+        console.error('[WhatsApp Weekly New Cron] Cron error:', err.message);
       } finally {
         if (lockAcquired) {
-          await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+          await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_NEW_LOCK_ID]);
         }
         client.release();
       }

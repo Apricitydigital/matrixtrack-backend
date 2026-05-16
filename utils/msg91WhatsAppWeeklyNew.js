@@ -12,9 +12,11 @@ const REPORT_CITY = "Pune";
 
 const getWeeklyDates = () => {
   const end = new Date();
+  end.setDate(end.getDate() - 1); // Report ends yesterday
   end.setHours(23, 59, 59, 999);
-  const start = new Date();
-  start.setDate(end.getDate() - 6); // Last 7 days
+  
+  const start = new Date(end);
+  start.setDate(end.getDate() - 6); // 7 days total (end - 6 to end)
   start.setHours(0, 0, 0, 0);
 
   const prevEnd = new Date(start);
@@ -45,9 +47,12 @@ const fetchWeeklyReportData = async () => {
     JOIN wards w ON e.ward_id = w.ward_id
     JOIN zones z ON w.zone_id = z.zone_id
     JOIN cities c ON z.city_id = c.city_id
+    LEFT JOIN sectors s ON w.sector_id = s.sector_id
     JOIN designation des ON e.designation_id = des.designation_id
     JOIN department dept ON des.department_id = dept.department_id
   `;
+
+  
 
   const commonFilter = `
     WHERE c.city_name = $3 
@@ -102,6 +107,7 @@ const fetchWeeklyReportData = async () => {
   const areaLeaderQuery = `
     SELECT 
       z.zone_name,
+      s.sector_name as ward_office,
       w.ward_name,
       COUNT(DISTINCT e.emp_id) as total,
       COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN a.emp_id END) as present,
@@ -110,7 +116,7 @@ const fetchWeeklyReportData = async () => {
     ${commonJoins}
     LEFT JOIN attendance a ON e.emp_id = a.emp_id AND a.date::date BETWEEN $1 AND $2
     ${commonFilter}
-    GROUP BY z.zone_name, w.ward_name
+    GROUP BY z.zone_name, s.sector_name, w.ward_name
     ORDER BY perf DESC;
   `;
 
@@ -178,7 +184,7 @@ const fetchWeeklyReportData = async () => {
     const prevAvgPres = prevStats.prev_avg_pres || 0;
     const trendDiff = avgPres - prevAvgPres;
     const trendIndicator = ""; // Removed emoji
-    const trendValue = `${Math.abs(trendDiff)} employees ${trendDiff >= 0 ? "more" : "fewer"} than last week`;
+    const trendValue = `${Math.abs(trendDiff)} ${trendDiff >= 0 ? "more" : "fewer"} employees attended daily than last week`;
 
     const topZone = areaLeaders.rows.reduce((prev, current) => (prev.perf > current.perf) ? prev : current, areaLeaders.rows[0]);
     const topWard = areaLeaders.rows[0];
@@ -198,7 +204,7 @@ const fetchWeeklyReportData = async () => {
       trendValue,
       trendIndicator,
       topZone: topZone?.zone_name || "N/A",
-      topWard: topWard?.ward_name || "N/A",
+      topWard: topWard?.ward_office || "N/A",
       topKothis: topKothis.map(k => k.ward_name),
       topSupervisors: topSups.map(s => s.supervisor_name),
       bottomSupervisors: bottomSups.map(s => s.supervisor_name),
