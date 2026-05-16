@@ -26,6 +26,11 @@ const supervisorAadharRoutes = require("./supervisorAadharRoutes");
 const supervisorPhotoRoutes = require("./supervisorPhotoRoutes");
 const otpRoutes = require("./otpRoutes");
 const appRoutes = require("./appRoutes/index");
+const publicDropdownRoutes = require("./publicDropdownRoutes");
+const publicSelfPunchRoutes = require("./publicSelfPunchRoutes");
+const supervisorSelfPunchRoutes = require("./supervisorSelfPunchRoutes");
+const professionalRoutes = require("./professionalRoutes");
+const professionalReportsRoutes = require("./professionalReportsRoutes");
 
 // Protected Route
 router.get("/protected", authenticateUser, (req, res) => {
@@ -43,6 +48,13 @@ router.use("/departments", departmentRoutes);
 router.use("/designations", designationRoutes);
 router.use("/attendance", attendanceRoutes);
 router.use("/supervisor", supervisorRoutes);
+router.use("/supervisor/self-punch", supervisorSelfPunchRoutes);
+router.use("/professional", professionalRoutes);
+
+// Mount reports before the main adminRoutes to bypass strict requireAdmin middleware
+// allowing both admins and supervisors to access these specific reporting endpoints.
+router.use("/admin", professionalReportsRoutes);
+
 router.use("/assignedWardRoutes", assignedWardRoutes);
 router.use("/assignedKothiRoutes", assignedKothiRoutes);
 router.use("/admin", adminRoutes);
@@ -55,5 +67,9 @@ router.use("/supervisor-photo", supervisorPhotoRoutes);
 router.use("/otp", otpRoutes);
 // Compatibility mount so /api/app/* works even if appRoutes isn't mounted in app.js.
 router.use("/app", appRoutes);
+
+// Public API endpoints
+router.use("/public", publicDropdownRoutes);
+router.use("/public/self-punch", publicSelfPunchRoutes);
 
 module.exports = router;

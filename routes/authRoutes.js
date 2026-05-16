@@ -12,6 +12,7 @@ const { isPhoneVerified, sendGenericSms } = require("../utils/otpService");
 const { sendWelcomeWhatsApp, sendWelcomeSms, sendPasswordUpdateSms } = require("../utils/notificationService");
 
 const router = express.Router();
+const APP_JWT_EXPIRES_IN = process.env.APP_JWT_EXPIRES_IN || "45d";
 
 const getUserAccessProfile = async (userId) => {
   const rolesQuery = `
@@ -390,7 +391,7 @@ router.post("/login", async (req, res) => {
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: APP_JWT_EXPIRES_IN }
     );
 
     const access = await getUserAccessProfile(user.rows[0].user_id);
@@ -456,7 +457,7 @@ router.post("/supervisor-login", async (req, res) => {
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: APP_JWT_EXPIRES_IN }
     );
 
     const access = await getUserAccessProfile(user.rows[0].user_id);

@@ -9,6 +9,8 @@ const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const http = require("http");
+const socketio = require("./utils/socket");
 
 
 process.on("unhandledRejection", (reason) => {
@@ -41,7 +43,8 @@ app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.url}`);
   next();
 });
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
+app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 const defaultOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
@@ -344,41 +347,22 @@ if (isPrimaryCronInstance) {
 
 // =======================
 // ⏰ AUTO PUNCH-OUT CRON
-// Runs at the top of every hour.
-// Keeps re-running for 10 minutes (every 30s) to catch all eligible employees.
+// Runs once daily at 9:00 PM IST.
 // Set AUTO_PUNCHOUT_CRON_ENABLED=false in .env to disable.
 // =======================
 const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "false";
-const AUTO_PUNCHOUT_CRON_EXPR = process.env.AUTO_PUNCHOUT_CRON_EXPR || "0 * * * *";
+const AUTO_PUNCHOUT_CRON_EXPR = "0 21 * * *";
 
 if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     AUTO_PUNCHOUT_CRON_EXPR,
     async () => {
-      console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
-
-
-
-      const WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-      const INTERVAL_MS = 30 * 1000;    // every 30 seconds
-      const startTime = Date.now();
-
-      // Run immediately on trigger
+      console.log("[AutoPunchOut Cron] ⏰ Daily 9:00 PM trigger started.");
       await runAutoPunchOut();
-
-      // Then repeat every 30s for 10 minutes
-      const intervalId = setInterval(async () => {
-        if (Date.now() - startTime >= WINDOW_MS) {
-          clearInterval(intervalId);
-          console.log("[AutoPunchOut Cron] ✅ 10-minute window complete. Stopping.");
-          return;
-        }
-        await runAutoPunchOut();
-      }, INTERVAL_MS);
     },
     { timezone: "Asia/Kolkata" }
   );
-  console.log(`[AutoPunchOut Cron] ✅ Registered — schedule: "${AUTO_PUNCHOUT_CRON_EXPR}", runs for 10 minutes.`);
+  console.log(`[AutoPunchOut Cron] ✅ Registered — schedule: "${AUTO_PUNCHOUT_CRON_EXPR}" (9:00 PM IST).`);
 } else {
   console.log("[AutoPunchOut Cron] ⏭ Disabled or non-primary instance — skipping.");
 }
@@ -434,9 +418,13 @@ app.use("/api/supervisor-photo", supervisorPhotoRoutes);
 // Start Server
 const PORT = process.env.PORT || 5000;
 
+// Create HTTP server and initialize Socket.io
+const server = http.createServer(app);
+socketio.init(server);
+
 // Run migrations before starting the server
 runMigrations().then(() => {
-  app.listen(PORT, "0.0.0.0", () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
 }).catch(err => {
