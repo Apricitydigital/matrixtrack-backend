@@ -14,3 +14,9 @@ run_query.js
 #test files
 test_*.js
 supervisor_errors.log
+# Testing and Scratch
+scratch/
+_tmp_*.js
+*.pdf
+all_*.txt
+whatsapp_report_*_last_run.txt
