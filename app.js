@@ -5,6 +5,7 @@ const cookieParser = require("cookie-parser");
 const path = require("path");
 const cron = require("node-cron");
 const { runAutoPunchOut } = require("./utils/autoPunchOutScheduler");
+const { runProfessionalPunchInReminder } = require("./utils/professionalPunchInReminder");
 const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
 const fs = require("fs");
@@ -354,6 +355,10 @@ if (isPrimaryCronInstance) {
 // =======================
 const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "false";
 const AUTO_PUNCHOUT_CRON_EXPR = "0 21 * * *";
+const PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED =
+  process.env.PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED !== "false";
+const PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR =
+  process.env.PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR || "0 10 * * *";
 
 if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
@@ -367,6 +372,43 @@ if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
   console.log(`[AutoPunchOut Cron] ✅ Registered — schedule: "${AUTO_PUNCHOUT_CRON_EXPR}" (9:00 PM IST).`);
 } else {
   console.log("[AutoPunchOut Cron] ⏭ Disabled or non-primary instance — skipping.");
+}
+
+if (PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED && isPrimaryCronInstance) {
+  cron.schedule(
+    PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR,
+    async () => {
+      const client = await pool.connect();
+      let lockAcquired = false;
+      const REMINDER_LOCK_ID = 812351;
+      try {
+        const { rows } = await client.query(
+          "SELECT pg_try_advisory_lock($1) AS locked",
+          [REMINDER_LOCK_ID]
+        );
+        lockAcquired = Boolean(rows[0]?.locked);
+        if (!lockAcquired) {
+          console.log("[ProfessionalReminderCron] Another instance is running; skipping.");
+          return;
+        }
+
+        await runProfessionalPunchInReminder();
+      } catch (error) {
+        console.error("[ProfessionalReminderCron] Cron error:", error.message);
+      } finally {
+        if (lockAcquired) {
+          await client.query("SELECT pg_advisory_unlock($1)", [REMINDER_LOCK_ID]);
+        }
+        client.release();
+      }
+    },
+    { timezone: "Asia/Kolkata" }
+  );
+  console.log(
+    `[ProfessionalReminderCron] ✅ Registered — schedule: "${PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR}" (IST).`
+  );
+} else {
+  console.log("[ProfessionalReminderCron] ⏭ Disabled or non-primary instance — skipping.");
 }
 
 // General API Route
