@@ -891,6 +891,59 @@ const getMonthlyAttendance = async (req, res) => {
 };
 
 /**
+ * @desc    Get today's attendance status for logged-in professional
+ * @route   GET /api/professional/attendance/status
+ * @access  Private (Professional)
+ */
+const getTodayStatus = async (req, res) => {
+  const { professional_id } = req.professional;
+  const today = getTodayIST();
+
+  try {
+    await ensureProfessionalAttendanceColumns(pool);
+
+    const attendanceResult = await pool.query(
+      `SELECT date, punch_in, punch_out
+       FROM professional_attendance
+       WHERE professional_id = $1 AND date = $2
+       ORDER BY id DESC
+       LIMIT 1`,
+      [professional_id, today]
+    );
+
+    if (attendanceResult.rows.length > 0) {
+      const row = attendanceResult.rows[0];
+      const hasPunchIn = Boolean(row.punch_in);
+      const hasPunchOut = Boolean(row.punch_out);
+      const status = hasPunchIn ? (hasPunchOut ? 'done' : 'present') : 'absent';
+
+      return res.json({
+        success: true,
+        data: {
+          date: row.date,
+          punch_in: row.punch_in,
+          punch_out: row.punch_out,
+          status,
+        },
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        date: today,
+        punch_in: null,
+        punch_out: null,
+        status: 'absent',
+      },
+    });
+  } catch (error) {
+    logger.error(`[Attendance] Today status get failed for ${professional_id}`, error);
+    return res.status(500).json({ success: false, message: 'Internal server error.' });
+  }
+};
+
+/**
  * @desc    Get professional profile
  * @route   GET /api/professional/profile
  * @access  Private (Professional)
@@ -939,5 +992,6 @@ module.exports = {
   punchIn,
   punchOut,
   getMonthlyAttendance,
+  getTodayStatus,
   getProfile
 };

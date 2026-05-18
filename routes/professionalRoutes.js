@@ -7,6 +7,7 @@ const {
   punchIn, 
   punchOut, 
   getMonthlyAttendance, 
+  getTodayStatus,
   getProfile 
 } = require('../controllers/professionalAttendanceController');
 const {
@@ -38,6 +39,7 @@ router.get('/profile', getProfile);
 router.post('/attendance/punch-in', punchIn);
 router.post('/attendance/punch-out', punchOut);
 router.get('/attendance/monthly', getMonthlyAttendance);
+router.get('/attendance/status', getTodayStatus);
 
 // Professional leave and notifications
 router.post("/leave/request", requestLeave);
