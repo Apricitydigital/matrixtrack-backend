@@ -71,6 +71,62 @@ const ensureProfessionalLeaveSchema = async () => {
           ON professional_notifications (professional_id, is_read, created_at DESC)
         `);
 
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS professional_holidays (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            holiday_date DATE NOT NULL,
+            holiday_name VARCHAR(120) NOT NULL,
+            description TEXT,
+            city_id INTEGER NOT NULL REFERENCES cities(city_id) ON DELETE CASCADE,
+            zone_id INTEGER REFERENCES zones(zone_id) ON DELETE SET NULL,
+            ward_id INTEGER REFERENCES sectors(sector_id) ON DELETE SET NULL,
+            kothi_id INTEGER REFERENCES wards(ward_id) ON DELETE SET NULL,
+            created_by INTEGER REFERENCES users(user_id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_by INTEGER REFERENCES users(user_id),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+
+        await client.query(`
+          CREATE UNIQUE INDEX IF NOT EXISTS uidx_prof_holidays_scope_date
+          ON professional_holidays (
+            holiday_date,
+            city_id,
+            COALESCE(zone_id, -1),
+            COALESCE(ward_id, -1),
+            COALESCE(kothi_id, -1)
+          )
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_holidays_date_city
+          ON professional_holidays (holiday_date DESC, city_id, zone_id, ward_id, kothi_id)
+        `);
+
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS professional_holiday_logs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            holiday_id UUID,
+            action VARCHAR(24) NOT NULL CHECK (action IN ('created', 'deleted')),
+            actor_user_id INTEGER REFERENCES users(user_id),
+            actor_name VARCHAR(160),
+            holiday_date DATE NOT NULL,
+            holiday_name VARCHAR(120) NOT NULL,
+            description TEXT,
+            city_id INTEGER NOT NULL,
+            zone_id INTEGER,
+            ward_id INTEGER,
+            kothi_id INTEGER,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_holiday_logs_date
+          ON professional_holiday_logs (holiday_date DESC, created_at DESC)
+        `);
+
         await client.query("COMMIT");
       } catch (error) {
         await client.query("ROLLBACK");

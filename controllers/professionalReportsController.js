@@ -397,6 +397,7 @@ const getAttendanceSummary = async (req, res) => {
 const getDateRangeAttendanceSummary = async (req, res) => {
   try {
     await ensureAttendanceReportColumns();
+    await ensureProfessionalLeaveSchema();
     const {
       city_id,
       zone_id,
@@ -503,6 +504,9 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         -- Week off days: count calendar days in range that fall on the employee's configured week-off day numbers
         COALESCE(weekoff_agg.week_off_count, 0) AS week_off_days_count,
 
+        -- Holiday days: scoped by location and excluding configured week-offs
+        COALESCE(holiday_agg.holiday_days, 0) AS holiday_days,
+
         -- Working days = total range days - week off days
         ($${endParam}::date - $${startParam}::date + 1) - COALESCE(weekoff_agg.week_off_count, 0) AS working_days
 
@@ -534,6 +538,22 @@ const getDateRangeAttendanceSummary = async (req, res) => {
           LIMIT 1
         )
       ) weekoff_agg ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(DISTINCT h.holiday_date)::int AS holiday_days
+        FROM professional_holidays h
+        WHERE h.holiday_date >= $${startParam}
+          AND h.holiday_date <= $${endParam}
+          AND h.city_id = pe.city_id
+          AND (h.zone_id IS NULL OR h.zone_id = pe.zone_id)
+          AND (h.ward_id IS NULL OR h.ward_id = pe.ward_id)
+          AND (h.kothi_id IS NULL OR h.kothi_id = pe.kothi_id)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM professional_week_off pwo2
+            WHERE pwo2.professional_id = pe.id
+              AND EXTRACT(DOW FROM h.holiday_date)::int = ANY(pwo2.week_off_days)
+          )
+      ) holiday_agg ON TRUE
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
@@ -547,8 +567,8 @@ const getDateRangeAttendanceSummary = async (req, res) => {
                COALESCE(wk_req.ward_name, wk.ward_name),
                z.zone_name, c.city_name,
                leave_agg.leave_days, leave_agg.latest_reviewer_name,
-               weekoff_agg.week_off_count
-      ORDER BY (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0)) DESC, pe.full_name ASC
+               weekoff_agg.week_off_count, holiday_agg.holiday_days
+      ORDER BY (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0) + COALESCE(holiday_agg.holiday_days, 0)) DESC, pe.full_name ASC
       LIMIT $${startParam + 2} OFFSET $${startParam + 3}
     `;
 
@@ -577,11 +597,14 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         const completedDays   = parseInt(row.completed_days || 0, 10);
         const totalRangeDays  = parseInt(row.total_range_days || 0, 10);
         const weekOffDays     = parseInt(row.week_off_days_count || 0, 10);
+        const holidayDays     = parseInt(row.holiday_days || 0, 10);
         const workingDays     = parseInt(row.working_days || 0, 10);
         // Half day also counted as full for salary purposes (attendance_count = any punch-in)
         const effectivePresent = attendanceDays + leaveDays;
-        const absentDays       = Math.max(workingDays - effectivePresent, 0);
-        const payableDays      = effectivePresent; // what HR uses for salary calculation
+        const adjustedPresent  = effectivePresent + holidayDays;
+        const absentDays       = Math.max(workingDays - adjustedPresent, 0);
+        // Payable days include configured week off days as paid days.
+        const payableDays      = Math.min(totalRangeDays, adjustedPresent + weekOffDays); // what HR uses for salary calculation
 
         return {
           ...row,
@@ -592,6 +615,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
           total_hours_worked:      parseFloat(row.total_hours_worked || 0).toFixed(2),
           total_range_days:        totalRangeDays,
           week_off_days_count:     weekOffDays,
+          holiday_days:            holidayDays,
           working_days:            workingDays,
           effective_present:       effectivePresent,
           absent_days:             absentDays,

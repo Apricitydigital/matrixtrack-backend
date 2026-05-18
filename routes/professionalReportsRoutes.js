@@ -14,6 +14,10 @@ const {
   getLeaveRequests,
   approveLeaveRequest,
   rejectLeaveRequest,
+  getHolidayCalendar,
+  createHoliday,
+  deleteHoliday,
+  getHolidayLogs,
 } = require("../controllers/professionalLeaveManagementController");
 const {
   getLeaveAllocations,
@@ -77,6 +81,26 @@ router.post("/professional-leave/requests/:id/approve", authorize("professional-
  * @route   POST /api/admin/professional-leave/requests/:id/reject
  */
 router.post("/professional-leave/requests/:id/reject", authorize("professional-leave-mgmt", "write"), rejectLeaveRequest);
+
+/**
+ * @route   GET /api/admin/professional-leave/holidays
+ */
+router.get("/professional-leave/holidays", authorize("professional-holiday-declare", "view"), getHolidayCalendar);
+
+/**
+ * @route   POST /api/admin/professional-leave/holidays
+ */
+router.post("/professional-leave/holidays", authorize("professional-holiday-declare", "write"), createHoliday);
+
+/**
+ * @route   DELETE /api/admin/professional-leave/holidays/:id
+ */
+router.delete("/professional-leave/holidays/:id", authorize("professional-holiday-declare", "write"), deleteHoliday);
+
+/**
+ * @route   GET /api/admin/professional-leave/holidays/logs
+ */
+router.get("/professional-leave/holidays/logs", authorize("professional-holiday-declare", "view"), getHolidayLogs);
 
 /**
  * @route   GET /api/admin/professional-leave/allocations/:id

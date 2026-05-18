@@ -750,6 +750,36 @@ const getMonthlyAttendance = async (req, res) => {
       leaveByDate[key] = row;
     });
 
+    const profileResult = await pool.query(
+      `SELECT city_id, zone_id, ward_id, kothi_id
+       FROM professional_employees
+       WHERE id = $1
+       LIMIT 1`,
+      [professional_id]
+    );
+    const profileScope = profileResult.rows[0] || {};
+    const holidayResult = await pool.query(
+      `SELECT
+         h.id,
+         h.holiday_date,
+         h.holiday_name,
+         h.description
+       FROM professional_holidays h
+       WHERE EXTRACT(YEAR FROM h.holiday_date) = $1
+         AND EXTRACT(MONTH FROM h.holiday_date) = $2
+         AND h.city_id = $3
+         AND (h.zone_id IS NULL OR h.zone_id = $4)
+         AND (h.ward_id IS NULL OR h.ward_id = $5)
+         AND (h.kothi_id IS NULL OR h.kothi_id = $6)
+       ORDER BY h.holiday_date ASC`,
+      [yyyy, mm, profileScope.city_id || null, profileScope.zone_id || null, profileScope.ward_id || null, profileScope.kothi_id || null]
+    );
+    const holidayByDate = {};
+    holidayResult.rows.forEach((row) => {
+      const key = new Date(row.holiday_date).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      holidayByDate[key] = row;
+    });
+
     let totalWorkingDays = 0;
     let totalPresent = 0;
     let totalHalfDay = 0;
@@ -757,6 +787,7 @@ const getMonthlyAttendance = async (req, res) => {
     let totalLeaveApproved = 0;
     let totalLeavePending = 0;
     let totalLeaveRejected = 0;
+    let totalHoliday = 0;
 
     // Basic calculation
     const daysInMonth = new Date(yyyy, mm, 0).getDate();
@@ -801,34 +832,41 @@ const getMonthlyAttendance = async (req, res) => {
           hours_worked: displayHours,
           status,
           leave: leaveByDate[dStr] || null,
+          holiday: holidayByDate[dStr] || null,
         });
         
         if (status === 'present') totalPresent++;
         else if (status === 'half-day') totalHalfDay++;
         totalWorkingDays++;
 
-      } else if (!isFuture || leaveByDate[dStr]) {
+      } else if (!isFuture || leaveByDate[dStr] || holidayByDate[dStr]) {
         const leave = leaveByDate[dStr] || null;
+        const holiday = holidayByDate[dStr] || null;
         let status = 'absent';
         if (leave?.status === 'approved') status = 'leave-approved';
         if (leave?.status === 'pending') status = 'leave-pending';
         if (leave?.status === 'rejected') status = 'leave-rejected';
+        if (!leave && holiday) status = 'holiday';
 
         records.push({
           date: dStr,
           punch_in: null,
           punch_out: null,
-          hours_worked: status.startsWith('leave-') ? '-' : '0.00',
+          hours_worked: (status.startsWith('leave-') || status === 'holiday') ? '-' : '0.00',
           status,
           leave,
+          holiday,
         });
         if (status === 'absent' && !isFuture) totalAbsent++;
         if (status === 'leave-approved') totalLeaveApproved++;
         if (status === 'leave-pending') totalLeavePending++;
         if (status === 'leave-rejected') totalLeaveRejected++;
+        if (status === 'holiday') totalHoliday++;
         if (!isFuture) totalWorkingDays++;
       }
     }
+
+    const totalPayableDays = totalPresent + totalHalfDay + totalLeaveApproved + totalHoliday;
 
     res.json({
       success: true,
@@ -840,6 +878,8 @@ const getMonthlyAttendance = async (req, res) => {
         total_leave_approved: totalLeaveApproved,
         total_leave_pending: totalLeavePending,
         total_leave_rejected: totalLeaveRejected,
+        total_holiday: totalHoliday,
+        total_payable_days: totalPayableDays,
         total_working_days: totalWorkingDays
       }
     });

@@ -36,6 +36,24 @@ const sanitizeString = (str) => {
   return str.replace(/<[^>]*>?/gm, '').trim();
 };
 
+const resolveSubmitActorType = async (client) => {
+  try {
+    const { rows } = await client.query(`
+      SELECT e.enumlabel
+      FROM pg_type t
+      JOIN pg_enum e ON e.enumtypid = t.oid
+      WHERE t.typname = 'self_punch_actor_type'
+    `);
+    const labels = new Set(rows.map((r) => String(r.enumlabel || '').trim().toLowerCase()));
+    if (labels.has('admin')) return 'admin';
+    if (labels.has('supervisor')) return 'supervisor';
+    return null;
+  } catch (_error) {
+    // If enum inspection fails, use current default path.
+    return 'admin';
+  }
+};
+
 const resolveValidKothiId = async (client, kothiIdRaw) => {
   if (!kothiIdRaw) {
     return null;
@@ -75,6 +93,74 @@ const resolveValidKothiId = async (client, kothiIdRaw) => {
     });
     return null;
   }
+};
+
+const resolveValidWardId = async (client, wardIdRaw, kothiIdRaw = null) => {
+  if (!wardIdRaw) {
+    return null;
+  }
+
+  const parsedWard = parseInt(wardIdRaw, 10);
+  if (Number.isNaN(parsedWard)) {
+    return null;
+  }
+
+  // 1) Direct ward_id (newer UI / canonical path)
+  try {
+    const directWard = await client.query(
+      'SELECT ward_id, sector_id FROM wards WHERE ward_id = $1 LIMIT 1',
+      [parsedWard]
+    );
+    if (directWard.rows.length) {
+      return directWard.rows[0].ward_id;
+    }
+
+    // 2) Legacy UI path: ward_id actually carries sector_id
+    // Prefer the selected kothi ward if it belongs to this sector.
+    const sectorExists = await client.query(
+      'SELECT sector_id FROM sectors WHERE sector_id = $1 LIMIT 1',
+      [parsedWard]
+    );
+
+    if (sectorExists.rows.length) {
+      const parsedKothi = parseInt(kothiIdRaw, 10);
+      if (!Number.isNaN(parsedKothi)) {
+        const kothiWard = await client.query(
+          'SELECT ward_id FROM wards WHERE ward_id = $1 AND sector_id = $2 LIMIT 1',
+          [parsedKothi, parsedWard]
+        );
+        if (kothiWard.rows.length) {
+          return kothiWard.rows[0].ward_id;
+        }
+      }
+
+      // Fallback to any ward under this sector.
+      const anyWardInSector = await client.query(
+        'SELECT ward_id FROM wards WHERE sector_id = $1 ORDER BY ward_id ASC LIMIT 1',
+        [parsedWard]
+      );
+      if (anyWardInSector.rows.length) {
+        return anyWardInSector.rows[0].ward_id;
+      }
+    }
+
+    // 3) Last fallback: if kothi itself is a valid ward, use it.
+    const parsedKothi = parseInt(kothiIdRaw, 10);
+    if (!Number.isNaN(parsedKothi)) {
+      const wardFromKothi = await client.query(
+        'SELECT ward_id FROM wards WHERE ward_id = $1 LIMIT 1',
+        [parsedKothi]
+      );
+      if (wardFromKothi.rows.length) {
+        return wardFromKothi.rows[0].ward_id;
+      }
+    }
+  } catch (error) {
+    logger.warn('[SelfPunch] ward_id resolution failed', { message: error.message });
+    return null;
+  }
+
+  return null;
 };
 
 const validateInput = (reqBody, reqFiles) => {
@@ -159,14 +245,51 @@ const submitRequest = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Duplicate check: Same aadhar and ward_id already pending or approved
+    // Duplicate check: one active pending request per mobile (matches DB unique index)
+    const mobilePendingCheck = await client.query(
+      `
+        SELECT id
+        FROM self_punch_requests
+        WHERE mobile = $1
+          AND status = 'pending'
+        LIMIT 1
+      `,
+      [mobile]
+    );
+    if (mobilePendingCheck.rowCount > 0) {
+      await client.query('ROLLBACK');
+      logger.info('[SelfPunch] Duplicate mobile pending request rejected', { mobile, ip: req.ip });
+      return res.status(409).json({
+        success: false,
+        message: 'A pending request already exists for this mobile number.'
+      });
+    }
+
+    const safeKothiId = await resolveValidKothiId(client, kothi_id);
+    const safeWardId = await resolveValidWardId(client, ward_id, safeKothiId ?? kothi_id);
+    if (!safeWardId) {
+      await client.query('ROLLBACK');
+      logger.warn('[SelfPunch] Invalid ward mapping for request', {
+        requested_ward_id: ward_id ? parseInt(ward_id, 10) : null,
+        requested_kothi_id: kothi_id ? parseInt(kothi_id, 10) : null,
+        stored_kothi_id: safeKothiId
+      });
+      return res.status(400).json({
+        success: false,
+        errors: {
+          ward_id: 'Selected ward/sector is not mapped to a valid ward. Please refresh location and try again.'
+        }
+      });
+    }
+
+    // Duplicate check: Same aadhar and mapped ward_id already pending or approved
     // Note: To check exact duplicate Aadhar securely, we query by the encrypted string directly
     const duplicateCheck = await client.query(`
       SELECT id FROM self_punch_requests 
       WHERE aadhar_number = $1 
         AND ward_id = $2 
         AND status IN ('pending', 'approved')
-    `, [encryptedAadhar, parseInt(ward_id, 10)]);
+    `, [encryptedAadhar, safeWardId]);
 
     if (duplicateCheck.rowCount > 0) {
       await client.query('ROLLBACK');
@@ -206,9 +329,9 @@ const submitRequest = async (req, res) => {
       RETURNING id;
     `;
     
-    const safeKothiId = await resolveValidKothiId(client, kothi_id);
     logger.info('[SelfPunch] Final location mapping', {
-      ward_id: parseInt(ward_id, 10),
+      requested_ward_id: parseInt(ward_id, 10),
+      stored_ward_id: safeWardId,
       requested_kothi_id: kothi_id ? parseInt(kothi_id, 10) : null,
       stored_kothi_id: safeKothiId
     });
@@ -223,17 +346,22 @@ const submitRequest = async (req, res) => {
       selfieKey,
       parseInt(city_id, 10),
       parseInt(zone_id, 10),
-      parseInt(ward_id, 10),
+      safeWardId,
       safeKothiId,
       sanitizedEmpCode
     ]);
 
     // 5. Insert Log Entry
-    const insertLogQuery = `
-      INSERT INTO self_punch_request_logs (request_id, action, performed_by_type, performed_by_id, note)
-      VALUES ($1, 'submitted', 'admin', 0, 'Request submitted by worker')
-    `;
-    await client.query(insertLogQuery, [requestId]);
+    const submitActorType = await resolveSubmitActorType(client);
+    if (submitActorType) {
+      const insertLogQuery = `
+        INSERT INTO self_punch_request_logs (request_id, action, performed_by_type, performed_by_id, note)
+        VALUES ($1, 'submitted', $2, 0, 'Request submitted by worker')
+      `;
+      await client.query(insertLogQuery, [requestId, submitActorType]);
+    } else {
+      logger.warn('[SelfPunch] Skipping request log insert: self_punch_actor_type enum missing expected values.');
+    }
 
     await client.query('COMMIT');
     logger.info(`[SelfPunch] Request ${requestId} saved successfully.`);
@@ -247,7 +375,7 @@ const submitRequest = async (req, res) => {
       
       io.emit('new_self_punch_request', { 
         request_id: requestId, 
-        ward_id: parseInt(ward_id, 10),
+        ward_id: safeWardId,
         zone_id: parseInt(zone_id, 10)
       });
       logger.info(`[SelfPunch] Socket notification emitted for ${requestId}.`);
@@ -265,11 +393,46 @@ const submitRequest = async (req, res) => {
 
   } catch (error) {
     await client.query('ROLLBACK');
-    logger.error(`[SelfPunch] Transaction failed. Rolling back DB and S3.`, error);
+    logger.error(`[SelfPunch] Transaction failed. Rolling back DB and S3.`, {
+      message: error?.message,
+      code: error?.code,
+      detail: error?.detail,
+      constraint: error?.constraint
+    });
 
     // Rollback S3 uploads if they happened
     if (aadharDocKey) await deleteFromS3(aadharDocKey);
     if (selfieKey) await deleteFromS3(selfieKey);
+
+    if (
+      error?.code === '23505' &&
+      (error?.constraint === 'uidx_spr_mobile_pending' ||
+        String(error?.detail || '').toLowerCase().includes('(mobile)'))
+    ) {
+      return res.status(409).json({
+        success: false,
+        message: 'A pending request already exists for this mobile number.'
+      });
+    }
+
+    if (error?.code === '42703') {
+      return res.status(500).json({
+        success: false,
+        message: 'Database schema is outdated for self-punch. Run safe structure migration.'
+      });
+    }
+
+    if (
+      error?.code === '23503' &&
+      error?.constraint === 'self_punch_requests_ward_id_fkey'
+    ) {
+      return res.status(400).json({
+        success: false,
+        errors: {
+          ward_id: 'Selected ward is invalid for current DB mapping.'
+        }
+      });
+    }
 
     return res.status(500).json({ success: false, message: 'Internal server error during submission.' });
   } finally {

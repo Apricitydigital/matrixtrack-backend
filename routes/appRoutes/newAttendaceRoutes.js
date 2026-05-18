@@ -27,6 +27,7 @@ const {
 } = require("../../utils/attendanceKeyBuilder");
 
 const {
+  s3,
   rekognition,
   CreateCollectionCommand,
   CompareFacesCommand,
@@ -349,14 +350,30 @@ async function resolveEmployeeFromFaceIdentifiers({
   matchedExternalId = null,
   requestedEmpId = null,
 }) {
-  const tryResolveByEmpId = async (empId) => {
-    if (empId === null) {
+  const normalizeText = (value) => {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    const text = String(value).trim();
+    return text || null;
+  };
+
+  const tryResolveByIdentifier = async (identifier) => {
+    const normalized = normalizeText(identifier);
+    if (!normalized) {
       return null;
     }
 
+    const numericEmpId = normalizeId(normalized);
     const { rows } = await pool.query(
-      "SELECT emp_id, name FROM employee WHERE emp_id = $1",
-      [empId]
+      `
+        SELECT emp_id, emp_code, name, face_embedding
+          FROM employee
+         WHERE ($1::int IS NOT NULL AND emp_id = $1::int)
+            OR LOWER(TRIM(emp_code)) = LOWER(TRIM($2))
+         LIMIT 1
+      `,
+      [numericEmpId, normalized]
     );
 
     return rows.length ? rows[0] : null;
@@ -366,7 +383,14 @@ async function resolveEmployeeFromFaceIdentifiers({
 
   if (faceId) {
     const { rows } = await pool.query(
-      "SELECT emp_id, name FROM employee WHERE face_id = $1 OR emp_id::text = $1",
+      `
+        SELECT emp_id, emp_code, name, face_embedding
+          FROM employee
+         WHERE face_id = $1
+            OR emp_id::text = $1
+            OR LOWER(TRIM(emp_code)) = LOWER(TRIM($1))
+         LIMIT 1
+      `,
       [faceId]
     );
 
@@ -376,11 +400,11 @@ async function resolveEmployeeFromFaceIdentifiers({
   }
 
   if (!employeeRecord && matchedExternalId !== null) {
-    employeeRecord = await tryResolveByEmpId(matchedExternalId);
+    employeeRecord = await tryResolveByIdentifier(matchedExternalId);
   }
 
   if (!employeeRecord && requestedEmpId !== null) {
-    employeeRecord = await tryResolveByEmpId(requestedEmpId);
+    employeeRecord = await tryResolveByIdentifier(requestedEmpId);
   }
 
   if (employeeRecord && faceId) {
@@ -1693,11 +1717,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         }
 
         try {
-          // 🔒 Group mode uses a HIGHER threshold than individual mode to reduce
-          // false positives from low-quality group photo crops.
-          // Floor at 90% — lower quality crops can't reliably hit 95%.
-          // The double-verify CompareFaces step (Layer 2) provides the extra accuracy.
-          const groupThreshold = Math.max(90, matchThreshold);
+          // Group crops are lower quality; cap threshold so valid faces are not
+          // rejected too aggressively. Accuracy is still protected by Layer-2 and Layer-3.
+          const groupThreshold = Math.max(88, Math.min(matchThreshold, 92));
 
           const searchResult = await rekognition.send(
             new SearchFacesByImageCommand({
@@ -1714,9 +1736,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
 
           if (bestMatch?.Face) {
             const faceId = bestMatch.Face.FaceId;
-            const matchedExternalId = normalizeId(
-              bestMatch.Face.ExternalImageId
-            );
+            const matchedExternalId = bestMatch.Face.ExternalImageId ?? null;
             employeeRecord = await resolveEmployeeFromFaceIdentifiers({
               faceId,
               matchedExternalId,
@@ -1724,18 +1744,29 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             });
           }
 
-          // ⚠️ REMOVED: fallbackMatchByCompare in group mode.
-          // The roster-level CompareFaces fallback was causing wrong employee matches
-          // because group photo crops are low quality and can falsely match similar-
-          // looking people in the same ward. If Rekognition collection search returns
-          // no confident match (>= 95%), we report "unmatched" — do NOT guess.
+          // Group-only safe fallback:
+          // If collection lookup misses, try roster-level CompareFaces with a stricter
+          // threshold, then continue through Layer-2 and Layer-3 checks below.
+          if (!employeeRecord && supervisorId) {
+            const fallback = await fallbackMatchByCompare(
+              faceImageBuffer,
+              supervisorId,
+              wardId,
+              Math.max(92, Math.min(matchThreshold, 95))
+            );
+            if (fallback?.employee) {
+              employeeRecord = fallback.employee;
+              similarity = fallback.similarity ?? similarity;
+            }
+          }
 
           if (!employeeRecord) {
             results.push({
               faceIndex,
               status: "unmatched",
               similarity: null,
-              message: "Face not registered in gallery. Please enroll employee face first.",
+              message:
+                "Face not recognized in collection/roster. Please capture clearer image or re-enroll face.",
               hint: "Ensure this employee's face photo is uploaded in the face gallery before using group attendance.",
             });
             continue;
@@ -1944,7 +1975,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     }
 
     // 1. Fetch the selected employee
-    employeeRecord = await fetchEmployeeById(requestedEmpId);
+    const employeeRecord = await fetchEmployeeById(requestedEmpId);
     if (!employeeRecord) {
       return res.status(404).json({
         error: "Selected employee not found in the system.",
@@ -1968,8 +1999,21 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     // 🔒 STRICT IDENTITY CHECK
     // If we found a face in the system, it MUST be the selected employee.
     if (matchedFace) {
-      const matchedExternalId = normalizeId(matchedFace.ExternalImageId);
-      if (matchedExternalId && String(matchedExternalId) !== String(requestedEmpId)) {
+      const matchedExternalRaw = matchedFace.ExternalImageId ?? null;
+      const matchedExternalId = normalizeId(matchedExternalRaw);
+      const matchedExternalCode =
+        matchedExternalRaw !== null && matchedExternalRaw !== undefined
+          ? String(matchedExternalRaw).trim().toLowerCase()
+          : null;
+      const requestedCode = employeeRecord?.emp_code
+        ? String(employeeRecord.emp_code).trim().toLowerCase()
+        : null;
+      const isMatchingSelectedEmployee =
+        (matchedExternalId !== null &&
+          String(matchedExternalId) === String(requestedEmpId)) ||
+        (matchedExternalCode && requestedCode && matchedExternalCode === requestedCode);
+
+      if (!isMatchingSelectedEmployee) {
         fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${matchedExternalId}, but supervisor selected ${requestedEmpId}\n`);
         return res.status(403).json({
           error: "Identity Mismatch",
@@ -2209,7 +2253,7 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
 
     const matchedFace = searchResult.FaceMatches[0]?.Face ?? {};
     const faceId = matchedFace.FaceId;
-    const matchedExternalId = normalizeId(matchedFace.ExternalImageId);
+    const matchedExternalId = matchedFace.ExternalImageId ?? null;
 
     const employeeRecord = await resolveEmployeeFromFaceIdentifiers({
       faceId,

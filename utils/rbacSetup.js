@@ -110,6 +110,18 @@ const BASE_PERMISSIONS = [
     description: "Approve and reject professional leave requests",
   },
   {
+    module: "professional-holiday-declare",
+    action: "view",
+    label: "View Professional Holiday Calendar",
+    description: "View declared holidays and holiday audit logs",
+  },
+  {
+    module: "professional-holiday-declare",
+    action: "write",
+    label: "Declare Professional Holidays",
+    description: "Create declared holidays for professionals in allowed cities",
+  },
+  {
     module: "master",
     action: "view",
     label: "View Master Data",
