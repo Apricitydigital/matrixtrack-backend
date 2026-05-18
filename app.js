@@ -66,6 +66,8 @@ const defaultOrigins = [
   "http://10.205.83.56:19000",
   "https://portal.matrixtrack.in",
   "https://api.matrixtrack.in",
+  "https://uat.matrixtrack.in",
+  "https://matrixtrack-uat.onrender.com",
 ];
 
 const parseOrigins = (value) =>
