@@ -727,7 +727,7 @@ const getMonthlyAttendance = async (req, res) => {
     await ensureProfessionalLeaveSchema();
     const query = `
       SELECT 
-        date, 
+        date::text AS date,
         punch_in, 
         punch_out,
         CASE WHEN punch_out IS NULL AND date < CURRENT_DATE THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(punch_out, NOW()) - punch_in)) / 3600 END AS hours_worked
@@ -742,7 +742,7 @@ const getMonthlyAttendance = async (req, res) => {
     const leaveResult = await pool.query(
       `SELECT
          id,
-         requested_date,
+         requested_date::text AS requested_date,
          leave_type,
          status,
          reason,
@@ -759,23 +759,22 @@ const getMonthlyAttendance = async (req, res) => {
     );
     const leaveByDate = {};
     leaveResult.rows.forEach((row) => {
-      const key = new Date(row.requested_date).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      const key = String(row.requested_date || '').slice(0, 10);
       leaveByDate[key] = row;
     });
 
     const profileResult = await pool.query(
-      `SELECT city_id, zone_id, ward_id, kothi_id, created_at
+      `SELECT city_id, zone_id, ward_id, kothi_id
        FROM professional_employees
        WHERE id = $1
        LIMIT 1`,
       [professional_id]
     );
     const profileScope = profileResult.rows[0] || {};
-    const joinedOn = profileScope.created_at ? getIstDateKey(profileScope.created_at) : null;
     const holidayResult = await pool.query(
       `SELECT
          h.id,
-         h.holiday_date,
+         h.holiday_date::text AS holiday_date,
          h.holiday_name,
          h.description
        FROM professional_holidays h
@@ -790,7 +789,7 @@ const getMonthlyAttendance = async (req, res) => {
     );
     const holidayByDate = {};
     holidayResult.rows.forEach((row) => {
-      const key = new Date(row.holiday_date).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      const key = String(row.holiday_date || '').slice(0, 10);
       holidayByDate[key] = row;
     });
 
@@ -821,12 +820,6 @@ const getMonthlyAttendance = async (req, res) => {
       // Exclude future dates from absent calculation
       const todayIst = getTodayIST();
       const isFuture = dStr > todayIst;
-      const isBeforeJoin = joinedOn ? dStr < joinedOn : false;
-
-      if (isBeforeJoin) {
-        continue;
-      }
-
       if (record) {
         let hours = 0;
         let status = 'absent';

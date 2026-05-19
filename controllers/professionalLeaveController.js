@@ -223,7 +223,7 @@ const getMyLeaveRequests = async (req, res) => {
     const { rows } = await pool.query(
       `SELECT
          plr.id,
-         plr.requested_date,
+         plr.requested_date::text AS requested_date,
          plr.leave_type,
          plr.reason,
          plr.status,
