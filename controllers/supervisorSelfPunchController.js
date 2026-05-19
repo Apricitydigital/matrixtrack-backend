@@ -494,7 +494,6 @@ const approveRequest = async (req, res) => {
       `Hi ${request.full_name},`,
       '',
       'Your MatrixTrack access has been approved successfully.',
-      '',
       `Email: ${request.email}`,
       `Password: ${plainTextPassword}`,
       '',

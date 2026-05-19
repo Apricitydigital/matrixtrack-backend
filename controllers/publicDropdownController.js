@@ -3,6 +3,15 @@ const redisClient = require('../config/redis');
 
 const CACHE_TTL_SECONDS = 10 * 60; // 10 minutes
 
+const parseDropdownId = (...values) => {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue;
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+};
+
 /**
  * Helper function to fetch data from Redis cache or database fallback.
  * @param {string} cacheKey - The Redis cache key
@@ -133,13 +142,18 @@ const getWards = async (req, res) => {
  */
 const getKothis = async (req, res) => {
   try {
-    const { ward_id } = req.query;
+    const wardId = parseDropdownId(
+      req.query.ward_id,
+      req.query.wardId,
+      req.query.sector_id,
+      req.query.sectorId
+    );
     
-    if (!ward_id) {
+    if (!wardId) {
       return res.status(400).json({ success: false, message: 'ward_id query parameter is required' });
     }
 
-    const cacheKey = `dropdown:kothis:${ward_id}`;
+    const cacheKey = `dropdown:kothis:${wardId}`;
     
     // UI "Kothis" map to DB "wards"
     const data = await fetchWithCache(cacheKey, async () => {
@@ -148,7 +162,7 @@ const getKothis = async (req, res) => {
         FROM wards 
         WHERE sector_id = $1 
         ORDER BY ward_name ASC
-      `, [ward_id]);
+      `, [wardId]);
       return result.rows;
     });
 

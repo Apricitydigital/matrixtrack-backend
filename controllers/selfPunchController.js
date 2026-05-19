@@ -245,23 +245,22 @@ const submitRequest = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Duplicate check: one active pending request per mobile (matches DB unique index)
-    const mobilePendingCheck = await client.query(
+    // Daily cap: max 10 requests per mobile per day (IST)
+    const mobileDailyCount = await client.query(
       `
-        SELECT id
+        SELECT COUNT(*)::int AS cnt
         FROM self_punch_requests
         WHERE mobile = $1
-          AND status = 'pending'
-        LIMIT 1
+          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
       `,
       [mobile]
     );
-    if (mobilePendingCheck.rowCount > 0) {
+    if ((mobileDailyCount.rows[0]?.cnt || 0) >= 10) {
       await client.query('ROLLBACK');
-      logger.info('[SelfPunch] Duplicate mobile pending request rejected', { mobile, ip: req.ip });
-      return res.status(409).json({
+      logger.info('[SelfPunch] Daily mobile request cap reached', { mobile, ip: req.ip });
+      return res.status(429).json({
         success: false,
-        message: 'A pending request already exists for this mobile number.'
+        message: 'Daily limit reached: max 10 requests per mobile number per day.'
       });
     }
 
@@ -411,7 +410,7 @@ const submitRequest = async (req, res) => {
     ) {
       return res.status(409).json({
         success: false,
-        message: 'A pending request already exists for this mobile number.'
+        message: 'DB still enforces single pending request per mobile. Drop uidx_spr_mobile_pending to allow multiple pending requests.'
       });
     }
 

@@ -20,7 +20,22 @@ const normalizeIndianPhone = (phoneRaw = '') => {
   return digits.startsWith('+') ? digits : `+${digits}`;
 };
 
-const buildSnsMessageAttributes = () => {
+const contextTemplateEnvMap = {
+  'self-punch-approve': 'AWS_SNS_TEMPLATE_ID_SELF_PUNCH_APPROVE',
+  'self-punch-reject': 'AWS_SNS_TEMPLATE_ID_SELF_PUNCH_REJECT',
+  professional_otp_login: 'AWS_SNS_TEMPLATE_ID_PROFESSIONAL_OTP',
+  supervisor_otp_login: 'AWS_SNS_TEMPLATE_ID_SUPERVISOR_OTP'
+};
+
+const resolveTemplateIdForContext = (context) => {
+  const contextKey = contextTemplateEnvMap[String(context || '').trim()];
+  if (contextKey && process.env[contextKey]) {
+    return process.env[contextKey];
+  }
+  return process.env.AWS_SNS_TEMPLATE_ID || null;
+};
+
+const buildSnsMessageAttributes = (context = 'general') => {
   const attributes = {};
   attributes['AWS.SNS.SMS.SMSType'] = {
     DataType: 'String',
@@ -38,10 +53,11 @@ const buildSnsMessageAttributes = () => {
       StringValue: process.env.AWS_SNS_ENTITY_ID
     };
   }
-  if (process.env.AWS_SNS_TEMPLATE_ID) {
+  const templateId = resolveTemplateIdForContext(context);
+  if (templateId) {
     attributes['AWS.MM.SMS.TemplateId'] = {
       DataType: 'String',
-      StringValue: process.env.AWS_SNS_TEMPLATE_ID
+      StringValue: templateId
     };
   }
   return attributes;
@@ -60,7 +76,7 @@ const sendSms = async ({ phone, message, context = 'general' }) => {
   const params = {
     Message: String(message || ''),
     PhoneNumber: destination,
-    MessageAttributes: buildSnsMessageAttributes()
+    MessageAttributes: buildSnsMessageAttributes(context)
   };
 
   try {

@@ -4,11 +4,23 @@ const { upload, handleMulterError, submitRequest } = require('../controllers/sel
 
 const router = express.Router();
 
-// Rate limiting: 5 requests per hour per IP
+const normalizeMobile = (value) => String(value || '').replace(/\D/g, '').slice(-10);
+
+// Rate limiting: scoped by IP + mobile to avoid blocking different users on same Wi-Fi.
 const submitLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5,
-  message: { success: false, message: 'Too many requests from this IP, please try again after an hour.' },
+  max: 40,
+  keyGenerator: (req) => {
+    const mobile = normalizeMobile(req.body?.mobile);
+    if (mobile.length === 10) {
+      return `${req.ip}:${mobile}`;
+    }
+    return req.ip;
+  },
+  message: {
+    success: false,
+    message: 'Hourly limit reached: max 40 requests per mobile number per hour.'
+  },
   standardHeaders: true,
   legacyHeaders: false,
 });
