@@ -35,6 +35,9 @@ const resolveTemplateIdForContext = (context) => {
   return process.env.AWS_SNS_TEMPLATE_ID || null;
 };
 
+const isOtpContext = (context = '') =>
+  ['professional_otp_login', 'supervisor_otp_login'].includes(String(context || '').trim());
+
 const buildSnsMessageAttributes = (context = 'general') => {
   const attributes = {};
   attributes['AWS.SNS.SMS.SMSType'] = {
@@ -88,6 +91,33 @@ const sendSms = async ({ phone, message, context = 'general' }) => {
     });
     return result;
   } catch (error) {
+    // Fallback for OTP: retry once without TemplateId if DLT template mapping is misconfigured.
+    const hasTemplateId = Boolean(params?.MessageAttributes?.['AWS.MM.SMS.TemplateId']);
+    if (isOtpContext(context) && hasTemplateId) {
+      try {
+        const retryParams = {
+          ...params,
+          MessageAttributes: { ...params.MessageAttributes }
+        };
+        delete retryParams.MessageAttributes['AWS.MM.SMS.TemplateId'];
+        const retryResult = await sns.publish(retryParams).promise();
+        logger.warn('[SMS] AWS SNS publish fallback succeeded without TemplateId', {
+          context,
+          phone: destination,
+          originalError: error.message,
+          messageId: retryResult?.MessageId || null
+        });
+        return retryResult;
+      } catch (retryError) {
+        logger.warn('[SMS] AWS SNS publish fallback failed', {
+          context,
+          phone: destination,
+          originalError: error.message,
+          retryError: retryError.message
+        });
+      }
+    }
+
     logger.warn('[SMS] AWS SNS publish failed', {
       context,
       phone: destination,

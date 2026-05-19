@@ -40,8 +40,8 @@ const normalizeIndianMobile = (raw = '') => {
  * Body: { mobile }
  *
  * Checks both professional_employees AND users (supervisor/admin) tables.
- * Returns userType: 'professional' | 'supervisor' | 'both'
- * If 'both', OTP is NOT sent — frontend must show contact-admin message.
+ * Returns userType: 'professional' | 'supervisor'
+ * If both identities are present on same mobile, prefer supervisor OTP flow.
  */
 const sendOtp = async (req, res) => {
   const { mobile } = req.body;
@@ -83,12 +83,21 @@ const sendOtp = async (req, res) => {
       return res.status(404).json({ success: false, message: 'No account found with this mobile number.' });
     }
 
-    // ── BOTH found — conflict, do not send OTP ────────────────────────────────
+    // ── BOTH found on same mobile ──────────────────────────────────────────────
+    // To avoid login dead-end, prefer supervisor OTP flow.
     if (hasProfessional && hasSupervisor) {
-      return res.status(409).json({
-        success: false,
-        userType: 'both',
-        message: 'Please contact App Admin as you have both Supervisor and Professional ID linked to this number.',
+      const supervisor = supResult.rows[0];
+      const otp = generateOtp();
+      const expiresAt = Date.now() + OTP_TTL_MS;
+      otpStore.set(normalizedMobile, { otp, expiresAt, attempts: 0, userType: 'supervisor', supervisorId: supervisor.user_id });
+
+      await _sendOtpSms(normalizedMobile, otp, 'supervisor_otp_login');
+
+      return res.json({
+        success: true,
+        userType: 'supervisor',
+        message: `OTP sent to +91-XXXXXX${normalizedMobile.slice(-4)}`,
+        name: supervisor.name,
       });
     }
 
