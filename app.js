@@ -39,6 +39,19 @@ const supervisorPhotoRoutes = require("./routes/supervisorPhotoRoutes");
 
 const app = express();
 
+const resolveTrustProxy = (rawValue) => {
+  const normalized = String(rawValue ?? "").trim().toLowerCase();
+  if (!normalized) return 1; // Default: one reverse proxy hop (nginx/load balancer)
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  const numeric = Number(normalized);
+  if (Number.isInteger(numeric) && numeric >= 0) return numeric;
+  return rawValue; // Allow values like "loopback, linklocal, uniquelocal"
+};
+const trustProxyValue = resolveTrustProxy(process.env.EXPRESS_TRUST_PROXY);
+app.set("trust proxy", trustProxyValue);
+console.log(`[HTTP] trust proxy = ${JSON.stringify(trustProxyValue)}`);
+
 // Middleware
 app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.url}`);

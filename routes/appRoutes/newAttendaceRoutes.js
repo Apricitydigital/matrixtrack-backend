@@ -133,6 +133,19 @@ const attendanceDateFormatter = new Intl.DateTimeFormat("en-CA", {
   second: "2-digit",
   hour12: false,
 });
+const escapedAttendanceTimeZone = DEFAULT_ATTENDANCE_TIMEZONE.replace(/'/g, "''");
+
+const formatPunchTimeForClient = (value) => {
+  if (!value) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleTimeString("en-IN", {
+    timeZone: DEFAULT_ATTENDANCE_TIMEZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+};
 
 // Set up Multer for file uploads
 const storage = multer.memoryStorage();
@@ -646,8 +659,8 @@ function resolveAttendanceDate(...sources) {
 const ATTENDANCE_SELECT_FIELDS = `
     a.attendance_id,
     CAST(a.date AS VARCHAR) AS date,
-    TO_CHAR(a.punch_in_time, 'HH12:MI AM') AS punch_in_time,
-    TO_CHAR(a.punch_out_time, 'HH12:MI AM') AS punch_out_time,
+    TO_CHAR((a.punch_in_time AT TIME ZONE '${escapedAttendanceTimeZone}'), 'HH12:MI AM') AS punch_in_time,
+    TO_CHAR((a.punch_out_time AT TIME ZONE '${escapedAttendanceTimeZone}'), 'HH12:MI AM') AS punch_out_time,
     a.duration,
     a.punch_in_image,
     a.punch_out_image,
@@ -1924,8 +1937,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             attendanceId: attendance.attendance_id,
             punchedAt:
               punchType === PUNCH_TYPES.IN
-                ? updated.punch_in_time
-                : updated.punch_out_time,
+                ? formatPunchTimeForClient(updated.punch_in_time)
+                : formatPunchTimeForClient(updated.punch_out_time),
           });
 
           processedEmployees.add(employeeRecord.emp_id);
@@ -2000,21 +2013,24 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     // If we found a face in the system, it MUST be the selected employee.
     if (matchedFace) {
       const matchedExternalRaw = matchedFace.ExternalImageId ?? null;
-      const matchedExternalId = normalizeId(matchedExternalRaw);
-      const matchedExternalCode =
-        matchedExternalRaw !== null && matchedExternalRaw !== undefined
-          ? String(matchedExternalRaw).trim().toLowerCase()
-          : null;
-      const requestedCode = employeeRecord?.emp_code
-        ? String(employeeRecord.emp_code).trim().toLowerCase()
-        : null;
+      const matchedFaceId = matchedFace.FaceId ?? null;
+      // Resolve the matched employee using FaceId/ExternalImageId only.
+      // Do not fallback to requestedEmpId here; that would hide true mismatches.
+      const matchedEmployee = await resolveEmployeeFromFaceIdentifiers({
+        faceId: matchedFaceId,
+        matchedExternalId: matchedExternalRaw,
+        requestedEmpId: null,
+      });
+
       const isMatchingSelectedEmployee =
-        (matchedExternalId !== null &&
-          String(matchedExternalId) === String(requestedEmpId)) ||
-        (matchedExternalCode && requestedCode && matchedExternalCode === requestedCode);
+        matchedEmployee &&
+        String(matchedEmployee.emp_id) === String(requestedEmpId);
 
       if (!isMatchingSelectedEmployee) {
-        fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${matchedExternalId}, but supervisor selected ${requestedEmpId}\n`);
+        fs.appendFileSync(
+          "debug-face.log",
+          `[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. FaceId=${matchedFaceId}, External=${matchedExternalRaw}, ResolvedEmp=${matchedEmployee?.emp_id ?? "null"}, SelectedEmp=${requestedEmpId}\n`
+        );
         return res.status(403).json({
           error: "Identity Mismatch",
           details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
@@ -2122,8 +2138,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         updated.face_match_threshold ?? matchThreshold,
       time:
         punchType === PUNCH_TYPES.IN
-          ? updated.punch_in_time
-          : updated.punch_out_time,
+          ? formatPunchTimeForClient(updated.punch_in_time)
+          : formatPunchTimeForClient(updated.punch_out_time),
     });
   } catch (error) {
     console.error("Face attendance error:", error);
@@ -2331,8 +2347,8 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
       attendance_id: attendance.attendance_id,
       time:
         punchType === PUNCH_TYPES.IN
-          ? updated.punch_in_time
-          : updated.punch_out_time,
+          ? formatPunchTimeForClient(updated.punch_in_time)
+          : formatPunchTimeForClient(updated.punch_out_time),
     });
   } catch (error) {
     console.error("Face liveness error:", error);
@@ -2788,8 +2804,8 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
       face_match_threshold: updated.face_match_threshold ?? null,
       time:
         punchType === PUNCH_TYPES.IN
-          ? updated.punch_in_time
-          : updated.punch_out_time,
+          ? formatPunchTimeForClient(updated.punch_in_time)
+          : formatPunchTimeForClient(updated.punch_out_time),
     });
   } catch (error) {
     console.error("Self punch error:", error);

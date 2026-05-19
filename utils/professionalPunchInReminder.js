@@ -1,5 +1,6 @@
 const pool = require("../config/db");
 const { ensureProfessionalLeaveSchema } = require("./professionalLeaveSchema");
+const { sendPushToProfessionals } = require("./professionalPushService");
 
 const runProfessionalPunchInReminder = async () => {
   const client = await pool.connect();
@@ -54,13 +55,30 @@ const runProfessionalPunchInReminder = async () => {
             AND pn.type = 'punch-in-reminder'
             AND COALESCE(pn.metadata ->> 'reminder_date', '') = ist_today.day::text
         )
-      RETURNING professional_id
+      RETURNING id, professional_id, type, title, message, metadata
     `;
 
     const result = await client.query(insertQuery);
     const sentCount = result.rowCount || 0;
-    console.log(`[ProfessionalReminderCron] Sent punch-in reminders: ${sentCount}`);
-    return { sentCount };
+    let pushSent = 0;
+    let pushFailed = 0;
+    let pushInvalidated = 0;
+
+    if (sentCount > 0) {
+      try {
+        const pushResult = await sendPushToProfessionals(result.rows);
+        pushSent = pushResult.sent || 0;
+        pushFailed = pushResult.failed || 0;
+        pushInvalidated = pushResult.invalidated || 0;
+      } catch (pushError) {
+        console.warn("[ProfessionalReminderCron] Push send failed:", pushError.message);
+      }
+    }
+
+    console.log(
+      `[ProfessionalReminderCron] In-app reminders: ${sentCount}, push sent: ${pushSent}, push failed: ${pushFailed}, push invalidated: ${pushInvalidated}`
+    );
+    return { sentCount, pushSent, pushFailed, pushInvalidated };
   } catch (error) {
     console.error("[ProfessionalReminderCron] Failed:", error.message);
     throw error;

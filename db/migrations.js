@@ -7,6 +7,7 @@ const pool = require("../config/db");
 const fs = require("fs");
 const path = require("path");
 const { ensureProfessionalLeaveSchema } = require("../utils/professionalLeaveSchema");
+const { ensureProfessionalPushSchema } = require("../utils/professionalPushService");
 
 async function runMigrations() {
   const client = await pool.connect();
@@ -49,6 +50,8 @@ async function runMigrations() {
 
     await ensureProfessionalLeaveSchema();
     console.log("[Migration] Professional leave schema ready.");
+    await ensureProfessionalPushSchema(client);
+    console.log("[Migration] Professional push schema ready.");
 
     // ── emp_code columns ────────────────────────────────────────────────────
     await client.query(`

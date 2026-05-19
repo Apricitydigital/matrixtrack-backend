@@ -17,6 +17,10 @@ const {
   markNotificationRead,
 } = require("../controllers/professionalLeaveController");
 const { getMyLeaveBalance } = require('../controllers/professionalLeaveAllocationsController');
+const {
+  registerPushToken,
+  unregisterPushToken,
+} = require("../controllers/professionalPushController");
 
 const router = express.Router();
 
@@ -47,5 +51,7 @@ router.get("/leave/requests", getMyLeaveRequests);
 router.get("/leave/balance", getMyLeaveBalance);
 router.get("/notifications", getMyNotifications);
 router.post("/notifications/:id/read", markNotificationRead);
+router.post("/push-token/register", registerPushToken);
+router.post("/push-token/unregister", unregisterPushToken);
 
 module.exports = router;

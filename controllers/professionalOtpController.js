@@ -14,6 +14,19 @@ const MAX_OTP_ATTEMPTS = 5;
 
 const generateOtp = () => String(Math.floor(1000 + Math.random() * 9000));
 
+const resolveAndroidOtpHash = () => {
+  const preferred = String(process.env.ANDROID_SMS_APP_HASH_ACTIVE || "").trim();
+  if (preferred) return preferred;
+
+  const releaseHash = String(process.env.ANDROID_SMS_APP_HASH_RELEASE || "").trim();
+  if (releaseHash) return releaseHash;
+
+  const debugHash = String(process.env.ANDROID_SMS_APP_HASH || "").trim();
+  if (debugHash) return debugHash;
+
+  return "";
+};
+
 const normalizeIndianMobile = (raw = '') => {
   const digits = String(raw).replace(/[^\d]/g, '');
   if (digits.length === 10) return digits;
@@ -129,19 +142,10 @@ const sendOtp = async (req, res) => {
  */
 const _sendOtpSms = async (normalizedMobile, otp, context) => {
   try {
-    const otpHashes = [
-      String(process.env.ANDROID_SMS_APP_HASH || ''),
-      String(process.env.ANDROID_SMS_APP_HASH_RELEASE || ''),
-    ]
-      .join(',')
-      .split(/[,\s]+/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .filter((t, idx, arr) => arr.indexOf(t) === idx);
-
+    const otpHash = resolveAndroidOtpHash();
     const otpMessage =
-      otpHashes.length > 0
-        ? `<#> MatrixTrack OTP: ${otp}\n${otpHashes.join('\n')}`
+      otpHash
+        ? `<#> Your MatrixTrack OTP is ${otp}\n${otpHash}`
         : `${otp} is your MatrixTrack OTP. Valid for 5 minutes.`;
 
     await sendSms({ phone: `+91${normalizedMobile}`, message: otpMessage, context });
