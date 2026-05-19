@@ -30,8 +30,21 @@ const parseNumericCoordinate = (value) => {
   return Number.isFinite(numeric) ? numeric : null;
 };
 
-const getTodayIST = () =>
-  new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+const getIstDateKey = (value = new Date()) => {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const parts = formatter.formatToParts(value);
+  const year = parts.find((p) => p.type === 'year')?.value;
+  const month = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  return `${year}-${month}-${day}`;
+};
+
+const getTodayIST = () => getIstDateKey(new Date());
 
 const livenessEnvNumber = (name, fallback) => {
   const parsed = Number(process.env[name]);
@@ -751,13 +764,14 @@ const getMonthlyAttendance = async (req, res) => {
     });
 
     const profileResult = await pool.query(
-      `SELECT city_id, zone_id, ward_id, kothi_id
+      `SELECT city_id, zone_id, ward_id, kothi_id, created_at
        FROM professional_employees
        WHERE id = $1
        LIMIT 1`,
       [professional_id]
     );
     const profileScope = profileResult.rows[0] || {};
+    const joinedOn = profileScope.created_at ? getIstDateKey(profileScope.created_at) : null;
     const holidayResult = await pool.query(
       `SELECT
          h.id,
@@ -805,7 +819,13 @@ const getMonthlyAttendance = async (req, res) => {
       const record = attendanceDict[dStr];
 
       // Exclude future dates from absent calculation
-      const isFuture = new Date(dStr) > new Date();
+      const todayIst = getTodayIST();
+      const isFuture = dStr > todayIst;
+      const isBeforeJoin = joinedOn ? dStr < joinedOn : false;
+
+      if (isBeforeJoin) {
+        continue;
+      }
 
       if (record) {
         let hours = 0;
