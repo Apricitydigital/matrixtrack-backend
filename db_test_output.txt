@@ -1,6 +1,0 @@
-Checking DB for 2026-03-30...
-Attendance records using date::date: 4978
-Attendance records using AT TIME ZONE: 0
-Punch-in records for date::date: 4898
-Punch-in records for AT TIME ZONE: 0
-Total DB employees: 14296
