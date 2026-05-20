@@ -613,6 +613,18 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
     return { status: 400, error: "Employee ID aur date zaroori hain" };
   }
 
+  // Enforce punch-in before punch-out (with support for night-shift carry-forward)
+  if (punchType === PUNCH_TYPES.OUT) {
+    const hasPunchedIn = await fetchRecentPunchedInAttendance(empId, attendanceDate);
+    if (!hasPunchedIn) {
+      return {
+        status: 400,
+        error: "Pehle punch in karein",
+        code: "NOT_PUNCHED_IN",
+      };
+    }
+  }
+
   // Multi-punch allowed: we no longer block re-punch-in or re-punch-out.
   // The system will update the existing record for the day.
   return null; // ✅ OK to proceed
@@ -828,10 +840,38 @@ async function fetchRecentOpenAttendance(empId, date) {
   return fetchAttendanceRecord(
     `
       a.emp_id = $1
-      AND a.date >= ($2::date - INTERVAL '1 day')
-      AND a.date <= $2::date
       AND a.punch_in_time IS NOT NULL
       AND a.punch_out_time IS NULL
+      AND (
+        a.date = $2::date
+        OR
+        (
+          a.date = $2::date - INTERVAL '1 day'
+          AND (a.punch_in_time AT TIME ZONE '${escapedAttendanceTimeZone}')::time >= '16:00:00'::time
+        )
+      )
+    `,
+    [empId, date]
+  );
+}
+
+async function fetchRecentPunchedInAttendance(empId, date) {
+  if (!empId || !date) {
+    return null;
+  }
+
+  return fetchAttendanceRecord(
+    `
+      a.emp_id = $1
+      AND a.punch_in_time IS NOT NULL
+      AND (
+        a.date = $2::date
+        OR
+        (
+          a.date = $2::date - INTERVAL '1 day'
+          AND (a.punch_in_time AT TIME ZONE '${escapedAttendanceTimeZone}')::time >= '16:00:00'::time
+        )
+      )
     `,
     [empId, date]
   );
