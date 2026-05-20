@@ -1,5 +1,0 @@
-Checking bucket: attend-ease-images
-MISSING: faces/8956/1768998115456_8956-face-store-1768998115067.jpg (Error)
-MISSING: faces/9890/1774512101983_9890-face-store-1774512101655.jpg (Error)
-MISSING: faces/9726/1774512229039_9726-face-store-1774512228737.jpg (Error)
-MISSING: faces/8958/1774935788881_8958-face-store-1774935775258.jpg (Error)

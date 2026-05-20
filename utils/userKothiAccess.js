@@ -58,12 +58,14 @@ const fetchUserKothiAccess = async (user, options = {}) => {
       UNION
       SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1
       UNION
-      -- Fallback: some datasets store sector_id inside supervisor_ward. Map those to wards.
+      -- Legacy fallback: only treat supervisor_ward.ward_id as sector_id
+      -- when that value does not exist as a real ward_id.
       SELECT w.ward_id
-      FROM wards w
-      WHERE w.sector_id IN (
-        SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1
-      )
+      FROM supervisor_ward sw_legacy
+      LEFT JOIN wards w_direct ON w_direct.ward_id = sw_legacy.ward_id
+      JOIN wards w ON w.sector_id = sw_legacy.ward_id
+      WHERE sw_legacy.supervisor_id = $1
+        AND w_direct.ward_id IS NULL
     `,
     [userId]
   );
