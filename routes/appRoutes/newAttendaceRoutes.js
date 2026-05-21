@@ -175,7 +175,23 @@ ensureSelfAttendanceSupport().catch((error) => {
 // Constants
 const PUNCH_TYPES = {
   IN: "IN",
+  MID_IN: "MID_IN",
   OUT: "OUT",
+};
+
+const normalizePunchType = (value) => {
+  const normalized = (value || "").toString().trim().toUpperCase();
+  if (normalized === PUNCH_TYPES.OUT) return PUNCH_TYPES.OUT;
+  if (["MID_IN", "MID", "MIDSHIFT", "MID_SHIFT"].includes(normalized)) {
+    return PUNCH_TYPES.MID_IN;
+  }
+  return PUNCH_TYPES.IN;
+};
+
+const resolvePunchRecordTime = (record, punchType) => {
+  if (punchType === PUNCH_TYPES.OUT) return record?.punch_out_time ?? null;
+  if (punchType === PUNCH_TYPES.MID_IN) return record?.mid_shift_punch_in_time ?? null;
+  return record?.punch_in_time ?? null;
 };
 
 const DEFAULT_ATTENDANCE_TIMEZONE =
@@ -613,13 +629,36 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
     return { status: 400, error: "Employee ID aur date zaroori hain" };
   }
 
-  // Enforce punch-in before punch-out (with support for night-shift carry-forward)
-  if (punchType === PUNCH_TYPES.OUT) {
-    const hasPunchedIn = await fetchRecentPunchedInAttendance(empId, attendanceDate);
-    if (!hasPunchedIn) {
+  if (punchType === PUNCH_TYPES.MID_IN) {
+    const hasPrimaryPunchIn = await fetchRecentPrimaryPunchedInAttendance(
+      empId,
+      attendanceDate
+    );
+    if (!hasPrimaryPunchIn) {
       return {
         status: 400,
         error: "Pehle punch in karein",
+        code: "NOT_PUNCHED_IN",
+      };
+    }
+
+    const hasPunchedOut = await fetchClosedSessionForDate(empId, attendanceDate);
+    if (hasPunchedOut) {
+      return {
+        status: 400,
+        error: "Punch out ke baad mid shift punch in allowed nahi hai.",
+        code: "ALREADY_PUNCHED_OUT",
+      };
+    }
+  }
+
+  // Enforce punch-in before punch-out (with support for night-shift carry-forward)
+  if (punchType === PUNCH_TYPES.OUT) {
+    const hasPunchStart = await fetchRecentPunchedInAttendance(empId, attendanceDate);
+    if (!hasPunchStart) {
+      return {
+        status: 400,
+        error: "Pehle punch in ya mid shift punch in karein",
         code: "NOT_PUNCHED_IN",
       };
     }
@@ -840,7 +879,7 @@ async function fetchRecentOpenAttendance(empId, date) {
   return fetchAttendanceRecord(
     `
       a.emp_id = $1
-      AND a.punch_in_time IS NOT NULL
+      AND (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
       AND a.punch_out_time IS NULL
       AND (
         a.date = $2::date
@@ -856,6 +895,28 @@ async function fetchRecentOpenAttendance(empId, date) {
 }
 
 async function fetchRecentPunchedInAttendance(empId, date) {
+  if (!empId || !date) {
+    return null;
+  }
+
+  return fetchAttendanceRecord(
+    `
+      a.emp_id = $1
+      AND (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
+      AND (
+        a.date = $2::date
+        OR
+        (
+          a.date = $2::date - INTERVAL '1 day'
+          AND (a.punch_in_time AT TIME ZONE '${escapedAttendanceTimeZone}')::time >= '16:00:00'::time
+        )
+      )
+    `,
+    [empId, date]
+  );
+}
+
+async function fetchRecentPrimaryPunchedInAttendance(empId, date) {
   if (!empId || !date) {
     return null;
   }
@@ -1023,7 +1084,11 @@ async function processPunch(
     uploadContext = await getAttendanceUploadContext(pool, attendanceId);
     const locationMeta = locationData || {};
     const punchLabel =
-      punchType === PUNCH_TYPES.IN ? "punch-in" : punchType === PUNCH_TYPES.OUT ? "punch-out" : punchType;
+      punchType === PUNCH_TYPES.IN
+        ? "punch-in"
+        : punchType === PUNCH_TYPES.OUT
+          ? "punch-out"
+          : "mid-shift-punch-in";
     const attendanceImageFile =
       buildAttendanceImagePath({
         attendanceDate: uploadContext?.attendance_date,
@@ -1076,22 +1141,42 @@ async function processPunch(
     throw err;
   }
 
-  const isPunchIn = punchType === PUNCH_TYPES.IN;
-  const targetTimeField = isPunchIn ? "punch_in_time" : "punch_out_time";
-  const targetLatField = isPunchIn ? "latitude_in" : "latitude_out";
-  const targetLngField = isPunchIn ? "longitude_in" : "longitude_out";
-  const targetAddrField = isPunchIn ? "in_address" : "out_address";
-  const targetImgField = isPunchIn ? "punch_in_image" : "punch_out_image";
-  const targetByField = isPunchIn ? "punched_in_by" : "punched_out_by";
+  const punchFieldMap =
+    punchType === PUNCH_TYPES.OUT
+      ? {
+        time: "punch_out_time",
+        lat: "latitude_out",
+        lng: "longitude_out",
+        addr: "out_address",
+        image: "punch_out_image",
+        by: "punched_out_by",
+      }
+      : punchType === PUNCH_TYPES.MID_IN
+        ? {
+          time: "mid_shift_punch_in_time",
+          lat: "latitude_mid_in",
+          lng: "longitude_mid_in",
+          addr: "mid_in_address",
+          image: "mid_shift_punch_in_image",
+          by: "mid_shift_punched_in_by",
+        }
+        : {
+          time: "punch_in_time",
+          lat: "latitude_in",
+          lng: "longitude_in",
+          addr: "in_address",
+          image: "punch_in_image",
+          by: "punched_in_by",
+        };
 
   const updateQuery = `
     UPDATE attendance SET 
-      ${targetTimeField} = COALESCE(${targetTimeField}, NOW()),
-      ${targetLatField} = COALESCE(${targetLatField}, $1),
-      ${targetLngField} = COALESCE(${targetLngField}, $2),
-      ${targetAddrField} = COALESCE(${targetAddrField}, $3),
-      ${targetImgField} = COALESCE(${targetImgField}, $4),
-      ${targetByField} = COALESCE(${targetByField}, $5)
+      ${punchFieldMap.time} = COALESCE(${punchFieldMap.time}, NOW()),
+      ${punchFieldMap.lat} = COALESCE(${punchFieldMap.lat}, $1),
+      ${punchFieldMap.lng} = COALESCE(${punchFieldMap.lng}, $2),
+      ${punchFieldMap.addr} = COALESCE(${punchFieldMap.addr}, $3),
+      ${punchFieldMap.image} = COALESCE(${punchFieldMap.image}, $4),
+      ${punchFieldMap.by} = COALESCE(${punchFieldMap.by}, $5)
     WHERE attendance_id = $6
     RETURNING *
   `;
@@ -1543,8 +1628,7 @@ router.put("/", upload.single("image"), async (req, res) => {
 
     const { emp_id: attendanceEmpId, date: recordDate } = attendanceResult.rows[0];
     const attendanceDate = formatDate(new Date(recordDate));
-    const normalizedPunchType = (punch_type || "").toString().trim().toUpperCase();
-    const punchType = normalizedPunchType === PUNCH_TYPES.OUT ? PUNCH_TYPES.OUT : PUNCH_TYPES.IN;
+    const punchType = normalizePunchType(punch_type);
 
     // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
     const sessionError = await validatePunchSession(attendanceEmpId, attendanceDate, punchType);
@@ -1598,10 +1682,13 @@ router.get("/image", async (req, res) => {
   }
 
   try {
+    const requestedPunchType = normalizePunchType(punch_type);
     const imageColumn =
-      punch_type.toUpperCase() === PUNCH_TYPES.IN
-        ? "punch_in_image"
-        : "punch_out_image";
+      requestedPunchType === PUNCH_TYPES.OUT
+        ? "punch_out_image"
+        : requestedPunchType === PUNCH_TYPES.MID_IN
+          ? "mid_shift_punch_in_image"
+          : "punch_in_image";
 
     const result = await pool.query(
       `SELECT ${imageColumn} AS image_url FROM attendance WHERE attendance_id = $1`,
@@ -1768,14 +1855,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
 
     await ensureCollectionExists(collectionId);
 
-    const normalizedPunchType = (rawPunchType || "")
-      .toString()
-      .trim()
-      .toUpperCase();
-    const punchType =
-      normalizedPunchType === PUNCH_TYPES.OUT
-        ? PUNCH_TYPES.OUT
-        : PUNCH_TYPES.IN;
+    const punchType = normalizePunchType(rawPunchType);
 
     const thresholdCandidate = Number(rawThreshold);
     const matchThreshold = Number.isFinite(thresholdCandidate)
@@ -2095,10 +2175,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             employeeName: employeeRecord.name,
             similarity,
             attendanceId: attendance.attendance_id,
-            punchedAt:
-              punchType === PUNCH_TYPES.IN
-                ? formatPunchTimeForClient(updated.punch_in_time)
-                : formatPunchTimeForClient(updated.punch_out_time),
+            punchedAt: formatPunchTimeForClient(
+              resolvePunchRecordTime(updated, punchType)
+            ),
           });
 
           processedEmployees.add(employeeRecord.emp_id);
@@ -2293,10 +2372,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold:
         updated.face_match_threshold ?? matchThreshold,
-      time:
-        punchType === PUNCH_TYPES.IN
-          ? formatPunchTimeForClient(updated.punch_in_time)
-          : formatPunchTimeForClient(updated.punch_out_time),
+      time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
     console.error("Face attendance error:", error);
@@ -2344,14 +2420,7 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
     }
     await ensureCollectionExists(collectionId);
 
-    const normalizedPunchType = (rawPunchType || "")
-      .toString()
-      .trim()
-      .toUpperCase();
-    const punchType =
-      normalizedPunchType === PUNCH_TYPES.OUT
-        ? PUNCH_TYPES.OUT
-        : PUNCH_TYPES.IN;
+    const punchType = normalizePunchType(rawPunchType);
 
     const thresholdCandidate = Number(rawThreshold);
     const matchThreshold = Number.isFinite(thresholdCandidate)
@@ -2502,10 +2571,7 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold: updated.face_match_threshold ?? matchThreshold,
       attendance_id: attendance.attendance_id,
-      time:
-        punchType === PUNCH_TYPES.IN
-          ? formatPunchTimeForClient(updated.punch_in_time)
-          : formatPunchTimeForClient(updated.punch_out_time),
+      time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
     console.error("Face liveness error:", error);
@@ -2544,8 +2610,10 @@ router.get("/self/status", authenticate, async (req, res) => {
         attendance_id: attendance.attendance_id,
         date: attendance.date,
         punch_in_time: attendance.punch_in_time,
+        mid_shift_punch_in_time: attendance.mid_shift_punch_in_time,
         punch_out_time: attendance.punch_out_time,
         punch_in_image: attendance.punch_in_image,
+        mid_shift_punch_in_image: attendance.mid_shift_punch_in_image,
         punch_out_image: attendance.punch_out_image,
         ward_id: attendance.ward_id,
       }
@@ -2595,8 +2663,10 @@ router.get("/self/calendar", authenticate, async (req, res) => {
         TO_CHAR(ds.day, 'DD Mon') AS attendance_date_label,
         a.attendance_id,
         a.punch_in_time,
+        a.mid_shift_punch_in_time,
         a.punch_out_time,
         TO_CHAR((a.punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_in_display,
+        TO_CHAR((a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS mid_shift_punch_in_display,
         TO_CHAR((a.punch_out_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_out_display,
         CASE
           WHEN a.punch_in_time IS NOT NULL AND a.punch_out_time IS NOT NULL THEN 'Marked'
@@ -2621,6 +2691,7 @@ router.get("/self/calendar", authenticate, async (req, res) => {
       dateLabel: row.attendance_date_label,
       attendanceId: row.attendance_id ?? null,
       punchInDisplay: row.punch_in_display || null,
+      midShiftPunchInDisplay: row.mid_shift_punch_in_display || null,
       punchOutDisplay: row.punch_out_display || null,
       status: row.attendance_status || "Not Marked",
       hasPunchIn: Boolean(row.punch_in_time),
@@ -2886,14 +2957,7 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
 
     await ensureNormalizedCaptureFile(req.file);
 
-    const normalizedPunchType = (req.body?.punch_type || "")
-      .toString()
-      .trim()
-      .toUpperCase();
-    const punchType =
-      normalizedPunchType === PUNCH_TYPES.OUT
-        ? PUNCH_TYPES.OUT
-        : PUNCH_TYPES.IN;
+    const punchType = normalizePunchType(req.body?.punch_type);
 
     const attendanceDate = resolveAttendanceDate(req.body, req.query);
 
@@ -2959,10 +3023,7 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
       punch_type: punchType,
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold: updated.face_match_threshold ?? null,
-      time:
-        punchType === PUNCH_TYPES.IN
-          ? formatPunchTimeForClient(updated.punch_in_time)
-          : formatPunchTimeForClient(updated.punch_out_time),
+      time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
     console.error("Self punch error:", error);
