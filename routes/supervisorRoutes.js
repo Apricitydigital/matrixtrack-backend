@@ -173,7 +173,12 @@ router.get(
   requireCityScope(),
   async (req, res) => {
     try {
-      const scope = req.cityScope || { all: false, ids: [] };
+
+      const scope = req.cityScope || {
+        all: false,
+        ids: []
+      };
+
       const selectedCityId = req.query.cityId;
 
       let query = `
@@ -182,40 +187,149 @@ router.get(
           u.name AS supervisor_name,
           u.phone,
           u.email,
-          c.city_name,
-          STRING_AGG(DISTINCT z.zone_name, ', ') AS zones,
-          STRING_AGG(DISTINCT w.ward_name, ', ') AS kothis,
-          COUNT(DISTINCT e.emp_id) AS total_employee_count
-        FROM supervisor_ward sw
-        JOIN users u ON sw.supervisor_id = u.user_id
-        JOIN wards w ON sw.ward_id = w.ward_id
-        JOIN zones z ON w.zone_id = z.zone_id
-        JOIN cities c ON z.city_id = c.city_id
-        LEFT JOIN employee e ON e.ward_id = w.ward_id
+
+          -- CITY
+          COALESCE(
+            MAX(c.city_name),
+            'Unknown City'
+          ) AS city_name,
+
+          -- ZONES
+          COALESCE(
+            STRING_AGG(
+              DISTINCT z.zone_name,
+              ', '
+            ),
+            'No Zone Assigned'
+          ) AS zones,
+
+          -- WARDS (SECTORS)
+          COALESCE(
+            STRING_AGG(
+              DISTINCT s.sector_name,
+              ', '
+            ),
+            'No Ward Assigned'
+          ) AS wards,
+
+          -- KOTHIS (WARD NAMES)
+          COALESCE(
+            STRING_AGG(
+              DISTINCT w.ward_name,
+              ', '
+            ),
+            'No Kothi Assigned'
+          ) AS kothis,
+
+          -- EMPLOYEE COUNT
+          COUNT(DISTINCT e.emp_id)
+            AS total_employee_count
+
+        FROM users u
+
+        -- =================================
+        -- OLD ASSIGNMENT SYSTEM
+        -- =================================
+
+        LEFT JOIN supervisor_ward sw
+          ON sw.supervisor_id = u.user_id
+
+        LEFT JOIN wards sw_w
+          ON sw_w.ward_id = sw.ward_id
+
+        -- =================================
+        -- NEW RBAC SYSTEM
+        -- =================================
+
+        LEFT JOIN user_kothi_access uka
+          ON uka.user_id = u.user_id
+
+        LEFT JOIN wards uka_w
+          ON uka_w.ward_id = uka.ward_id
+
+        -- =================================
+        -- MERGED WARD SOURCE
+        -- =================================
+
+        LEFT JOIN wards w
+          ON w.ward_id = COALESCE(
+            sw_w.ward_id,
+            uka_w.ward_id
+          )
+
+        -- SECTOR = WARD
+        LEFT JOIN sectors s
+          ON s.sector_id = w.sector_id
+
+        LEFT JOIN zones z
+          ON z.zone_id = COALESCE(
+            s.zone_id,
+            w.zone_id
+          )
+
+        LEFT JOIN cities c
+          ON c.city_id = z.city_id
+
+        LEFT JOIN employee e
+          ON e.ward_id = w.ward_id
+
       `;
 
-      const conditions = ["u.role = 'supervisor'"];  // ← ADDED
+      const conditions = [
+        "LOWER(u.role) = 'supervisor'"
+      ];
+
       const queryParams = [];
 
-      if (selectedCityId && selectedCityId !== "ALL") {
+      // =================================
+      // CITY FILTERING
+      // =================================
+
+      if (
+        selectedCityId &&
+        selectedCityId !== "ALL"
+      ) {
+
         if (
           !scope.all &&
           scope.ids?.length &&
-          !scope.ids.includes(Number(selectedCityId))
+          !scope.ids.includes(
+            Number(selectedCityId)
+          )
         ) {
-          return res.status(403).json({ error: "Unauthorized city access" });
+
+          return res.status(403).json({
+            error: "Unauthorized city access"
+          });
         }
 
-        queryParams.push(Number(selectedCityId));
-        conditions.push(`c.city_id = $${queryParams.length}`);
+        queryParams.push(
+          Number(selectedCityId)
+        );
 
-      } else if (!scope.all && scope.ids?.length) {
+        conditions.push(`
+          c.city_id = $${queryParams.length}
+        `);
+
+      } else if (
+        !scope.all &&
+        scope.ids?.length
+      ) {
+
         queryParams.push(scope.ids);
-        conditions.push(`c.city_id = ANY($${queryParams.length}::int[])`);
+
+        conditions.push(`
+          c.city_id = ANY(
+            $${queryParams.length}::int[]
+          )
+        `);
       }
 
       if (conditions.length > 0) {
-        query += ` WHERE ${conditions.join(" AND ")}`;
+
+        query += `
+          WHERE ${conditions.join(" AND ")}
+        `;
       }
 
       query += `
@@ -223,20 +337,30 @@ router.get(
           u.user_id,
           u.name,
           u.phone,
-          u.email,
-          c.city_name
+          u.email
+
         ORDER BY
-          c.city_name,
+          city_name,
           u.name
       `;
 
-      const result = await pool.query(query, queryParams);
+      const result = await pool.query(
+        query,
+        queryParams
+      );
 
       res.json(result.rows);
 
     } catch (error) {
-      console.error("Failed to fetch city-wise supervisor details:", error);
-      res.status(500).json({ error: "Server error" });
+
+      console.error(
+        "Failed to fetch city-wise supervisor details:",
+        error
+      );
+
+      res.status(500).json({
+        error: "Server error"
+      });
     }
   }
 );
