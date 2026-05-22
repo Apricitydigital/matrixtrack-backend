@@ -48,6 +48,26 @@ async function runMigrations() {
       console.warn("[Migration] Self Punch-In SQL file not found at:", selfPunchInSqlPath);
     }
 
+    console.log("[Migration] Running Department City linkage migrations...");
+    const deptCitySqlPath = path.join(__dirname, "migrations", "20260514_link_department_cities.sql");
+    if (fs.existsSync(deptCitySqlPath)) {
+      const deptCitySql = fs.readFileSync(deptCitySqlPath, "utf8");
+      await client.query(deptCitySql);
+      console.log("[Migration] Department City linkage migrations ready.");
+    } else {
+      console.warn("[Migration] Department City linkage SQL file not found at:", deptCitySqlPath);
+    }
+
+    console.log("[Migration] Running Designation City linkage migrations...");
+    const desigCitySqlPath = path.join(__dirname, "migrations", "20260514_link_designation_cities.sql");
+    if (fs.existsSync(desigCitySqlPath)) {
+      const desigCitySql = fs.readFileSync(desigCitySqlPath, "utf8");
+      await client.query(desigCitySql);
+      console.log("[Migration] Designation City linkage migrations ready.");
+    } else {
+      console.warn("[Migration] Designation City linkage SQL file not found at:", desigCitySqlPath);
+    }
+
     await ensureProfessionalLeaveSchema();
     console.log("[Migration] Professional leave schema ready.");
     await ensureProfessionalPushSchema(client);
