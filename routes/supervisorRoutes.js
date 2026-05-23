@@ -177,22 +177,48 @@ router.get(
       const selectedCityId = req.query.cityId;
 
       let query = `
-        SELECT
-          u.user_id,
-          u.name AS supervisor_name,
-          u.phone,
-          u.email,
-          c.city_name,
-          STRING_AGG(DISTINCT z.zone_name, ', ') AS zones,
-          STRING_AGG(DISTINCT w.ward_name, ', ') AS kothis,
-          COUNT(DISTINCT e.emp_id) AS total_employee_count
-        FROM supervisor_ward sw
-        JOIN users u ON sw.supervisor_id = u.user_id
-        JOIN wards w ON sw.ward_id = w.ward_id
-        JOIN zones z ON w.zone_id = z.zone_id
-        JOIN cities c ON z.city_id = c.city_id
-        LEFT JOIN employee e ON e.ward_id = w.ward_id
-      `;
+       
+  SELECT
+    u.user_id,
+    u.name AS supervisor_name,
+    u.phone,
+    u.email,
+    c.city_name,
+
+    STRING_AGG(DISTINCT z.zone_name, ', ') AS zones,
+
+    -- NEW WARD COLUMN
+    STRING_AGG(
+      DISTINCT COALESCE(s.sector_name, 'No Ward'),
+      ', '
+    ) AS wards,
+
+    -- EXISTING KOTHI COLUMN
+    STRING_AGG(DISTINCT w.ward_name, ', ') AS kothis,
+
+    COUNT(DISTINCT e.emp_id) AS total_employee_count
+
+  FROM supervisor_ward sw
+
+  JOIN users u
+    ON sw.supervisor_id = u.user_id
+
+  JOIN wards w
+    ON sw.ward_id = w.ward_id
+
+  JOIN zones z
+    ON w.zone_id = z.zone_id
+
+  JOIN cities c
+    ON z.city_id = c.city_id
+
+  -- IMPORTANT FIX
+  LEFT JOIN sectors s
+    ON s.zone_id = z.zone_id
+
+  LEFT JOIN employee e
+    ON e.ward_id = w.ward_id
+`;
 
       const conditions = ["u.role = 'supervisor'"];  // ← ADDED
       const queryParams = [];
@@ -236,6 +262,174 @@ router.get(
 
     } catch (error) {
       console.error("Failed to fetch city-wise supervisor details:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+router.get(
+  "/settings-mapped-supervisors",
+  requireCityScope(),
+  async (req, res) => {
+    try {
+      const scope = req.cityScope || { all: false, ids: [] };
+      const selectedCityId = req.query.cityId;
+
+      let query = `
+        SELECT
+          u.user_id,
+          u.name               AS supervisor_name,
+          u.phone,
+          u.email,
+
+          -- CITY
+          COALESCE(
+            MAX(c.city_name),
+            'Unknown City'
+          ) AS city_name,
+
+          -- ZONES
+          COALESCE(
+            STRING_AGG(DISTINCT z.zone_name, ', '),
+            'No Zone Assigned'
+          ) AS zones,
+
+          -- WARDS (SECTORS) — sectors are "wards" in display
+          COALESCE(
+            STRING_AGG(DISTINCT s.sector_name, ', '),
+            'No Ward Assigned'
+          ) AS wards,
+
+          -- KOTHIS — wards are "kothis" in display
+          COALESCE(
+            STRING_AGG(DISTINCT w.ward_name, ', '),
+            'No Kothi Assigned'
+          ) AS kothis,
+
+          -- EMPLOYEE COUNT
+          COUNT(DISTINCT e.emp_id) AS total_employee_count
+
+        FROM users u
+
+        -- NEW RBAC SYSTEM ONLY
+        JOIN user_kothi_access uka
+          ON uka.user_id = u.user_id
+
+        JOIN wards w
+          ON w.ward_id = uka.ward_id
+
+        -- sector → zone → city (mirror the working route's join chain)
+        LEFT JOIN sectors s
+          ON s.sector_id = w.sector_id
+
+        LEFT JOIN zones z
+        ON z.zone_id = COALESCE(s.zone_id, w.zone_id)
+
+        LEFT JOIN cities c
+          ON c.city_id = z.city_id
+
+        LEFT JOIN employee e
+          ON e.ward_id = w.ward_id
+
+        -- EXCLUDE those already in old system
+        WHERE u.user_id NOT IN (
+          SELECT DISTINCT supervisor_id
+          FROM supervisor_ward
+        )
+      `;
+
+      const conditions = [
+        "LOWER(u.role) = 'supervisor'"
+      ];
+      const queryParams = [];
+
+      if (selectedCityId && selectedCityId !== "ALL") {
+        if (
+          !scope.all &&
+          scope.ids?.length &&
+          !scope.ids.includes(Number(selectedCityId))
+        ) {
+          return res.status(403).json({ error: "Unauthorized city access" });
+        }
+        queryParams.push(Number(selectedCityId));
+        conditions.push(`c.city_id = $${queryParams.length}`);
+
+      } else if (!scope.all && scope.ids?.length) {
+        queryParams.push(scope.ids);
+        conditions.push(`c.city_id = ANY($${queryParams.length}::int[])`);
+      }
+
+      // WHERE already started above, so append with AND
+      if (conditions.length > 0) {
+        query += ` AND ${conditions.join(" AND ")}`;
+      }
+
+      query += `
+        GROUP BY
+          u.user_id,
+          u.name,
+          u.phone,
+          u.email
+
+        ORDER BY
+          city_name,
+          u.name
+      `;
+
+      const result = await pool.query(query, queryParams);
+      res.json(result.rows);
+
+    } catch (error) {
+      console.error("Failed to fetch settings-mapped supervisors:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+router.get(
+  "/unmapped-supervisors",
+  requireCityScope(),
+  async (req, res) => {
+    try {
+
+      const query = `
+        SELECT
+          u.user_id,
+          u.name     AS supervisor_name,
+          u.phone,
+          u.email,
+
+          'Unmapped'         AS city_name,
+          'No Zone Assigned' AS zones,
+          'No Ward Assigned' AS wards,
+          'No Kothi Assigned' AS kothis,
+
+          0 AS total_employee_count
+
+        FROM users u
+
+        WHERE LOWER(u.role) = 'supervisor'
+
+          -- NOT in old assignment system
+          AND u.user_id NOT IN (
+            SELECT DISTINCT supervisor_id
+            FROM supervisor_ward
+          )
+
+          -- NOT in new RBAC system
+          AND u.user_id NOT IN (
+            SELECT DISTINCT user_id
+            FROM user_kothi_access
+          )
+
+        ORDER BY u.name
+      `;
+
+      const result = await pool.query(query);
+      res.json(result.rows);
+
+    } catch (error) {
+      console.error("Failed to fetch unmapped supervisors:", error);
       res.status(500).json({ error: "Server error" });
     }
   }
