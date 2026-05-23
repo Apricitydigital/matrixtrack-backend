@@ -72,14 +72,20 @@ router.get("/", requireCityScope(), async (req, res) => {
           u.email,
           u.phone,
           u.role,
-          c.city_id,
-          c.city_name
+          u.aadhar_number,
+          u.profile_photo_url,
+          u.aadhar_doc_url,
+          c.city_name,
+          z.zone_name,
+          s.sector_name as ward_group,
+          w.ward_name as kothi_name
         FROM users u
         LEFT JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
         LEFT JOIN wards w ON sw.ward_id = w.ward_id
         LEFT JOIN zones z ON w.zone_id = z.zone_id
         LEFT JOIN cities c ON z.city_id = c.city_id
-        WHERE u.role = 'supervisor'
+        LEFT JOIN sectors s ON w.sector_id = s.sector_id
+        WHERE u.role = 'supervisor' OR u.role = 'admin'
         ORDER BY u.user_id, u.name
       `;
       params = [];
@@ -93,15 +99,20 @@ router.get("/", requireCityScope(), async (req, res) => {
           u.email,
           u.phone,
           u.role,
-          c.city_id,
-          c.city_name
+          u.aadhar_number,
+          u.profile_photo_url,
+          u.aadhar_doc_url,
+          c.city_name,
+          z.zone_name,
+          s.sector_name as ward_group,
+          w.ward_name as kothi_name
         FROM users u
         INNER JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
         INNER JOIN wards w ON sw.ward_id = w.ward_id
         INNER JOIN zones z ON w.zone_id = z.zone_id
         INNER JOIN cities c ON z.city_id = c.city_id
-        WHERE u.role = 'supervisor'
-          AND c.city_id = $1::int
+        LEFT JOIN sectors s ON w.sector_id = s.sector_id
+        WHERE c.city_id = $1 AND (u.role = 'supervisor' OR u.role = 'admin')
         ORDER BY u.user_id, u.name
       `;
       params = [scopedCityId];
