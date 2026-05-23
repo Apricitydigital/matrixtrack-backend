@@ -231,7 +231,7 @@ router.put("/", upload.single("image"), async (req, res) => {
       );
       if (openSession.rows.length === 0) {
         return res.status(400).json({
-          error: "Pehle punch in karein",
+          error: "Punch-in First",
           code: "NOT_PUNCHED_IN",
         });
       }

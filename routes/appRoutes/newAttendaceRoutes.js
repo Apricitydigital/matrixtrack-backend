@@ -580,7 +580,7 @@ function validatePunchAttempt(attendance, punchType) {
       status: punchType === PUNCH_TYPES.OUT ? 400 : 404,
       error:
         punchType === PUNCH_TYPES.OUT
-          ? "Pehle punch in karein"
+          ? "Punch in First"
           : "Attendance record not found",
     };
   }
@@ -602,7 +602,7 @@ function validatePunchAttempt(attendance, punchType) {
   if (punchType === PUNCH_TYPES.OUT && !attendance.punch_in_time) {
     return {
       status: 400,
-      error: "Pehle punch in karein",
+      error: "Punch in First",
     };
   }
 
@@ -637,7 +637,7 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
     if (!hasPrimaryPunchIn) {
       return {
         status: 400,
-        error: "Pehle punch in karein",
+        error: "Punch in First",
         code: "NOT_PUNCHED_IN",
       };
     }
@@ -658,7 +658,7 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
     if (!hasPunchStart) {
       return {
         status: 400,
-        error: "Pehle punch in ya mid shift punch in karein",
+        error: "Punch in First",
         code: "NOT_PUNCHED_IN",
       };
     }
