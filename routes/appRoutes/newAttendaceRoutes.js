@@ -2175,6 +2175,10 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             employeeName: employeeRecord.name,
             similarity,
             attendanceId: attendance.attendance_id,
+            punchedAt:
+              punchType === PUNCH_TYPES.IN
+                ? formatPunchTimeForClient(updated.punch_in_time)
+                : formatPunchTimeForClient(updated.punch_out_time),
             punchedAt: formatPunchTimeForClient(
               resolvePunchRecordTime(updated, punchType)
             ),
@@ -2372,6 +2376,10 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold:
         updated.face_match_threshold ?? matchThreshold,
+      time:
+        punchType === PUNCH_TYPES.IN
+          ? formatPunchTimeForClient(updated.punch_in_time)
+          : formatPunchTimeForClient(updated.punch_out_time),
       time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
@@ -2571,6 +2579,10 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold: updated.face_match_threshold ?? matchThreshold,
       attendance_id: attendance.attendance_id,
+      time:
+        punchType === PUNCH_TYPES.IN
+          ? formatPunchTimeForClient(updated.punch_in_time)
+          : formatPunchTimeForClient(updated.punch_out_time),
       time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
@@ -3023,6 +3035,10 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
       punch_type: punchType,
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold: updated.face_match_threshold ?? null,
+      time:
+        punchType === PUNCH_TYPES.IN
+          ? formatPunchTimeForClient(updated.punch_in_time)
+          : formatPunchTimeForClient(updated.punch_out_time),
       time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {

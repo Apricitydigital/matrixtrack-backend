@@ -4,6 +4,8 @@ const jwt = require("jsonwebtoken");
 const pool = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware"); // ✅ Import middleware
 const { fetchUserCityAccess } = require("../utils/userCityAccess");
+const { fetchUserZoneAccess } = require("../utils/userZoneAccess");
+const { fetchUserKothiAccess } = require("../utils/userKothiAccess");
 const {
   ensureSelfAttendanceSupport,
   fetchEmployeeByCode,
@@ -12,11 +14,9 @@ const { isPhoneVerified, sendGenericSms } = require("../utils/otpService");
 const { sendWelcomeWhatsApp, sendWelcomeSms, sendPasswordUpdateSms } = require("../utils/notificationService");
 
 const router = express.Router();
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "45d";
-const JWT_COOKIE_MAX_AGE_MS =
-  Number(process.env.JWT_COOKIE_MAX_AGE_MS) || 45 * 24 * 60 * 60 * 1000;
+const APP_JWT_EXPIRES_IN = process.env.APP_JWT_EXPIRES_IN || "45d";
 
-const getUserAccessProfile = async (userId) => {
+const getUserAccessProfile = async (userId, userRole = "") => {
   const rolesQuery = `
     SELECT r.id, r.name
     FROM user_roles ur
@@ -38,14 +38,24 @@ const getUserAccessProfile = async (userId) => {
     ORDER BY module, action
   `;
 
-  const [rolesResult, permissionsResult] = await Promise.all([
+  const [rolesResult, permissionsResult, zoneScope, kothiScope] = await Promise.all([
     pool.query(rolesQuery, [userId]),
     pool.query(permissionsQuery, [userId]),
+    fetchUserZoneAccess(
+      { user_id: userId, role: userRole },
+      { includeZones: true, allowCityFallback: true }
+    ),
+    fetchUserKothiAccess(
+      { user_id: userId, role: userRole },
+      { includeKothis: true, allowZoneFallback: true, allowCityFallback: false }
+    ),
   ]);
 
   return {
     roles: rolesResult.rows,
     permissions: permissionsResult.rows,
+    zones: Array.isArray(zoneScope?.zones) ? zoneScope.zones : [],
+    kothis: Array.isArray(kothiScope?.kothis) ? kothiScope.kothis : [],
   };
 };
 
@@ -131,7 +141,7 @@ router.get("/me", authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const access = await getUserAccessProfile(req.user.user_id);
+    const access = await getUserAccessProfile(req.user.user_id, user.rows[0].role);
 
     const allowedCities = await computeAllowedCities(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
@@ -393,10 +403,10 @@ router.post("/login", async (req, res) => {
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
+      { expiresIn: APP_JWT_EXPIRES_IN }
     );
 
-    const access = await getUserAccessProfile(user.rows[0].user_id);
+    const access = await getUserAccessProfile(user.rows[0].user_id, user.rows[0].role);
 
     const primaryRole =
       access.roles?.[0]?.name || user.rows[0].role || "user";
@@ -419,6 +429,8 @@ router.post("/login", async (req, res) => {
         role: primaryRole,
         roles: access.roles,
         permissions: access.permissions,
+        zones: access.zones,
+        kothis: access.kothis,
         emp_code: user.rows[0].emp_code,
         phone: user.rows[0].phone,
         allowedCities,
@@ -462,10 +474,10 @@ router.post("/supervisor-login", async (req, res) => {
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
+      { expiresIn: APP_JWT_EXPIRES_IN }
     );
 
-    const access = await getUserAccessProfile(user.rows[0].user_id);
+    const access = await getUserAccessProfile(user.rows[0].user_id, user.rows[0].role);
 
     const allowedCities = await computeAllowedCities(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
@@ -482,6 +494,8 @@ router.post("/supervisor-login", async (req, res) => {
         role: access.roles?.[0]?.name || user.rows[0].role,
         roles: access.roles,
         permissions: access.permissions,
+        zones: access.zones,
+        kothis: access.kothis,
         emp_code: user.rows[0].emp_code,
         phone: user.rows[0].phone,
         allowedCities,
