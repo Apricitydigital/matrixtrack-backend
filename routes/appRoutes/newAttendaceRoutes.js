@@ -1,3 +1,123 @@
+// router.post("/self/punch", authenticate, upload.single("image"), async (req, res) => {
+//     try {
+//         await ensureSelfAttendanceSupport();
+//         const resolved = await resolveEmployeeForUser(req.user);
+//         if (!resolved) {
+//             return res
+//                 .status(404)
+//                 .json({ error: "Employee profile not found for this user" });
+//         }
+
+//         if (!resolved.employee.self_attendance_enabled) {
+//             return res
+//                 .status(403)
+//                 .json({ error: "Self punch is not enabled for this employee" });
+//         }
+
+//         if (!resolved.employee.face_embedding) {
+//             return res.status(412).json({
+//                 error: "Store the employee face before marking self attendance",
+//             });
+//         }
+
+//         if (!req.file) {
+//             return res.status(400).json({ error: "Face image is required" });
+//         }
+
+//         await ensureNormalizedCaptureFile(req.file);
+
+//         const normalizedPunchType = (req.body?.punch_type || "")
+//             .toString()
+//             .trim()
+//             .toUpperCase();
+//         const punchType =
+//             normalizedPunchType === PUNCH_TYPES.OUT
+//                 ? PUNCH_TYPES.OUT
+//                 : PUNCH_TYPES.IN;
+
+//         const attendanceDate = resolveAttendanceDate(req.body, req.query);
+
+//         // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+//         const sessionError = await validatePunchSession(resolved.employee.emp_id, attendanceDate, punchType);
+//         if (sessionError) {
+//             return res.status(sessionError.status).json({
+//                 error: sessionError.error,
+//                 code: sessionError.code,
+//             });
+//         }
+
+//         // Resolve or create attendance record (handles night-shift carry-forward)
+//         const attendance = await getOrCreateAttendanceRecord(
+//             resolved.employee.emp_id,
+//             attendanceDate,
+//             { punchType, createIfMissing: true }
+//         );
+
+//         // 📍 Geofencing Validation
+//         const geoCheck = await validateGeofencing(
+//             resolved.employee.emp_id,
+//             req.body.latitude,
+//             req.body.longitude
+//         );
+//         if (!geoCheck.allowed) {
+//             if (geoCheck.notConfigured) {
+//                 return res.status(403).json({
+//                     error: "Your geofencing location is not mapped yet",
+//                     notConfigured: true,
+//                     details:
+//                         geoCheck.message ||
+//                         "Please contact admin to configure your zone boundaries.",
+//                 });
+//             }
+//             return res.status(403).json({
+//                 error: "Out of Zone",
+//                 notConfigured: false,
+//                 details:
+//                     geoCheck.message || "You are outside the allowed geo-fence zone.",
+//             });
+//         }
+
+//         const updated = await processPunch(
+//             attendance.attendance_id,
+//             punchType,
+//             req.file,
+//             req.user?.user_id,
+//             {
+//                 latitude: req.body.latitude ?? "0",
+//                 longitude: req.body.longitude ?? "0",
+//                 address: req.body.address ?? "",
+//             },
+//             {
+//                 employeeId: resolved.employee.emp_id,
+//                 requireFaceMatch: true,
+//             }
+//         );
+
+//         res.json({
+//             success: true,
+//             attendance_id: attendance.attendance_id,
+//             punch_type: punchType,
+//             face_similarity: updated.face_similarity ?? null,
+//             face_match_threshold: updated.face_match_threshold ?? null,
+//             time:
+//                 punchType === PUNCH_TYPES.IN
+//                     ? updated.punch_in_time
+//                     : updated.punch_out_time,
+//         });
+//     } catch (error) {
+//         console.error("Self punch error:", error);
+//         if (error.statusCode) {
+//             return res
+//                 .status(error.statusCode)
+//                 .json({ error: error.message, details: error.details });
+//         }
+//         res.status(500).json({ error: "Unable to process self punch" });
+//     }
+// });
+
+
+//Full working code for reference
+
 const express = require("express");
 const axios = require("axios");
 const router = express.Router();
@@ -27,6 +147,7 @@ const {
 } = require("../../utils/attendanceKeyBuilder");
 
 const {
+  s3,
   rekognition,
   CreateCollectionCommand,
   CompareFacesCommand,
@@ -54,7 +175,23 @@ ensureSelfAttendanceSupport().catch((error) => {
 // Constants
 const PUNCH_TYPES = {
   IN: "IN",
+  MID_IN: "MID_IN",
   OUT: "OUT",
+};
+
+const normalizePunchType = (value) => {
+  const normalized = (value || "").toString().trim().toUpperCase();
+  if (normalized === PUNCH_TYPES.OUT) return PUNCH_TYPES.OUT;
+  if (["MID_IN", "MID", "MIDSHIFT", "MID_SHIFT"].includes(normalized)) {
+    return PUNCH_TYPES.MID_IN;
+  }
+  return PUNCH_TYPES.IN;
+};
+
+const resolvePunchRecordTime = (record, punchType) => {
+  if (punchType === PUNCH_TYPES.OUT) return record?.punch_out_time ?? null;
+  if (punchType === PUNCH_TYPES.MID_IN) return record?.mid_shift_punch_in_time ?? null;
+  return record?.punch_in_time ?? null;
 };
 
 const DEFAULT_ATTENDANCE_TIMEZONE =
@@ -132,6 +269,19 @@ const attendanceDateFormatter = new Intl.DateTimeFormat("en-CA", {
   second: "2-digit",
   hour12: false,
 });
+const escapedAttendanceTimeZone = DEFAULT_ATTENDANCE_TIMEZONE.replace(/'/g, "''");
+
+const formatPunchTimeForClient = (value) => {
+  if (!value) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleTimeString("en-IN", {
+    timeZone: DEFAULT_ATTENDANCE_TIMEZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+};
 
 // Set up Multer for file uploads
 const storage = multer.memoryStorage();
@@ -349,14 +499,30 @@ async function resolveEmployeeFromFaceIdentifiers({
   matchedExternalId = null,
   requestedEmpId = null,
 }) {
-  const tryResolveByEmpId = async (empId) => {
-    if (empId === null) {
+  const normalizeText = (value) => {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    const text = String(value).trim();
+    return text || null;
+  };
+
+  const tryResolveByIdentifier = async (identifier) => {
+    const normalized = normalizeText(identifier);
+    if (!normalized) {
       return null;
     }
 
+    const numericEmpId = normalizeId(normalized);
     const { rows } = await pool.query(
-      "SELECT emp_id, name FROM employee WHERE emp_id = $1",
-      [empId]
+      `
+        SELECT emp_id, emp_code, name, face_embedding
+          FROM employee
+         WHERE ($1::int IS NOT NULL AND emp_id = $1::int)
+            OR LOWER(TRIM(emp_code)) = LOWER(TRIM($2))
+         LIMIT 1
+      `,
+      [numericEmpId, normalized]
     );
 
     return rows.length ? rows[0] : null;
@@ -366,7 +532,14 @@ async function resolveEmployeeFromFaceIdentifiers({
 
   if (faceId) {
     const { rows } = await pool.query(
-      "SELECT emp_id, name FROM employee WHERE face_id = $1 OR emp_id::text = $1",
+      `
+        SELECT emp_id, emp_code, name, face_embedding
+          FROM employee
+         WHERE face_id = $1
+            OR emp_id::text = $1
+            OR LOWER(TRIM(emp_code)) = LOWER(TRIM($1))
+         LIMIT 1
+      `,
       [faceId]
     );
 
@@ -376,11 +549,11 @@ async function resolveEmployeeFromFaceIdentifiers({
   }
 
   if (!employeeRecord && matchedExternalId !== null) {
-    employeeRecord = await tryResolveByEmpId(matchedExternalId);
+    employeeRecord = await tryResolveByIdentifier(matchedExternalId);
   }
 
   if (!employeeRecord && requestedEmpId !== null) {
-    employeeRecord = await tryResolveByEmpId(requestedEmpId);
+    employeeRecord = await tryResolveByIdentifier(requestedEmpId);
   }
 
   if (employeeRecord && faceId) {
@@ -407,7 +580,7 @@ function validatePunchAttempt(attendance, punchType) {
       status: punchType === PUNCH_TYPES.OUT ? 400 : 404,
       error:
         punchType === PUNCH_TYPES.OUT
-          ? "Pehle punch in karein"
+          ? "Punch in First"
           : "Attendance record not found",
     };
   }
@@ -429,7 +602,7 @@ function validatePunchAttempt(attendance, punchType) {
   if (punchType === PUNCH_TYPES.OUT && !attendance.punch_in_time) {
     return {
       status: 400,
-      error: "Pehle punch in karein",
+      error: "Punch in First",
     };
   }
 
@@ -454,6 +627,41 @@ function validatePunchAttempt(attendance, punchType) {
 async function validatePunchSession(empId, attendanceDate, punchType) {
   if (!empId || !attendanceDate) {
     return { status: 400, error: "Employee ID aur date zaroori hain" };
+  }
+
+  if (punchType === PUNCH_TYPES.MID_IN) {
+    const hasPrimaryPunchIn = await fetchRecentPrimaryPunchedInAttendance(
+      empId,
+      attendanceDate
+    );
+    if (!hasPrimaryPunchIn) {
+      return {
+        status: 400,
+        error: "Punch in First",
+        code: "NOT_PUNCHED_IN",
+      };
+    }
+
+    const hasPunchedOut = await fetchClosedSessionForDate(empId, attendanceDate);
+    if (hasPunchedOut) {
+      return {
+        status: 400,
+        error: "Punch out ke baad mid shift punch in allowed nahi hai.",
+        code: "ALREADY_PUNCHED_OUT",
+      };
+    }
+  }
+
+  // Enforce punch-in before punch-out (with support for night-shift carry-forward)
+  if (punchType === PUNCH_TYPES.OUT) {
+    const hasPunchStart = await fetchRecentPunchedInAttendance(empId, attendanceDate);
+    if (!hasPunchStart) {
+      return {
+        status: 400,
+        error: "Punch in First",
+        code: "NOT_PUNCHED_IN",
+      };
+    }
   }
 
   // Multi-punch allowed: we no longer block re-punch-in or re-punch-out.
@@ -498,7 +706,8 @@ const mapRekognitionError = (error) => {
 };
 
 const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
-const SECONDARY_S3_BUCKET = process.env.SECONDARY_S3_BUCKET || null;
+const SECONDARY_S3_BUCKET = process.env.SECONDARY_S3_BUCKET;
+const BACKBLAZE_BUCKET = process.env.BACKBLAZE_BUCKET;
 const parsedFaceThreshold = Number(process.env.FACE_MATCH_THRESHOLD ?? "97");
 const DEFAULT_FACE_MATCH_THRESHOLD = Number.isFinite(parsedFaceThreshold)
   ? parsedFaceThreshold
@@ -621,8 +830,8 @@ function resolveAttendanceDate(...sources) {
 const ATTENDANCE_SELECT_FIELDS = `
     a.attendance_id,
     CAST(a.date AS VARCHAR) AS date,
-    TO_CHAR(a.punch_in_time, 'HH12:MI AM') AS punch_in_time,
-    TO_CHAR(a.punch_out_time, 'HH12:MI AM') AS punch_out_time,
+    TO_CHAR((a.punch_in_time AT TIME ZONE '${escapedAttendanceTimeZone}'), 'HH12:MI AM') AS punch_in_time,
+    TO_CHAR((a.punch_out_time AT TIME ZONE '${escapedAttendanceTimeZone}'), 'HH12:MI AM') AS punch_out_time,
     a.duration,
     a.punch_in_image,
     a.punch_out_image,
@@ -670,10 +879,60 @@ async function fetchRecentOpenAttendance(empId, date) {
   return fetchAttendanceRecord(
     `
       a.emp_id = $1
-      AND a.date >= ($2::date - INTERVAL '1 day')
-      AND a.date <= $2::date
-      AND a.punch_in_time IS NOT NULL
+      AND (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
       AND a.punch_out_time IS NULL
+      AND (
+        a.date = $2::date
+        OR
+        (
+          a.date = $2::date - INTERVAL '1 day'
+          AND (a.punch_in_time AT TIME ZONE '${escapedAttendanceTimeZone}')::time >= '16:00:00'::time
+        )
+      )
+    `,
+    [empId, date]
+  );
+}
+
+async function fetchRecentPunchedInAttendance(empId, date) {
+  if (!empId || !date) {
+    return null;
+  }
+
+  return fetchAttendanceRecord(
+    `
+      a.emp_id = $1
+      AND (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
+      AND (
+        a.date = $2::date
+        OR
+        (
+          a.date = $2::date - INTERVAL '1 day'
+          AND (a.punch_in_time AT TIME ZONE '${escapedAttendanceTimeZone}')::time >= '16:00:00'::time
+        )
+      )
+    `,
+    [empId, date]
+  );
+}
+
+async function fetchRecentPrimaryPunchedInAttendance(empId, date) {
+  if (!empId || !date) {
+    return null;
+  }
+
+  return fetchAttendanceRecord(
+    `
+      a.emp_id = $1
+      AND a.punch_in_time IS NOT NULL
+      AND (
+        a.date = $2::date
+        OR
+        (
+          a.date = $2::date - INTERVAL '1 day'
+          AND (a.punch_in_time AT TIME ZONE '${escapedAttendanceTimeZone}')::time >= '16:00:00'::time
+        )
+      )
     `,
     [empId, date]
   );
@@ -825,7 +1084,11 @@ async function processPunch(
     uploadContext = await getAttendanceUploadContext(pool, attendanceId);
     const locationMeta = locationData || {};
     const punchLabel =
-      punchType === PUNCH_TYPES.IN ? "punch-in" : punchType === PUNCH_TYPES.OUT ? "punch-out" : punchType;
+      punchType === PUNCH_TYPES.IN
+        ? "punch-in"
+        : punchType === PUNCH_TYPES.OUT
+          ? "punch-out"
+          : "mid-shift-punch-in";
     const attendanceImageFile =
       buildAttendanceImagePath({
         attendanceDate: uploadContext?.attendance_date,
@@ -878,22 +1141,42 @@ async function processPunch(
     throw err;
   }
 
-  const isPunchIn = punchType === PUNCH_TYPES.IN;
-  const targetTimeField = isPunchIn ? "punch_in_time" : "punch_out_time";
-  const targetLatField = isPunchIn ? "latitude_in" : "latitude_out";
-  const targetLngField = isPunchIn ? "longitude_in" : "longitude_out";
-  const targetAddrField = isPunchIn ? "in_address" : "out_address";
-  const targetImgField = isPunchIn ? "punch_in_image" : "punch_out_image";
-  const targetByField = isPunchIn ? "punched_in_by" : "punched_out_by";
+  const punchFieldMap =
+    punchType === PUNCH_TYPES.OUT
+      ? {
+        time: "punch_out_time",
+        lat: "latitude_out",
+        lng: "longitude_out",
+        addr: "out_address",
+        image: "punch_out_image",
+        by: "punched_out_by",
+      }
+      : punchType === PUNCH_TYPES.MID_IN
+        ? {
+          time: "mid_shift_punch_in_time",
+          lat: "latitude_mid_in",
+          lng: "longitude_mid_in",
+          addr: "mid_in_address",
+          image: "mid_shift_punch_in_image",
+          by: "mid_shift_punched_in_by",
+        }
+        : {
+          time: "punch_in_time",
+          lat: "latitude_in",
+          lng: "longitude_in",
+          addr: "in_address",
+          image: "punch_in_image",
+          by: "punched_in_by",
+        };
 
   const updateQuery = `
     UPDATE attendance SET 
-      ${targetTimeField} = COALESCE(${targetTimeField}, NOW()),
-      ${targetLatField} = COALESCE(${targetLatField}, $1),
-      ${targetLngField} = COALESCE(${targetLngField}, $2),
-      ${targetAddrField} = COALESCE(${targetAddrField}, $3),
-      ${targetImgField} = COALESCE(${targetImgField}, $4),
-      ${targetByField} = COALESCE(${targetByField}, $5)
+      ${punchFieldMap.time} = COALESCE(${punchFieldMap.time}, NOW()),
+      ${punchFieldMap.lat} = COALESCE(${punchFieldMap.lat}, $1),
+      ${punchFieldMap.lng} = COALESCE(${punchFieldMap.lng}, $2),
+      ${punchFieldMap.addr} = COALESCE(${punchFieldMap.addr}, $3),
+      ${punchFieldMap.image} = COALESCE(${punchFieldMap.image}, $4),
+      ${punchFieldMap.by} = COALESCE(${punchFieldMap.by}, $5)
     WHERE attendance_id = $6
     RETURNING *
   `;
@@ -971,7 +1254,10 @@ async function streamToBuffer(readable) {
 async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) {
   if (!faceEmbedding) return null;
   const faceKey = resolveS3ObjectKey(faceEmbedding);
-  const buckets = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET].filter(Boolean);
+  const defaultBucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+  const buckets = [...new Set([AWS_S3_BUCKET, SECONDARY_S3_BUCKET, defaultBucket].filter(Boolean))];
+
+  try { fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] loadFaceBuffer: buckets resolved to ${JSON.stringify(buckets)}\n`); } catch(e){}
 
   if (faceKey) {
     for (const bucket of buckets) {
@@ -980,7 +1266,9 @@ async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) 
           new GetObjectCommand({ Bucket: bucket, Key: faceKey })
         );
         return await streamToBuffer(resp.Body);
-      } catch (_err) {}
+      } catch (_err) {
+        try { fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] loadFaceBuffer direct S3 fetch failed for bucket ${bucket}: ${_err?.message || _err}\n`); } catch(e){}
+      }
     }
   }
 
@@ -1017,9 +1305,20 @@ async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) 
     }
   }
 
-  // Final fallback: fetch via public URL
   const publicUrl = buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
   if (publicUrl) {
+    if (isBackblazeUrl(publicUrl)) {
+      const backblazeRef = parseBackblazeUrl(publicUrl);
+      if (backblazeRef && hasBackblazeCredentials()) {
+        try {
+          const { stream } = await fetchBackblazeStream(backblazeRef.bucket, backblazeRef.key);
+          return await streamToBuffer(stream);
+        } catch (_err) {
+          // Fall through to axios if Backblaze auth fails
+        }
+      }
+    }
+
     try {
       const resp = await axios.get(publicUrl, { responseType: "arraybuffer" });
       return Buffer.from(resp.data);
@@ -1141,16 +1440,28 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
   const faceKey = resolveS3ObjectKey(faceEmbedding);
   let sourceImage = null;
 
-  // Try primary/secondary buckets first so we avoid an extra HTTP hop
+  // 🛡️ MULTI-BUCKET RESOLUTION (Trying all possible buckets from environment)
+  const bucketsToTry = [
+    AWS_S3_BUCKET,
+    process.env.AWS_S3_BUCKET,
+    process.env.S3_BUCKET_NAME,
+    SECONDARY_S3_BUCKET,
+    process.env.SECONDARY_S3_BUCKET,
+    "attendease-public",
+    "attendease-attendance"
+  ].filter(Boolean);
+
+  const uniqueBuckets = [...new Set(bucketsToTry)];
+
   if (faceKey) {
-    const candidates = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET].filter(Boolean);
-    for (const bucket of candidates) {
+    for (const bucket of uniqueBuckets) {
       try {
         const resp = await s3.send(
           new GetObjectCommand({ Bucket: bucket, Key: faceKey })
         );
         const buffer = await streamToBuffer(resp.Body);
         sourceImage = { Bytes: buffer };
+        console.log(`[FaceMatch] Found source face in bucket: ${bucket}`);
         break;
       } catch (_err) {
         // continue to next bucket
@@ -1167,8 +1478,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
       empCode ? `${empCode}/` : null,
     ].filter(Boolean);
 
-    const buckets = [AWS_S3_BUCKET, SECONDARY_S3_BUCKET].filter(Boolean);
-    for (const bucket of buckets) {
+    for (const bucket of uniqueBuckets) {
       for (const prefix of candidatePrefixes) {
         try {
           const resp = await s3.send(
@@ -1187,7 +1497,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
             sourceImage = { Bytes: buffer };
 
             // 🛡️ Self-Healing: Backfill the database so next time is a direct hit
-            console.log(`[Self-Healing] Backfilling face_embedding for employee ${employeeId} with key: ${key}`);
+            console.log(`[Self-Healing] Backfilling face_embedding for employee ${employeeId} with key from ${bucket}: ${key}`);
             pool.query(
               "UPDATE employee SET face_embedding = $1 WHERE emp_id = $2",
               [key, employeeId]
@@ -1203,27 +1513,43 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
     }
   }
 
-  // Fallback: fetch via public URL (covers Backblaze/CloudFront/secondary buckets)
+  // Fallback: fetch via public URL or Backblaze private fetch
   if (!sourceImage) {
     const publicUrl = buildPublicFaceUrl(faceEmbedding) || faceEmbedding || null;
     if (publicUrl) {
-      try {
-        const resp = await axios.get(publicUrl, { responseType: "arraybuffer" });
-        sourceImage = { Bytes: Buffer.from(resp.data) };
-      } catch (err) {
-        console.error("ensureFaceMatch: public fetch failed", err?.message || err);
+      if (isBackblazeUrl(publicUrl)) {
+        const backblazeRef = parseBackblazeUrl(publicUrl);
+        if (backblazeRef && hasBackblazeCredentials()) {
+          try {
+            const { stream } = await fetchBackblazeStream(backblazeRef.bucket, backblazeRef.key);
+            const buffer = await streamToBuffer(stream);
+            sourceImage = { Bytes: buffer };
+          } catch (err) {
+            console.error("ensureFaceMatch: backblaze fetch failed", err?.message || err);
+          }
+        }
+      }
+
+      if (!sourceImage) {
+        try {
+          const resp = await axios.get(publicUrl, { responseType: "arraybuffer" });
+          sourceImage = { Bytes: Buffer.from(resp.data) };
+        } catch (err) {
+          console.error("ensureFaceMatch: public fetch failed", err?.message || err);
+        }
       }
     }
   }
 
   if (!sourceImage) {
     console.warn(
-      `ensureFaceMatch: source face not found for emp ${employeeId}; skipping face verification`
+      `ensureFaceMatch: source face not found for emp ${employeeId} in any bucket (${uniqueBuckets.join(', ')}); skipping face verification`
     );
     return null; // do not block punch; caller will proceed without face similarity
   }
 
-  if (!AWS_S3_BUCKET) {
+  const targetBucket = AWS_S3_BUCKET || process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+  if (!targetBucket) {
     const err = new Error("Attendance bucket not configured for face verification");
     err.statusCode = 500;
     throw err;
@@ -1233,7 +1559,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
     SourceImage: sourceImage,
     TargetImage: {
       S3Object: {
-        Bucket: AWS_S3_BUCKET,
+        Bucket: targetBucket,
         Name: attendanceKey,
       },
     },
@@ -1253,7 +1579,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
 
   if (!bestMatch || similarity < threshold) {
     const err = new Error("Captured face does not match enrolled face");
-    err.statusCode = 401;
+    err.statusCode = 403;
     err.details = `Similarity ${similarity.toFixed(2)}% below threshold ${threshold}%`;
     throw err;
   }
@@ -1302,8 +1628,7 @@ router.put("/", upload.single("image"), async (req, res) => {
 
     const { emp_id: attendanceEmpId, date: recordDate } = attendanceResult.rows[0];
     const attendanceDate = formatDate(new Date(recordDate));
-    const normalizedPunchType = (punch_type || "").toString().trim().toUpperCase();
-    const punchType = normalizedPunchType === PUNCH_TYPES.OUT ? PUNCH_TYPES.OUT : PUNCH_TYPES.IN;
+    const punchType = normalizePunchType(punch_type);
 
     // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
     const sessionError = await validatePunchSession(attendanceEmpId, attendanceDate, punchType);
@@ -1357,10 +1682,13 @@ router.get("/image", async (req, res) => {
   }
 
   try {
+    const requestedPunchType = normalizePunchType(punch_type);
     const imageColumn =
-      punch_type.toUpperCase() === PUNCH_TYPES.IN
-        ? "punch_in_image"
-        : "punch_out_image";
+      requestedPunchType === PUNCH_TYPES.OUT
+        ? "punch_out_image"
+        : requestedPunchType === PUNCH_TYPES.MID_IN
+          ? "mid_shift_punch_in_image"
+          : "punch_in_image";
 
     const result = await pool.query(
       `SELECT ${imageColumn} AS image_url FROM attendance WHERE attendance_id = $1`,
@@ -1486,6 +1814,7 @@ router.get("/image", async (req, res) => {
 
 router.post("/face-attendance", upload.single("image"), async (req, res) => {
   try {
+    fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] /face-attendance hit! mode: ${req.body?.groupMode}\n`);
     const {
       punch_type: rawPunchType,
       latitude: rawLatitude,
@@ -1526,14 +1855,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
 
     await ensureCollectionExists(collectionId);
 
-    const normalizedPunchType = (rawPunchType || "")
-      .toString()
-      .trim()
-      .toUpperCase();
-    const punchType =
-      normalizedPunchType === PUNCH_TYPES.OUT
-        ? PUNCH_TYPES.OUT
-        : PUNCH_TYPES.IN;
+    const punchType = normalizePunchType(rawPunchType);
 
     const thresholdCandidate = Number(rawThreshold);
     const matchThreshold = Number.isFinite(thresholdCandidate)
@@ -1648,11 +1970,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         }
 
         try {
-          // 🔒 Group mode uses a HIGHER threshold than individual mode to reduce
-          // false positives from low-quality group photo crops.
-          // Floor at 90% — lower quality crops can't reliably hit 95%.
-          // The double-verify CompareFaces step (Layer 2) provides the extra accuracy.
-          const groupThreshold = Math.max(90, matchThreshold);
+          // Group crops are lower quality; cap threshold so valid faces are not
+          // rejected too aggressively. Accuracy is still protected by Layer-2 and Layer-3.
+          const groupThreshold = Math.max(88, Math.min(matchThreshold, 92));
 
           const searchResult = await rekognition.send(
             new SearchFacesByImageCommand({
@@ -1669,9 +1989,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
 
           if (bestMatch?.Face) {
             const faceId = bestMatch.Face.FaceId;
-            const matchedExternalId = normalizeId(
-              bestMatch.Face.ExternalImageId
-            );
+            const matchedExternalId = bestMatch.Face.ExternalImageId ?? null;
             employeeRecord = await resolveEmployeeFromFaceIdentifiers({
               faceId,
               matchedExternalId,
@@ -1679,18 +1997,29 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             });
           }
 
-          // ⚠️ REMOVED: fallbackMatchByCompare in group mode.
-          // The roster-level CompareFaces fallback was causing wrong employee matches
-          // because group photo crops are low quality and can falsely match similar-
-          // looking people in the same ward. If Rekognition collection search returns
-          // no confident match (>= 95%), we report "unmatched" — do NOT guess.
+          // Group-only safe fallback:
+          // If collection lookup misses, try roster-level CompareFaces with a stricter
+          // threshold, then continue through Layer-2 and Layer-3 checks below.
+          if (!employeeRecord && supervisorId) {
+            const fallback = await fallbackMatchByCompare(
+              faceImageBuffer,
+              supervisorId,
+              wardId,
+              Math.max(92, Math.min(matchThreshold, 95))
+            );
+            if (fallback?.employee) {
+              employeeRecord = fallback.employee;
+              similarity = fallback.similarity ?? similarity;
+            }
+          }
 
           if (!employeeRecord) {
             results.push({
               faceIndex,
               status: "unmatched",
               similarity: null,
-              message: "Face not registered in gallery. Please enroll employee face first.",
+              message:
+                "Face not recognized in collection/roster. Please capture clearer image or re-enroll face.",
               hint: "Ensure this employee's face photo is uploaded in the face gallery before using group attendance.",
             });
             continue;
@@ -1846,10 +2175,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             employeeName: employeeRecord.name,
             similarity,
             attendanceId: attendance.attendance_id,
-            punchedAt:
-              punchType === PUNCH_TYPES.IN
-                ? updated.punch_in_time
-                : updated.punch_out_time,
+            punchedAt: formatPunchTimeForClient(
+              resolvePunchRecordTime(updated, punchType)
+            ),
           });
 
           processedEmployees.add(employeeRecord.emp_id);
@@ -1879,6 +2207,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         (entry) => entry.status === "punched"
       ).length;
 
+      fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Group Punch Results: ${JSON.stringify(results)}\n`);
+
       return res.json({
         success: punchedCount > 0,
         mode: "group",
@@ -1890,6 +2220,21 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     }
 
     const requestedEmpId = normalizeId(rawEmpId ?? rawEmployeeId);
+    if (!requestedEmpId) {
+      return res.status(400).json({
+        error: "Please select an employee first.",
+      });
+    }
+
+    // 1. Fetch the selected employee
+    const employeeRecord = await fetchEmployeeById(requestedEmpId);
+    if (!employeeRecord) {
+      return res.status(404).json({
+        error: "Selected employee not found in the system.",
+      });
+    }
+
+    // 2. Search for the face in the collection
     const searchParams = {
       CollectionId: collectionId,
       Image: { Bytes: normalizedCaptureBuffer },
@@ -1900,41 +2245,54 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     const searchCommand = new SearchFacesByImageCommand(searchParams);
     const searchResult = await rekognition.send(searchCommand);
 
-    const matchedFace = searchResult.FaceMatches?.[0]?.Face ?? null;
-    let employeeRecord = null;
+    const matchedFaceResult = searchResult.FaceMatches?.[0];
+    const matchedFace = matchedFaceResult?.Face ?? null;
 
+    // 🔒 STRICT IDENTITY CHECK
+    // If we found a face in the system, it MUST be the selected employee.
     if (matchedFace) {
-      const faceId = matchedFace.FaceId;
-      const matchedExternalId = normalizeId(matchedFace.ExternalImageId);
+      const matchedExternalRaw = matchedFace.ExternalImageId ?? null;
+      const matchedExternalId = normalizeId(matchedExternalRaw);
+      const matchedExternalCode =
+        matchedExternalRaw !== null && matchedExternalRaw !== undefined
+          ? String(matchedExternalRaw).trim().toLowerCase()
+          : null;
+      const requestedCode = employeeRecord?.emp_code
+        ? String(employeeRecord.emp_code).trim().toLowerCase()
+        : null;
+      const isMatchingSelectedEmployee =
+        (matchedExternalId !== null &&
+          String(matchedExternalId) === String(requestedEmpId)) ||
+        (matchedExternalCode && requestedCode && matchedExternalCode === requestedCode);
 
-      employeeRecord = await resolveEmployeeFromFaceIdentifiers({
-        faceId,
-        matchedExternalId,
-        requestedEmpId,
-      });
+      if (!isMatchingSelectedEmployee) {
+        fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${matchedExternalId}, but supervisor selected ${requestedEmpId}\n`);
+        return res.status(403).json({
+          error: "Identity Mismatch",
+          details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
+          suggestion: "Ensure you are punching for the correct person.",
+        });
+      }
     }
 
-    // Hard fallback: if the app provided emp_id, trust it and rely on direct face verification later
-    if (!employeeRecord && requestedEmpId) {
-      employeeRecord = await fetchEmployeeById(requestedEmpId);
-    }
-
-    // Soft fallback: try comparing against supervisor's roster faces when collection has no match
-    if (!employeeRecord) {
+    // Soft fallback for roster compare if collection search failed
+    if (!matchedFace) {
       const fallback = await fallbackMatchByCompare(
         normalizedCaptureBuffer,
         supervisorId,
         wardId,
         matchThreshold
       );
-      if (fallback?.employee) {
-        employeeRecord = fallback.employee;
-        matchedFace = { FaceId: null };
+      if (fallback?.employee && String(fallback.employee.emp_id) !== String(requestedEmpId)) {
+        return res.status(403).json({
+          error: "Identity Mismatch",
+          details: `Face does not match ${employeeRecord.name}.`,
+        });
       }
     }
 
-    if (!employeeRecord && !requestedEmpId) {
-      return res.status(401).json({
+    if (!employeeRecord) {
+      return res.status(403).json({
         error: "No matching employee found",
         suggestion: "Use manual attendance if face recognition fails",
       });
@@ -1996,6 +2354,17 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       }
     );
 
+    // 🔒 SUPERVISOR SECURITY CHECK
+    // If requireFaceMatch was true but similarity is null (missing S3),
+    // we block the supervisor punch to prevent "any face" matching.
+    if (!updated.face_similarity) {
+      const err = new Error("Enrolled face image could not be loaded from storage");
+      err.statusCode = 412;
+      err.details = "Please re-enroll the employee face before marking attendance.";
+      throw err;
+    }
+
+    fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Individual Punch Success: ${employeeRecord.emp_id}\n`);
     return res.json({
       success: true,
       employee: employeeRecord.name,
@@ -2003,13 +2372,11 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold:
         updated.face_match_threshold ?? matchThreshold,
-      time:
-        punchType === PUNCH_TYPES.IN
-          ? updated.punch_in_time
-          : updated.punch_out_time,
+      time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
     console.error("Face attendance error:", error);
+    try { fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Face Attendance Route Error: ${error?.stack || error}\n`); } catch(e){}
 
     if (error.statusCode) {
       return res.status(error.statusCode).json({
@@ -2053,14 +2420,7 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
     }
     await ensureCollectionExists(collectionId);
 
-    const normalizedPunchType = (rawPunchType || "")
-      .toString()
-      .trim()
-      .toUpperCase();
-    const punchType =
-      normalizedPunchType === PUNCH_TYPES.OUT
-        ? PUNCH_TYPES.OUT
-        : PUNCH_TYPES.IN;
+    const punchType = normalizePunchType(rawPunchType);
 
     const thresholdCandidate = Number(rawThreshold);
     const matchThreshold = Number.isFinite(thresholdCandidate)
@@ -2135,7 +2495,7 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
 
     const matchedFace = searchResult.FaceMatches[0]?.Face ?? {};
     const faceId = matchedFace.FaceId;
-    const matchedExternalId = normalizeId(matchedFace.ExternalImageId);
+    const matchedExternalId = matchedFace.ExternalImageId ?? null;
 
     const employeeRecord = await resolveEmployeeFromFaceIdentifiers({
       faceId,
@@ -2211,10 +2571,7 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold: updated.face_match_threshold ?? matchThreshold,
       attendance_id: attendance.attendance_id,
-      time:
-        punchType === PUNCH_TYPES.IN
-          ? updated.punch_in_time
-          : updated.punch_out_time,
+      time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
     console.error("Face liveness error:", error);
@@ -2253,8 +2610,10 @@ router.get("/self/status", authenticate, async (req, res) => {
         attendance_id: attendance.attendance_id,
         date: attendance.date,
         punch_in_time: attendance.punch_in_time,
+        mid_shift_punch_in_time: attendance.mid_shift_punch_in_time,
         punch_out_time: attendance.punch_out_time,
         punch_in_image: attendance.punch_in_image,
+        mid_shift_punch_in_image: attendance.mid_shift_punch_in_image,
         punch_out_image: attendance.punch_out_image,
         ward_id: attendance.ward_id,
       }
@@ -2304,8 +2663,10 @@ router.get("/self/calendar", authenticate, async (req, res) => {
         TO_CHAR(ds.day, 'DD Mon') AS attendance_date_label,
         a.attendance_id,
         a.punch_in_time,
+        a.mid_shift_punch_in_time,
         a.punch_out_time,
         TO_CHAR((a.punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_in_display,
+        TO_CHAR((a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS mid_shift_punch_in_display,
         TO_CHAR((a.punch_out_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_out_display,
         CASE
           WHEN a.punch_in_time IS NOT NULL AND a.punch_out_time IS NOT NULL THEN 'Marked'
@@ -2330,6 +2691,7 @@ router.get("/self/calendar", authenticate, async (req, res) => {
       dateLabel: row.attendance_date_label,
       attendanceId: row.attendance_id ?? null,
       punchInDisplay: row.punch_in_display || null,
+      midShiftPunchInDisplay: row.mid_shift_punch_in_display || null,
       punchOutDisplay: row.punch_out_display || null,
       status: row.attendance_status || "Not Marked",
       hasPunchIn: Boolean(row.punch_in_time),
@@ -2595,14 +2957,7 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
 
     await ensureNormalizedCaptureFile(req.file);
 
-    const normalizedPunchType = (req.body?.punch_type || "")
-      .toString()
-      .trim()
-      .toUpperCase();
-    const punchType =
-      normalizedPunchType === PUNCH_TYPES.OUT
-        ? PUNCH_TYPES.OUT
-        : PUNCH_TYPES.IN;
+    const punchType = normalizePunchType(req.body?.punch_type);
 
     const attendanceDate = resolveAttendanceDate(req.body, req.query);
 
@@ -2668,13 +3023,11 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
       punch_type: punchType,
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold: updated.face_match_threshold ?? null,
-      time:
-        punchType === PUNCH_TYPES.IN
-          ? updated.punch_in_time
-          : updated.punch_out_time,
+      time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
     console.error("Self punch error:", error);
+    try { fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Self Punch Error: ${error?.stack || error}\n`); } catch(e){}
     if (error.statusCode) {
       return res
         .status(error.statusCode)

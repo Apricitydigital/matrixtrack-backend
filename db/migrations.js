@@ -25,6 +25,17 @@ async function runMigrations() {
     `);
     console.log("[Migration] ✅ updated_at column ready.");
 
+    await client.query(`
+      ALTER TABLE attendance
+      ADD COLUMN IF NOT EXISTS mid_shift_punch_in_time TIMESTAMPTZ DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS latitude_mid_in VARCHAR(100) DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS longitude_mid_in VARCHAR(100) DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS mid_in_address TEXT DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS mid_shift_punch_in_image TEXT DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS mid_shift_punched_in_by INTEGER DEFAULT NULL
+    `);
+    console.log("[Migration] mid shift punch columns ready.");
+
     // Create index on date for faster dashboard queries
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_attendance_date 
