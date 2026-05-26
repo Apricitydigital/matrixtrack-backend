@@ -645,7 +645,7 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
     if (openSession.punch_out_time) {
       return {
         status: 400,
-        error: "Mid shift punch is allowed after Punch out!!!",
+        error: "Punch out ke baad mid shift punch in allowed nahi hai.",
         code: "ALREADY_PUNCHED_OUT",
       };
     }
@@ -995,19 +995,15 @@ async function getOrCreateAttendanceRecord(emp_id, date, options = {}) {
 
   if (!emp_id) throw new Error("Employee ID is required");
 
-  // ⚡ PERF FIX: Single query fetches ward_id + display fields together (was 2 separate queries)
-  const empRow = await pool.query(
-    `SELECT e.ward_id, e.emp_code, e.name AS employee_name,
-            d.designation_name, w.ward_name
-     FROM employee e
-     LEFT JOIN designation d ON e.designation_id = d.designation_id
-     LEFT JOIN wards w ON e.ward_id = w.ward_id
-     WHERE e.emp_id = $1
-     LIMIT 1`,
+  // Check if attendance record exists
+  const wardDetail = await pool.query(
+    `SELECT ward_id from employee e where e.emp_id = $1`,
     [emp_id]
   );
-  const empMeta = empRow.rows[0] || {};
-  const ward_id = empMeta.ward_id ?? null;
+  let ward_id;
+  if (wardDetail.rows.length > 0) {
+    ward_id = wardDetail.rows[0].ward_id;
+  }
 
   // Create new record if not exists
   const insertResult = await pool.query(
@@ -1058,8 +1054,19 @@ async function getOrCreateAttendanceRecord(emp_id, date, options = {}) {
     ward_name: null,
   };
 
-  // ⚡ PERF FIX: Reuse empMeta fetched above — no additional JOIN query needed
-  Object.assign(newAttendance, empMeta);
+  // Fetch employee details
+  const empDetails = await pool.query(
+    `SELECT emp_code, name AS employee_name, d.designation_name, w.ward_name
+     FROM employee e
+     JOIN designation d ON e.designation_id = d.designation_id
+     JOIN wards w ON e.ward_id = w.ward_id
+     WHERE e.emp_id = $1`,
+    [emp_id]
+  );
+
+  if (empDetails.rows.length > 0) {
+    Object.assign(newAttendance, empDetails.rows[0]);
+  }
 
   return newAttendance;
 }
@@ -1076,15 +1083,13 @@ async function processPunch(
     employeeId: explicitEmployeeId = null,
     requireFaceMatch = false,
     faceMatchThreshold = DEFAULT_FACE_MATCH_THRESHOLD,
-    uploadContext: preloadedContext = null, // ⚡ PERF FIX: accept pre-fetched context
   } = options;
 
   let uploadContext = null;
   const capturedAt = new Date();
   let uploadResult = null;
   if (imageFile) {
-    // ⚡ PERF FIX: use preloaded context if available, skips 4-table JOIN DB call
-    uploadContext = preloadedContext ?? await getAttendanceUploadContext(pool, attendanceId);
+    uploadContext = await getAttendanceUploadContext(pool, attendanceId);
     const locationMeta = locationData || {};
     const punchLabel =
       punchType === PUNCH_TYPES.IN
@@ -1189,7 +1194,7 @@ async function processPunch(
     locationData.longitude,
     locationData.address,
     imageUrl,
-    normalizeId(userId) ?? null, // ⚡ PERF FIX: userId already auth'd by JWT, no DB call needed
+    await resolvePunchActor(userId),
     attendanceId,
   ]);
 
@@ -1206,8 +1211,27 @@ async function processPunch(
   return record;
 }
 
-// ⚡ PERF FIX: resolvePunchActor removed — userId from JWT is already authenticated.
-// Using normalizeId(userId) directly in processPunch saves one DB round trip per punch.
+async function resolvePunchActor(rawUserId) {
+  const normalized = normalizeId(rawUserId);
+  if (normalized === null) {
+    return null;
+  }
+
+  try {
+    const { rows } = await pool.query(
+      "SELECT user_id FROM users WHERE user_id = $1",
+      [normalized]
+    );
+
+    if (rows.length > 0) {
+      return normalized;
+    }
+  } catch (error) {
+    console.error("resolvePunchActor error:", error);
+  }
+
+  return null;
+}
 
 function resolveS3ObjectKey(reference) {
   if (!reference) {
@@ -1453,9 +1477,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
     }
   }
 
-  // ⚡ PERF FIX: S3 prefix scan wrapped in 1.5s timeout.
-  // Previously could take 4-10s (up to 16 sequential S3 ListObjects calls on stale key).
-  // Now: if scan doesn't finish in 1.5s, punch proceeds without it (same existing null path).
+  // If still not found, scan common prefixes to locate the key (self-heal)
   if (!sourceImage) {
     const candidatePrefixes = [
       `faces/${employeeId}/`,
@@ -1464,38 +1486,39 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
       empCode ? `${empCode}/` : null,
     ].filter(Boolean);
 
-    const scanPromise = (async () => {
-      for (const bucket of uniqueBuckets) {
-        for (const prefix of candidatePrefixes) {
-          try {
-            const resp = await s3.send(
-              new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, MaxKeys: 1 })
+    for (const bucket of uniqueBuckets) {
+      for (const prefix of candidatePrefixes) {
+        try {
+          const resp = await s3.send(
+            new ListObjectsV2Command({
+              Bucket: bucket,
+              Prefix: prefix,
+              MaxKeys: 1,
+            })
+          );
+          const key = resp?.Contents?.[0]?.Key;
+          if (key) {
+            const obj = await s3.send(
+              new GetObjectCommand({ Bucket: bucket, Key: key })
             );
-            const key = resp?.Contents?.[0]?.Key;
-            if (key) {
-              const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-              const buffer = await streamToBuffer(obj.Body);
-              console.log(`[Self-Healing] Backfilling face_embedding for employee ${employeeId} with key from ${bucket}: ${key}`);
-              pool.query(
-                "UPDATE employee SET face_embedding = $1 WHERE emp_id = $2",
-                [key, employeeId]
-              ).catch(e => console.error(`Failed to backfill face_embedding for ${employeeId}:`, e));
-              return { Bytes: buffer };
-            }
-          } catch (_err) {
-            // ignore and continue search
+            const buffer = await streamToBuffer(obj.Body);
+            sourceImage = { Bytes: buffer };
+
+            // 🛡️ Self-Healing: Backfill the database so next time is a direct hit
+            console.log(`[Self-Healing] Backfilling face_embedding for employee ${employeeId} with key from ${bucket}: ${key}`);
+            pool.query(
+              "UPDATE employee SET face_embedding = $1 WHERE emp_id = $2",
+              [key, employeeId]
+            ).catch(e => console.error(`Failed to backfill face_embedding for ${employeeId}:`, e));
+
+            break;
           }
+        } catch (_err) {
+          // ignore and continue search
         }
       }
-      return null;
-    })();
-
-    const timeoutPromise = new Promise(resolve => setTimeout(() => {
-      console.warn(`[Self-Healing] S3 prefix scan timed out for emp_id=${employeeId}, proceeding without it`);
-      resolve(null);
-    }, 1500));
-
-    sourceImage = await Promise.race([scanPromise, timeoutPromise]);
+      if (sourceImage) break;
+    }
   }
 
   // Fallback: fetch via public URL or Backblaze private fetch
@@ -2324,16 +2347,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         notConfigured: false,
         details: geoCheck.message || "You are outside the allowed geo-fence zone."
       });
-    }    // ⚡ PERF FIX: pass context directly so processPunch skips getAttendanceUploadContext DB call
-    const punchUploadContext = {
-      attendance_date: attendanceDate,
-      emp_id: empId,
-      emp_code: employeeRecord.emp_code,
-      employee_name: employeeRecord.name,
-      ward_name: attendance.ward_name ?? null,
-      zone_name: null,
-      city_name: null,
-    };
+    }
+
     const updated = await processPunch(
       attendance.attendance_id,
       punchType,
@@ -2344,7 +2359,6 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         employeeId: empId,
         requireFaceMatch: true,
         faceMatchThreshold: matchThreshold,
-        uploadContext: punchUploadContext,
       }
     );
 
