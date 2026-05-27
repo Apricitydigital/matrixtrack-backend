@@ -15,6 +15,7 @@ const { sendWelcomeWhatsApp, sendWelcomeSms, sendPasswordUpdateSms } = require("
 
 const router = express.Router();
 const APP_JWT_EXPIRES_IN = process.env.APP_JWT_EXPIRES_IN || "45d";
+const JWT_COOKIE_MAX_AGE_MS = Number(process.env.JWT_COOKIE_MAX_AGE_MS) || 45 * 24 * 60 * 60 * 1000; // 45 days
 
 const getUserAccessProfile = async (userId, userRole = "") => {
   const rolesQuery = `
