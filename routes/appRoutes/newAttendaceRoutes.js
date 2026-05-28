@@ -1171,10 +1171,14 @@ async function processPunch(
           image: "punch_in_image",
           by: "punched_in_by",
         };
+  const punchTimeFallbackExpression =
+    punchType === PUNCH_TYPES.MID_IN
+      ? "NOW()"
+      : "NOW() AT TIME ZONE 'Asia/Kolkata'";
 
   const updateQuery = `
     UPDATE attendance SET 
-      ${punchFieldMap.time} = COALESCE(${punchFieldMap.time}, NOW()),
+      ${punchFieldMap.time} = COALESCE(${punchFieldMap.time}, ${punchTimeFallbackExpression}),
       ${punchFieldMap.lat} = COALESCE(${punchFieldMap.lat}, $1),
       ${punchFieldMap.lng} = COALESCE(${punchFieldMap.lng}, $2),
       ${punchFieldMap.addr} = COALESCE(${punchFieldMap.addr}, $3),

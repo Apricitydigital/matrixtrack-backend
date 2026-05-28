@@ -541,14 +541,22 @@ const fetchSupervisorEmployees = async (
       summary.punch_in_time,
       summary.mid_shift_punch_in_time,
       summary.punch_out_time,
-      TO_CHAR((summary.punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_in_display,
+      TO_CHAR(summary.punch_in_time, 'HH12:MI AM') AS punch_in_display,
       TO_CHAR((summary.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS mid_shift_punch_in_display,
-      TO_CHAR((summary.punch_out_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_out_display,
-      TO_CHAR((summary.last_punch_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS last_punch_display,
-      EXTRACT(EPOCH FROM summary.punch_in_time) AS punch_in_epoch,
+      TO_CHAR(summary.punch_out_time, 'HH12:MI AM') AS punch_out_display,
+      COALESCE(
+        TO_CHAR(summary.punch_out_time, 'HH12:MI AM'),
+        TO_CHAR((summary.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM'),
+        TO_CHAR(summary.punch_in_time, 'HH12:MI AM')
+      ) AS last_punch_display,
+      EXTRACT(EPOCH FROM (summary.punch_in_time AT TIME ZONE 'Asia/Kolkata')) AS punch_in_epoch,
       EXTRACT(EPOCH FROM summary.mid_shift_punch_in_time) AS mid_shift_punch_in_epoch,
-      EXTRACT(EPOCH FROM summary.punch_out_time) AS punch_out_epoch,
-      EXTRACT(EPOCH FROM summary.last_punch_time) AS last_punch_epoch
+      EXTRACT(EPOCH FROM (summary.punch_out_time AT TIME ZONE 'Asia/Kolkata')) AS punch_out_epoch,
+      COALESCE(
+        EXTRACT(EPOCH FROM (summary.punch_out_time AT TIME ZONE 'Asia/Kolkata')),
+        EXTRACT(EPOCH FROM summary.mid_shift_punch_in_time),
+        EXTRACT(EPOCH FROM (summary.punch_in_time AT TIME ZONE 'Asia/Kolkata'))
+      ) AS last_punch_epoch
     FROM scoped_employees se
     LEFT JOIN attendance_summary summary ON summary.emp_id = se.emp_id
     ORDER BY se.emp_id, se.ward_id, se.employee_name;
