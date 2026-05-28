@@ -165,6 +165,14 @@ const {
 const { buildPublicFaceUrl } = require("../../utils/faceImage");
 const { validateGeofencing } = require("../../utils/geofencing");
 
+const safeDebugLog = (line) => {
+  try {
+    fs.appendFile("debug-face.log", `${line}\n`, () => {});
+  } catch (_) {
+    // Never block attendance flow for debug logging failures.
+  }
+};
+
 ensureSelfAttendanceSupport().catch((error) => {
   console.warn(
     "Self attendance bootstrap skipped:",
@@ -720,6 +728,27 @@ const parsedFaceThreshold = Number(process.env.FACE_MATCH_THRESHOLD ?? "97");
 const DEFAULT_FACE_MATCH_THRESHOLD = Number.isFinite(parsedFaceThreshold)
   ? parsedFaceThreshold
   : 95;
+const GROUP_FACE_SEARCH_TIMEOUT_MS = Number(
+  process.env.GROUP_FACE_SEARCH_TIMEOUT_MS || 8000
+);
+const GROUP_DOUBLE_VERIFY_ENABLED =
+  process.env.GROUP_DOUBLE_VERIFY_ENABLED === "true";
+
+const withTimeout = async (promise, timeoutMs, timeoutMessage) => {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const err = new Error(timeoutMessage || "Operation timed out");
+      err.code = "TIMEOUT";
+      reject(err);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
 
 // Utility functions
 const pad2 = (value) => String(value).padStart(2, "0");
@@ -1171,10 +1200,14 @@ async function processPunch(
           image: "punch_in_image",
           by: "punched_in_by",
         };
+  const punchTimeFallbackExpression =
+    punchType === PUNCH_TYPES.MID_IN
+      ? "NOW()"
+      : "NOW() AT TIME ZONE 'Asia/Kolkata'";
 
   const updateQuery = `
     UPDATE attendance SET 
-      ${punchFieldMap.time} = COALESCE(${punchFieldMap.time}, NOW()),
+      ${punchFieldMap.time} = COALESCE(${punchFieldMap.time}, ${punchTimeFallbackExpression}),
       ${punchFieldMap.lat} = COALESCE(${punchFieldMap.lat}, $1),
       ${punchFieldMap.lng} = COALESCE(${punchFieldMap.lng}, $2),
       ${punchFieldMap.addr} = COALESCE(${punchFieldMap.addr}, $3),
@@ -1241,7 +1274,7 @@ async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) 
   const defaultBucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
   const buckets = [...new Set([AWS_S3_BUCKET, SECONDARY_S3_BUCKET, defaultBucket].filter(Boolean))];
 
-  try { fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] loadFaceBuffer: buckets resolved to ${JSON.stringify(buckets)}\n`); } catch(e){}
+  safeDebugLog(`[${new Date().toISOString()}] loadFaceBuffer: buckets resolved to ${JSON.stringify(buckets)}`);
 
   if (faceKey) {
     for (const bucket of buckets) {
@@ -1251,7 +1284,7 @@ async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) 
         );
         return await streamToBuffer(resp.Body);
       } catch (_err) {
-        try { fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] loadFaceBuffer direct S3 fetch failed for bucket ${bucket}: ${_err?.message || _err}\n`); } catch(e){}
+        safeDebugLog(`[${new Date().toISOString()}] loadFaceBuffer direct S3 fetch failed for bucket ${bucket}: ${_err?.message || _err}`);
       }
     }
   }
@@ -1799,7 +1832,7 @@ router.get("/image", async (req, res) => {
 
 router.post("/face-attendance", upload.single("image"), async (req, res) => {
   try {
-    fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] /face-attendance hit! mode: ${req.body?.groupMode}\n`);
+    safeDebugLog(`[${new Date().toISOString()}] /face-attendance hit! mode: ${req.body?.groupMode}`);
     const {
       punch_type: rawPunchType,
       latitude: rawLatitude,
@@ -1959,13 +1992,17 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           // rejected too aggressively. Accuracy is still protected by Layer-2 and Layer-3.
           const groupThreshold = Math.max(88, Math.min(matchThreshold, 92));
 
-          const searchResult = await rekognition.send(
-            new SearchFacesByImageCommand({
-              CollectionId: collectionId,
-              Image: { Bytes: faceImageBuffer },
-              MaxFaces: 1,
-              FaceMatchThreshold: groupThreshold,
-            })
+          const searchResult = await withTimeout(
+            rekognition.send(
+              new SearchFacesByImageCommand({
+                CollectionId: collectionId,
+                Image: { Bytes: faceImageBuffer },
+                MaxFaces: 1,
+                FaceMatchThreshold: groupThreshold,
+              })
+            ),
+            GROUP_FACE_SEARCH_TIMEOUT_MS,
+            "Face search timed out"
           );
 
           let bestMatch = searchResult.FaceMatches?.[0];
@@ -2013,40 +2050,48 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           // ✅ LAYER 2: CompareFaces cross-check against enrolled S3 image
           // Even though Rekognition collection matched, we do a second independent
           // verification to eliminate any false positives from low-quality crops.
-          const DOUBLE_VERIFY_THRESHOLD = 90;
-          try {
-            const enrolledBuffer = await loadFaceBuffer(
-              employeeRecord.face_embedding,
-              employeeRecord.emp_id
-            );
-            if (enrolledBuffer) {
-              const crossCheck = await rekognition.send(
-                new CompareFacesCommand({
-                  SourceImage: { Bytes: enrolledBuffer },
-                  TargetImage: { Bytes: faceImageBuffer },
-                  SimilarityThreshold: DOUBLE_VERIFY_THRESHOLD,
-                })
+          if (GROUP_DOUBLE_VERIFY_ENABLED) {
+            const DOUBLE_VERIFY_THRESHOLD = 90;
+            try {
+              const enrolledBuffer = await loadFaceBuffer(
+                employeeRecord.face_embedding,
+                employeeRecord.emp_id
               );
-              const crossSimilarity = crossCheck?.FaceMatches?.[0]?.Similarity ?? 0;
-              if (crossSimilarity < DOUBLE_VERIFY_THRESHOLD) {
-                console.warn(
-                  `[Group] Double-verify FAILED for emp_id=${employeeRecord.emp_id}: ` +
-                  `Rekognition=${similarity?.toFixed(1)}% but CompareFaces=${crossSimilarity.toFixed(1)}%`
+              if (enrolledBuffer) {
+                const crossCheck = await withTimeout(
+                  rekognition.send(
+                    new CompareFacesCommand({
+                      SourceImage: { Bytes: enrolledBuffer },
+                      TargetImage: { Bytes: faceImageBuffer },
+                      SimilarityThreshold: DOUBLE_VERIFY_THRESHOLD,
+                    })
+                  ),
+                  GROUP_FACE_SEARCH_TIMEOUT_MS,
+                  "Face secondary verification timed out"
                 );
-                results.push({
-                  faceIndex,
-                  status: "unmatched",
-                  similarity: crossSimilarity,
-                  message: "Face verification failed secondary check. Please recapture.",
-                  code: "DOUBLE_VERIFY_FAILED",
-                });
-                continue;
+                const crossSimilarity = crossCheck?.FaceMatches?.[0]?.Similarity ?? 0;
+                if (crossSimilarity < DOUBLE_VERIFY_THRESHOLD) {
+                  console.warn(
+                    `[Group] Double-verify FAILED for emp_id=${employeeRecord.emp_id}: ` +
+                    `Rekognition=${similarity?.toFixed(1)}% but CompareFaces=${crossSimilarity.toFixed(1)}%`
+                  );
+                  results.push({
+                    faceIndex,
+                    status: "unmatched",
+                    similarity: crossSimilarity,
+                    message: "Face verification failed secondary check. Please recapture.",
+                    code: "DOUBLE_VERIFY_FAILED",
+                  });
+                  continue;
+                }
               }
+            } catch (crossErr) {
+              // Non-fatal: if S3 enrolled image is missing or request is slow, continue.
+              console.warn(
+                `[Group] Double-verify skipped for emp_id=${employeeRecord.emp_id}:`,
+                crossErr.message
+              );
             }
-          } catch (crossErr) {
-            // Non-fatal: if S3 enrolled image is missing, log and proceed.
-            // Do NOT block — network/S3 errors should not stop attendance.
-            console.warn(`[Group] Double-verify skipped for emp_id=${employeeRecord.emp_id}:`, crossErr.message);
           }
 
           // ✅ LAYER 3: Supervisor roster cross-check
@@ -2192,7 +2237,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         (entry) => entry.status === "punched"
       ).length;
 
-      fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Group Punch Results: ${JSON.stringify(results)}\n`);
+      safeDebugLog(`[${new Date().toISOString()}] Group Punch Results: ${JSON.stringify(results)}`);
 
       return res.json({
         success: punchedCount > 0,
@@ -2234,29 +2279,72 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     const matchedFace = matchedFaceResult?.Face ?? null;
 
     // 🔒 STRICT IDENTITY CHECK
-    // If we found a face in the system, it MUST be the selected employee.
+    // If we found a face in the system, it MUST resolve to the selected employee.
     if (matchedFace) {
       const matchedExternalRaw = matchedFace.ExternalImageId ?? null;
       const matchedExternalId = normalizeId(matchedExternalRaw);
-      const matchedExternalCode =
-        matchedExternalRaw !== null && matchedExternalRaw !== undefined
-          ? String(matchedExternalRaw).trim().toLowerCase()
-          : null;
-      const requestedCode = employeeRecord?.emp_code
-        ? String(employeeRecord.emp_code).trim().toLowerCase()
-        : null;
+      const resolvedMatchedEmployee = await resolveEmployeeFromFaceIdentifiers({
+        faceId: matchedFace.FaceId ?? null,
+        matchedExternalId: matchedExternalRaw,
+        requestedEmpId: null,
+      });
       const isMatchingSelectedEmployee =
-        (matchedExternalId !== null &&
-          String(matchedExternalId) === String(requestedEmpId)) ||
-        (matchedExternalCode && requestedCode && matchedExternalCode === requestedCode);
+        resolvedMatchedEmployee &&
+        String(resolvedMatchedEmployee.emp_id) === String(requestedEmpId);
 
       if (!isMatchingSelectedEmployee) {
-        fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${matchedExternalId}, but supervisor selected ${requestedEmpId}\n`);
-        return res.status(403).json({
-          error: "Identity Mismatch",
-          details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
-          suggestion: "Ensure you are punching for the correct person.",
-        });
+        // Last-chance individual verification against the selected employee.
+        // This prevents false mismatch rejects when collection top-match is noisy.
+        try {
+          const selectedFaceBuffer = await loadFaceBuffer(
+            employeeRecord.face_embedding,
+            employeeRecord.emp_id,
+            employeeRecord.emp_code
+          );
+          if (selectedFaceBuffer) {
+            const directMatch = await rekognition.send(
+              new CompareFacesCommand({
+                SourceImage: { Bytes: selectedFaceBuffer },
+                TargetImage: { Bytes: normalizedCaptureBuffer },
+                SimilarityThreshold: Math.max(88, Math.min(matchThreshold, 95)),
+              })
+            );
+            const directSimilarity =
+              directMatch?.FaceMatches?.[0]?.Similarity ?? 0;
+            if (directSimilarity >= Math.max(88, Math.min(matchThreshold, 95))) {
+              safeDebugLog(
+                `[${new Date().toISOString()}] Individual fallback verify passed for requestedEmpId=${requestedEmpId} with similarity=${directSimilarity}`
+              );
+            } else {
+              const resolvedEmp = resolvedMatchedEmployee?.emp_id ?? null;
+              safeDebugLog(`[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${resolvedEmp ?? matchedExternalId}, but supervisor selected ${requestedEmpId}`);
+              return res.status(403).json({
+                error: "Identity Mismatch",
+                details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
+                suggestion: "Ensure you are punching for the correct person.",
+              });
+            }
+          } else {
+            const resolvedEmp = resolvedMatchedEmployee?.emp_id ?? null;
+            safeDebugLog(`[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${resolvedEmp ?? matchedExternalId}, but supervisor selected ${requestedEmpId}`);
+            return res.status(403).json({
+              error: "Identity Mismatch",
+              details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
+              suggestion: "Ensure you are punching for the correct person.",
+            });
+          }
+        } catch (identityFallbackError) {
+          const resolvedEmp = resolvedMatchedEmployee?.emp_id ?? null;
+          safeDebugLog(
+            `[${new Date().toISOString()}] Individual fallback verify error for requestedEmpId=${requestedEmpId}: ${identityFallbackError?.message || identityFallbackError}`
+          );
+          safeDebugLog(`[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${resolvedEmp ?? matchedExternalId}, but supervisor selected ${requestedEmpId}`);
+          return res.status(403).json({
+            error: "Identity Mismatch",
+            details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
+            suggestion: "Ensure you are punching for the correct person.",
+          });
+        }
       }
     }
 
@@ -2358,7 +2446,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       throw err;
     }
 
-    fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Individual Punch Success: ${employeeRecord.emp_id}\n`);
+    safeDebugLog(`[${new Date().toISOString()}] Individual Punch Success: ${employeeRecord.emp_id}`);
     return res.json({
       success: true,
       employee: employeeRecord.name,
@@ -2370,7 +2458,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     });
   } catch (error) {
     console.error("Face attendance error:", error);
-    try { fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Face Attendance Route Error: ${error?.stack || error}\n`); } catch(e){}
+    safeDebugLog(`[${new Date().toISOString()}] Face Attendance Route Error: ${error?.stack || error}`);
 
     if (error.statusCode) {
       return res.status(error.statusCode).json({
@@ -3021,7 +3109,7 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
     });
   } catch (error) {
     console.error("Self punch error:", error);
-    try { fs.appendFileSync("debug-face.log", `[${new Date().toISOString()}] Self Punch Error: ${error?.stack || error}\n`); } catch(e){}
+    safeDebugLog(`[${new Date().toISOString()}] Self Punch Error: ${error?.stack || error}`);
     if (error.statusCode) {
       return res
         .status(error.statusCode)
