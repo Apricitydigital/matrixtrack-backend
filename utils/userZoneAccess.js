@@ -65,12 +65,14 @@ const fetchUserZoneAccess = async (user, options = {}) => {
           UNION
           SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1
           UNION
-          -- Fallback: supervisor_ward may hold sector_id; translate to wards
+          -- Legacy fallback: only treat supervisor_ward.ward_id as sector_id
+          -- when that value does not exist as a real ward_id.
           SELECT w.ward_id
-          FROM wards w
-          WHERE w.sector_id IN (
-            SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1
-          )
+          FROM supervisor_ward sw_legacy
+          LEFT JOIN wards w_direct ON w_direct.ward_id = sw_legacy.ward_id
+          JOIN wards w ON w.sector_id = sw_legacy.ward_id
+          WHERE sw_legacy.supervisor_id = $1
+            AND w_direct.ward_id IS NULL
         ) k
         JOIN wards w ON w.ward_id = k.ward_id
         LEFT JOIN sectors s ON s.sector_id = w.sector_id

@@ -208,7 +208,7 @@ const resolveDateRange = (rawStart, rawEnd) => {
   return { startDate: endIso, endDate: startIso };
 };
 
-const mapRowsToWards = (rows, supervisorUserId = null) => {
+const mapRowsToWards = (rows) => {
   const wardMap = {};
 
   rows.forEach((row) => {
@@ -220,11 +220,6 @@ const mapRowsToWards = (rows, supervisorUserId = null) => {
         ward_name: row.ward_name,
         city: row.city_name,
         zone: row.zone_name,
-        // ✅ Stamp supervisor_id on the ward too so the mobile app's
-        //    isEmployeeAssignedToSupervisor & enforceSupervisorIntegrity can
-        //    verify ownership when the employee object lacks the field.
-        supervisor_id: supervisorUserId ?? null,
-        supervisorId: supervisorUserId ?? null,
         employees: [],
       };
     }
@@ -246,11 +241,6 @@ const mapRowsToWards = (rows, supervisorUserId = null) => {
         ? Number(row.face_confidence)
         : null;
 
-    const supervisorIdStr =
-      supervisorUserId !== null && supervisorUserId !== undefined
-        ? String(supervisorUserId)
-        : null;
-
     wardMap[wardId].employees.push({
       emp_id: row.emp_id,
       emp_name: row.employee_name,
@@ -259,15 +249,6 @@ const mapRowsToWards = (rows, supervisorUserId = null) => {
       designation: row.designation_name,
       department: row.department_name,
       supervisor_name: row.supervisor_name,
-      // ✅ Supervisor ID fields — required by mobile app's integrity check
-      //    (enforceSupervisorIntegrity in DashboardScreen.js). Without these,
-      //    getSupervisorIdentifiers returns [] → MISSING_EMPLOYEE_SUPERVISOR error.
-      supervisor_id: supervisorIdStr,
-      supervisorId: supervisorIdStr,
-      assigned_supervisor_id: supervisorIdStr,
-      assignedSupervisorId: supervisorIdStr,
-      ward_supervisor_id: supervisorIdStr,
-      wardSupervisorId: supervisorIdStr,
       attendance_status: row.attendance_status,
       leave_type: row.leave_type,
       leaveType: row.leave_type,
@@ -288,15 +269,22 @@ const mapRowsToWards = (rows, supervisorUserId = null) => {
       self_attendance_enabled: Boolean(row.self_attendance_enabled),
       selfAttendanceEnabled: Boolean(row.self_attendance_enabled),
       punch_in_time: row.punch_in_time,
+      mid_shift_punch_in_time: row.mid_shift_punch_in_time,
       punch_out_time: row.punch_out_time,
       last_punch_time: row.last_punch_time,
       punch_in_display: row.punch_in_display,
+      mid_shift_punch_in_display: row.mid_shift_punch_in_display,
       punch_out_display: row.punch_out_display,
       last_punch_display: row.last_punch_display,
       has_punch_in: Boolean(row.has_punch_in),
+      has_mid_shift_punch_in: Boolean(row.has_mid_shift_punch_in),
+      has_punch_start: Boolean(row.has_punch_start),
       has_punch_out: Boolean(row.has_punch_out),
       punch_in_epoch: row.punch_in_epoch
         ? Number(row.punch_in_epoch)
+        : null,
+      mid_shift_punch_in_epoch: row.mid_shift_punch_in_epoch
+        ? Number(row.mid_shift_punch_in_epoch)
         : null,
       punch_out_epoch: row.punch_out_epoch
         ? Number(row.punch_out_epoch)
@@ -340,7 +328,7 @@ const fetchSupervisorSummary = async (
     baseFilters.push(`c.city_id = $${params.length}`);
   }
 
-  if (userId) {
+  if (userId && !hasZoneFilter && !hasKothiFilter) {
     // Fallback to user-linked wards/zones to avoid city-wide expansion
     params.push(userId);
     const userParam = params.length;
@@ -381,7 +369,7 @@ const fetchSupervisorSummary = async (
     attendance_status AS (
       SELECT
         se.emp_id,
-        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
       FROM scoped_employees se
@@ -442,139 +430,148 @@ const fetchSupervisorEmployees = async (
   const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
   const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
   await ensureSelfAttendanceSupport();
-  const params = [userId ?? null, startDate, endDate, cityId ?? null];
-  
-  let accessFilter = "TRUE";
-  // Only restrict if we're not allowing city fallback and no specific filters are applied
-  if (!allowCityFallback && userId) {
-    accessFilter = `($1::int IS NULL OR sw_exists.is_assigned OR kothi_rbac.is_assigned OR sup_kothi_rbac.is_assigned OR zone_rbac.is_assigned)`;
-  }
-  
-  const queryParts = [
-    `SELECT DISTINCT ON (e.emp_id)
-      e.emp_id,
-      e.name AS employee_name,
-      e.emp_code,
-      e.phone,
-      w.ward_id,
-      w.ward_name,
-      z.zone_id,
-      z.zone_name,
-      c.city_id,
-      c.city_name,
-      d.designation_name,
-      dept.department_name,
-      (
-        SELECT STRING_AGG(su.name, ', ')
-        FROM supervisor_ward sw2
-        JOIN users su ON sw2.supervisor_id = su.user_id
-        WHERE sw2.ward_id = e.ward_id
-      ) AS supervisor_name,
-      e.face_embedding,
-      e.face_confidence,
-      e.face_id,
-      e.self_attendance_enabled,
-      CASE
-          WHEN COALESCE(summary.has_leave, 0) = 1 THEN 'Leave'
-          WHEN COALESCE(summary.has_punch_in, 0) = 0 THEN 'Not Marked'
-          WHEN COALESCE(summary.has_punch_out, 0) = 1 THEN 'Marked'
-          ELSE 'In Progress'
-      END AS attendance_status,
-      COALESCE(summary.days_present, 0) AS days_present,
-      COALESCE(summary.days_marked, 0) AS days_marked,
-      summary.leave_type,
-      summary.has_punch_in,
-      summary.has_punch_out,
-      summary.last_punch_time,
-      summary.punch_in_time,
-      summary.punch_out_time,
-      summary.punch_in_display,
-      summary.punch_out_display,
-      summary.last_punch_display,
-      summary.punch_in_epoch,
-      summary.punch_out_epoch,
-      summary.last_punch_epoch
-    FROM employee e
-    LEFT JOIN wards w ON e.ward_id = w.ward_id
-    LEFT JOIN zones z ON w.zone_id = z.zone_id
-    LEFT JOIN cities c ON z.city_id = c.city_id
-    LEFT JOIN designation d ON e.designation_id = d.designation_id
-    LEFT JOIN department dept ON d.department_id = dept.department_id
-    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM supervisor_ward sw WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1) AS is_assigned) sw_exists ON TRUE
-    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM user_kothi_access uk WHERE uk.ward_id = e.ward_id AND uk.user_id = $1) AS is_assigned) kothi_rbac ON TRUE
-    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM supervisor_kothi sk WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1) AS is_assigned) sup_kothi_rbac ON TRUE
-    -- zone access should be checked against the employee's ward's zone, not a non-existent e.zone_id
-    LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM user_zone_access uz WHERE uz.zone_id = w.zone_id AND uz.user_id = $1) AS is_assigned) zone_rbac ON TRUE
-    LEFT JOIN (
-      SELECT  
+  const params = [
+    userId ?? null,
+    startDate,
+    endDate,
+    cityId ?? null,
+    Boolean(allowCityFallback),
+  ];
+  const zoneFilterSql = hasZoneFilter ? "AND z.zone_id = ANY($6::int[])" : "";
+  const kothiFilterSql = hasKothiFilter
+    ? `AND w.ward_id = ANY($${hasZoneFilter ? 7 : 6}::int[])`
+    : "";
+  if (hasZoneFilter) params.push(zoneIds);
+  if (hasKothiFilter) params.push(kothiIds);
+
+  const query = `
+    WITH scoped_employees AS (
+      SELECT DISTINCT
+        e.emp_id,
+        e.name AS employee_name,
+        e.emp_code,
+        e.phone,
+        w.ward_id,
+        w.ward_name,
+        z.zone_id,
+        z.zone_name,
+        c.city_id,
+        c.city_name,
+        d.designation_name,
+        dept.department_name,
+        e.face_embedding,
+        e.face_confidence,
+        e.face_id,
+        e.self_attendance_enabled
+      FROM employee e
+      JOIN wards w ON e.ward_id = w.ward_id
+      JOIN zones z ON w.zone_id = z.zone_id
+      JOIN cities c ON z.city_id = c.city_id
+      LEFT JOIN designation d ON e.designation_id = d.designation_id
+      LEFT JOIN department dept ON d.department_id = dept.department_id
+      WHERE ($4::int IS NULL OR c.city_id = $4::int)
+        ${zoneFilterSql}
+        ${kothiFilterSql}
+        AND (
+          $1::int IS NULL
+          OR $5::boolean = true
+          OR EXISTS (
+            SELECT 1 FROM supervisor_ward sw
+            WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1::int
+          )
+          OR EXISTS (
+            SELECT 1 FROM user_kothi_access uk
+            WHERE uk.ward_id = e.ward_id AND uk.user_id = $1::int
+          )
+          OR EXISTS (
+            SELECT 1 FROM supervisor_kothi sk
+            WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1::int
+          )
+          OR EXISTS (
+            SELECT 1 FROM user_zone_access uz
+            WHERE uz.zone_id = w.zone_id AND uz.user_id = $1::int
+          )
+        )
+    ),
+    attendance_summary AS (
+      SELECT
         a.emp_id,
-        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_start,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
-        COUNT(*) FILTER (WHERE a.punch_in_time IS NOT NULL) AS days_present,
-        COUNT(*) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
+        COUNT(DISTINCT a.date::date) FILTER (WHERE (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)) AS days_present,
+        COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
         MAX(a.leave_type) FILTER (WHERE a.leave_type IS NOT NULL) AS leave_type,
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
+        MAX(a.mid_shift_punch_in_time) FILTER (WHERE a.mid_shift_punch_in_time IS NOT NULL) AS mid_shift_punch_in_time,
         MAX(a.punch_out_time) FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,
         MAX(
           CASE
             WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
+            WHEN a.mid_shift_punch_in_time IS NOT NULL THEN a.mid_shift_punch_in_time
             WHEN a.punch_in_time IS NOT NULL THEN a.punch_in_time
             ELSE NULL
           END
-        ) AS last_punch_time,
-        TO_CHAR((MAX(a.punch_in_time) AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_in_display,
-        TO_CHAR((MAX(a.punch_out_time) AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_out_display,
-        TO_CHAR((
-          MAX(
-            CASE
-              WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
-              WHEN a.punch_in_time IS NOT NULL THEN a.punch_in_time
-              ELSE NULL
-            END
-          ) AT TIME ZONE 'Asia/Kolkata'
-        ), 'HH12:MI AM') AS last_punch_display,
-        EXTRACT(EPOCH FROM MAX(a.punch_in_time)) AS punch_in_epoch,
-        EXTRACT(EPOCH FROM MAX(a.punch_out_time)) AS punch_out_epoch,
-        EXTRACT(EPOCH FROM MAX(
-          CASE
-            WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
-            WHEN a.punch_in_time IS NOT NULL THEN a.punch_in_time
-            ELSE NULL
-          END
-        )) AS last_punch_epoch
+        ) AS last_punch_time
       FROM attendance a
+      JOIN scoped_employees se ON se.emp_id = a.emp_id
       WHERE a.date::date BETWEEN $2::date AND $3::date
       GROUP BY a.emp_id
-    ) summary ON summary.emp_id = e.emp_id`
-  ];
-
-  let whereClauses = [`($4::int IS NULL OR c.city_id = $4::int)`];
-  
-  if (hasZoneFilter) {
-    params.push(zoneIds);
-    whereClauses.push(`z.zone_id = ANY($${params.length}::int[])`);
-  }
-  
-  if (hasKothiFilter) {
-    params.push(kothiIds);
-    whereClauses.push(`w.ward_id = ANY($${params.length}::int[])`);
-  }
-
-  const query = `
-    ${queryParts[0]}
-    WHERE ${accessFilter}
-      AND ${whereClauses.join(' AND ')}
-    ORDER BY e.emp_id, w.ward_id, e.name;
+    )
+    SELECT
+      se.*,
+      (
+        SELECT STRING_AGG(su.name, ', ')
+        FROM supervisor_ward sw2
+        JOIN users su ON sw2.supervisor_id = su.user_id
+        WHERE sw2.ward_id = se.ward_id
+      ) AS supervisor_name,
+      CASE
+        WHEN COALESCE(summary.has_leave, 0) = 1 THEN 'Leave'
+        WHEN COALESCE(summary.has_punch_start, 0) = 0 THEN 'Not Marked'
+        WHEN COALESCE(summary.has_punch_out, 0) = 1 THEN 'Marked'
+        ELSE 'In Progress'
+      END AS attendance_status,
+      COALESCE(summary.days_present, 0) AS days_present,
+      COALESCE(summary.days_marked, 0) AS days_marked,
+      summary.has_punch_in,
+      summary.has_mid_shift_punch_in,
+      summary.has_punch_start,
+      summary.has_punch_out,
+      summary.last_punch_time,
+      summary.punch_in_time,
+      summary.mid_shift_punch_in_time,
+      summary.punch_out_time,
+      TO_CHAR(summary.punch_in_time, 'HH12:MI AM') AS punch_in_display,
+      TO_CHAR((summary.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS mid_shift_punch_in_display,
+      TO_CHAR(summary.punch_out_time, 'HH12:MI AM') AS punch_out_display,
+      COALESCE(
+        TO_CHAR(summary.punch_out_time, 'HH12:MI AM'),
+        TO_CHAR((summary.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM'),
+        TO_CHAR(summary.punch_in_time, 'HH12:MI AM')
+      ) AS last_punch_display,
+      EXTRACT(EPOCH FROM (summary.punch_in_time AT TIME ZONE 'Asia/Kolkata')) AS punch_in_epoch,
+      EXTRACT(EPOCH FROM summary.mid_shift_punch_in_time) AS mid_shift_punch_in_epoch,
+      EXTRACT(EPOCH FROM (summary.punch_out_time AT TIME ZONE 'Asia/Kolkata')) AS punch_out_epoch,
+      COALESCE(
+        EXTRACT(EPOCH FROM (summary.punch_out_time AT TIME ZONE 'Asia/Kolkata')),
+        EXTRACT(EPOCH FROM summary.mid_shift_punch_in_time),
+        EXTRACT(EPOCH FROM (summary.punch_in_time AT TIME ZONE 'Asia/Kolkata'))
+      ) AS last_punch_epoch
+    FROM scoped_employees se
+    LEFT JOIN attendance_summary summary ON summary.emp_id = se.emp_id
+    ORDER BY se.emp_id, se.ward_id, se.employee_name;
   `;
 
   const result = await pool.query(query, params);
   const rows = result.rows;
   console.log(`[DEBUG] fetchSupervisorEmployees: returned ${rows.length} rows for user ${userId} in city ${cityId}`);
 
-  // Pass userId so mapRowsToWards can stamp supervisor_id on every employee record.
-  // This is required by the mobile app's enforceSupervisorIntegrity check.
-  return mapRowsToWards(rows, userId);
+  // REMOVED allowCityFallback
+
+  return mapRowsToWards(rows);
 };
 
 const fetchCitySummary = async (
@@ -582,23 +579,23 @@ const fetchCitySummary = async (
   cityId,
   startDate,
   endDate,
-  zoneIds = [],
-  kothiIds = []
+  options = {}
 ) => {
+  const { zoneIds = [], kothiIds = [] } = options;
   const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
   const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
 
   const query = `
     WITH employee_city AS (
-      SELECT 
+      SELECT DISTINCT
         e.emp_id,
-        MIN(c.city_id) as city_id,
-        MIN(c.city_name) as city_name
+        c.city_id,
+        c.city_name
       FROM employee e
       JOIN wards w ON e.ward_id = w.ward_id
       JOIN zones z ON w.zone_id = z.zone_id
       JOIN cities c ON z.city_id = c.city_id
-      LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
+      LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
       WHERE ($1::int IS NULL OR 
              sw.supervisor_id = $1::int OR 
              w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $1) OR
@@ -607,15 +604,14 @@ const fetchCitySummary = async (
             )
         AND ($4::int IS NULL OR c.city_id = $4::int)
         ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
-        ${hasKothiFilter ? "AND w.ward_id = ANY($6::int[])" : ""}
-      GROUP BY e.emp_id
+        ${hasKothiFilter ? `AND w.ward_id = ANY($${hasZoneFilter ? 6 : 5}::int[])` : ""}
     ),
     attendance_status AS (
       SELECT
         ec.city_id,
         ec.city_name,
         ec.emp_id,
-        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
       FROM employee_city ec
@@ -632,7 +628,6 @@ const fetchCitySummary = async (
       COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
-      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave_only,
       GREATEST(
         COUNT(*) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
@@ -645,16 +640,8 @@ const fetchCitySummary = async (
   `;
 
   const params = [userId ?? null, startDate, endDate, cityId ?? null];
-  if (hasZoneFilter) {
-    params.push(zoneIds);
-  } else {
-    params.push([]); // Placeholder for $5
-  }
-  if (hasKothiFilter) {
-    params.push(kothiIds);
-  } else {
-    params.push([]); // Placeholder for $6
-  }
+  if (hasZoneFilter) params.push(zoneIds);
+  if (hasKothiFilter) params.push(kothiIds);
 
   const result = await pool.query(query, params);
 
@@ -679,9 +666,13 @@ const fetchZoneSummary = async (
   cityId,
   startDate,
   endDate,
-  allowCityFallback = false
+  options = {}
 ) => {
-  const cityFallbackClause = allowCityFallback
+  const { zoneIds = [], kothiIds = [] } = options;
+  const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
+  const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
+
+  const cityFallbackClause = options.isAdmin
     ? "OR z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)"
     : "";
   const query = `
@@ -703,13 +694,15 @@ const fetchZoneSummary = async (
              ${cityFallbackClause}
             )
         AND ($4::int IS NULL OR c.city_id = $4::int)
+        ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
+        ${hasKothiFilter ? `AND w.ward_id = ANY($${hasZoneFilter ? 6 : 5}::int[])` : ""}
     ),
     attendance_status AS (
       SELECT
         ez.zone_id,
         ez.zone_name,
         ez.emp_id,
-        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave
       FROM employee_zone ez
@@ -733,6 +726,9 @@ const fetchZoneSummary = async (
   `;
 
   const params = [userId ?? null, startDate, endDate, cityId ?? null];
+  if (hasZoneFilter) params.push(zoneIds);
+  if (hasKothiFilter) params.push(kothiIds);
+
   const result = await pool.query(query, params);
 
   return result.rows.map((row) => ({
@@ -994,19 +990,19 @@ router.post("/city-summary", async (req, res) => {
       .status(403)
       .json({ error: "Forbidden: city not permitted for dashboard" });
   }
+  try {
+    const allowedZoneIds = resolveZoneScope(req);
+    const allowedKothiIds = resolveKothiScope(req);
 
-  const allowedZoneIds = resolveZoneScope(req);
-  const allowedKothiIds = resolveKothiScope(req);
-
-  const requestedZoneIds = parseIdList(
-    req.body?.zoneIds ||
+    const requestedZoneIds = parseIdList(
+      req.body?.zoneIds ||
       req.body?.zone_ids ||
       req.body?.zones ||
       req.body?.zoneId ||
       req.body?.zone_id
-  );
-  const requestedKothiIds = parseIdList(
-    req.body?.kothiIds ||
+    );
+    const requestedKothiIds = parseIdList(
+      req.body?.kothiIds ||
       req.body?.kothi_ids ||
       req.body?.wardIds ||
       req.body?.ward_ids ||
@@ -1014,27 +1010,22 @@ router.post("/city-summary", async (req, res) => {
       req.body?.kothi_id ||
       req.body?.wardId ||
       req.body?.ward_id
-  );
+    );
 
-  const zoneIds =
-    requestedZoneIds.length > 0
-      ? requestedZoneIds.filter((id) => allowedZoneIds.includes(id))
+    const zoneIds = requestedZoneIds.length > 0
+      ? requestedZoneIds.filter(id => allowedZoneIds.includes(id))
       : allowedZoneIds;
-  const kothiIds =
-    requestedKothiIds.length > 0
-      ? requestedKothiIds.filter((id) => allowedKothiIds.includes(id))
+    const kothiIds = requestedKothiIds.length > 0
+      ? requestedKothiIds.filter(id => allowedKothiIds.includes(id))
       : allowedKothiIds;
 
-  try {
     const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
     const summary = await fetchCitySummary(
       effectiveUserId,
       scopedCityId,
       startDate,
       endDate,
-      zoneIds,
-      kothiIds,
-      isAdmin
+      { zoneIds, kothiIds, isAdmin }
     );
 
     res.json({ success: true, data: summary });
@@ -1064,15 +1055,42 @@ router.post("/zone-summary", async (req, res) => {
   const { cityId: scopedCityId, allowed } = enforceCityScope(req, cityId ?? null);
   if (!allowed)
     return res.status(403).json({ error: "Forbidden: city not permitted" });
-
   try {
+    const allowedZoneIds = resolveZoneScope(req);
+    const allowedKothiIds = resolveKothiScope(req);
+
+    const requestedZoneIds = parseIdList(
+      req.body?.zoneIds ||
+      req.body?.zone_ids ||
+      req.body?.zones ||
+      req.body?.zoneId ||
+      req.body?.zone_id
+    );
+    const requestedKothiIds = parseIdList(
+      req.body?.kothiIds ||
+      req.body?.kothi_ids ||
+      req.body?.wardIds ||
+      req.body?.ward_ids ||
+      req.body?.kothiId ||
+      req.body?.kothi_id ||
+      req.body?.wardId ||
+      req.body?.ward_id
+    );
+
+    const zoneIds = requestedZoneIds.length > 0
+      ? requestedZoneIds.filter(id => allowedZoneIds.includes(id))
+      : allowedZoneIds;
+    const kothiIds = requestedKothiIds.length > 0
+      ? requestedKothiIds.filter(id => allowedKothiIds.includes(id))
+      : allowedKothiIds;
+
     const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
     const summary = await fetchZoneSummary(
       effectiveUserId,
       scopedCityId,
       startDate,
       endDate,
-      isAdmin
+      { zoneIds, kothiIds, isAdmin }
     );
     res.json({ success: true, data: summary });
   } catch (error) {
@@ -1231,9 +1249,8 @@ router.post("/", async (req, res) => {
       ? requestedKothiIds.filter((id) => allowedKothiIds.includes(id))
       : allowedKothiIds;
 
-  // A supervisor can see everything if they have city-wide access (scope.all)
-  const isCityWideSupervisor = !isAdmin && (req.cityScope?.all === true);
-  const allowCityFallback = isAdmin || isCityWideSupervisor;
+  // Keep employees query constrained to assigned scope for supervisors.
+  const allowCityFallback = isAdmin;
 
   try {
     const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
@@ -1253,126 +1270,77 @@ router.post("/", async (req, res) => {
   }
 });
 
+module.exports = router;
+
 // ── Top Performing Supervisors ─────────────────────────────────────────────
 router.post("/top-supervisors", async (req, res) => {
-  const { city_id, startDate: startDateRaw, endDate: endDateRaw, zoneIds, kothiIds } = req.body;
+  const requestingUser = req.user;
+  const isAdmin = requestingUser?.role === "admin";
+  const { city_id, startDate: startDateRaw, endDate: endDateRaw } = req.body;
   const { cityId, valid: cityValid } = normalizeCityIdInput(city_id);
 
   if (!cityValid) {
     return res.status(400).json({ error: "Invalid city ID" });
   }
 
-  const { cityId: scopedCityId, allowed } = enforceCityScope(req, cityId ?? null);
-  if (!allowed) {
-    return res
-      .status(403)
-      .json({ error: "Forbidden: city not permitted" });
-  }
+  const { cityId: scopedCityId } = enforceCityScope(req, cityId ?? null);
+  const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
+
+  const params = [startDate, endDate, scopedCityId ?? null];
+
+  const query = `
+    SELECT
+      u.user_id AS supervisor_id,
+      u.name,
+      COUNT(DISTINCT e.emp_id) AS total_employees,
+      COUNT(DISTINCT CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN e.emp_id END) AS present,
+      COUNT(DISTINCT CASE WHEN a.leave_type IS NOT NULL THEN e.emp_id END) AS on_leave,
+      GREATEST(
+        COUNT(DISTINCT e.emp_id) -
+        COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN e.emp_id END),
+        0
+      ) AS absent,
+      COUNT(DISTINCT CASE WHEN a.punch_out_time IS NOT NULL THEN e.emp_id END) AS fully_marked,
+      CASE
+        WHEN COUNT(DISTINCT e.emp_id) > 0 THEN
+          ROUND(
+            (COUNT(DISTINCT CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN e.emp_id END)::numeric /
+             COUNT(DISTINCT e.emp_id)) * 100, 1
+          )
+        ELSE 0
+      END AS attendance_rate
+    FROM users u
+    JOIN supervisor_ward sw ON sw.supervisor_id = u.user_id
+    JOIN wards w ON w.ward_id = sw.ward_id
+    JOIN zones z ON z.zone_id = w.zone_id
+    JOIN cities c ON c.city_id = z.city_id
+    JOIN employee e ON e.ward_id = w.ward_id
+    LEFT JOIN attendance a
+      ON a.emp_id = e.emp_id
+     AND a.date::date BETWEEN $1::date AND $2::date
+    WHERE ($3::int IS NULL OR c.city_id = $3::int)
+    GROUP BY u.user_id, u.name
+    HAVING COUNT(DISTINCT e.emp_id) > 0
+    ORDER BY attendance_rate DESC, present DESC
+    LIMIT 10;
+  `;
 
   try {
-    const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
-
-    const params = [startDate, endDate];
-    let extraFilters = "";
-    if (scopedCityId !== null && scopedCityId !== undefined) {
-      params.push(scopedCityId);
-      extraFilters += ` AND c.city_id = $${params.length}`;
-    }
-    
-    if (Array.isArray(zoneIds) && zoneIds.length > 0) {
-      params.push(zoneIds);
-      extraFilters += ` AND z.zone_id = ANY($${params.length}::int[])`;
-    }
-    
-    if (Array.isArray(kothiIds) && kothiIds.length > 0) {
-      params.push(kothiIds);
-      extraFilters += ` AND w.ward_id = ANY($${params.length}::int[])`;
-    }
-
-    const query = `
-      WITH supervisor_employees AS (
-        SELECT DISTINCT
-          u.user_id       AS supervisor_id,
-          u.name          AS supervisor_name,
-          u.emp_code      AS supervisor_emp_code,
-          e.emp_id
-        FROM users u
-        JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
-        JOIN wards w            ON sw.ward_id = w.ward_id
-        JOIN zones z            ON w.zone_id  = z.zone_id
-        JOIN cities c           ON z.city_id  = c.city_id
-        JOIN employee e         ON e.ward_id  = w.ward_id
-        WHERE u.role = 'supervisor'
-          ${extraFilters}
-      ),
-      emp_status AS (
-        SELECT
-          se.supervisor_id,
-          se.supervisor_name,
-          se.supervisor_emp_code,
-          se.emp_id,
-          MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
-          MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
-          MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
-        FROM supervisor_employees se
-        LEFT JOIN attendance a
-          ON a.emp_id = se.emp_id
-         AND a.date::date BETWEEN $1::date AND $2::date
-        GROUP BY se.supervisor_id, se.supervisor_name, se.supervisor_emp_code, se.emp_id
-      ),
-      supervisor_agg AS (
-        SELECT
-          supervisor_id,
-          supervisor_name,
-          supervisor_emp_code,
-          COUNT(*) AS total_employees,
-          COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
-          COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS on_leave,
-          COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
-          COALESCE(SUM(CASE WHEN has_punch_in = 0 AND has_leave = 0 THEN 1 ELSE 0 END), 0) AS absent
-        FROM emp_status
-        GROUP BY supervisor_id, supervisor_name, supervisor_emp_code
-      )
-      SELECT
-        supervisor_id,
-        supervisor_name,
-        supervisor_emp_code,
-        total_employees,
-        present,
-        on_leave,
-        fully_marked,
-        absent,
-        CASE
-          WHEN total_employees > 0
-            THEN LEAST(ROUND(((present + on_leave)::numeric / total_employees) * 100, 1), 100)
-          ELSE 0
-        END AS attendance_rate
-      FROM supervisor_agg
-      WHERE total_employees > 0
-      ORDER BY attendance_rate DESC, total_employees DESC
-      LIMIT 10;
-    `;
-
     const result = await pool.query(query, params);
-
-    const supervisors = result.rows.map((row) => ({
+    const data = result.rows.map((row) => ({
       supervisor_id: row.supervisor_id,
-      name: row.supervisor_name,
-      emp_code: row.supervisor_emp_code || "",
+      name: row.name,
       total_employees: Number(row.total_employees) || 0,
       present: Number(row.present) || 0,
       on_leave: Number(row.on_leave) || 0,
-      fully_marked: Number(row.fully_marked) || 0,
       absent: Number(row.absent) || 0,
+      fully_marked: Number(row.fully_marked) || 0,
       attendance_rate: Number(row.attendance_rate) || 0,
     }));
-
-    res.json({ success: true, data: supervisors });
+    res.json({ success: true, data });
   } catch (error) {
     console.error("Error fetching top supervisors:", error);
     logError("top-supervisors", error);
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
-
-module.exports = router;

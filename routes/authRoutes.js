@@ -10,6 +10,9 @@ const {
 } = require("../utils/selfAttendance");
 
 const router = express.Router();
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "45d";
+const JWT_COOKIE_MAX_AGE_MS =
+  Number(process.env.JWT_COOKIE_MAX_AGE_MS) || 45 * 24 * 60 * 60 * 1000;
 
 const getUserAccessProfile = async (userId) => {
   const rolesQuery = `
@@ -285,7 +288,7 @@ router.post("/login", async (req, res) => {
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: JWT_EXPIRES_IN }
     );
 
     const access = await getUserAccessProfile(user.rows[0].user_id);
@@ -293,7 +296,10 @@ router.post("/login", async (req, res) => {
     const primaryRole =
       access.roles?.[0]?.name || user.rows[0].role || "user";
 
-    res.cookie("token", token, { httpOnly: true });
+    res.cookie("token", token, {
+      httpOnly: true,
+      maxAge: JWT_COOKIE_MAX_AGE_MS,
+    });
     const allowedCities = await computeAllowedCities(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
     const employeeProfile = await fetchEmployeeProfile(user.rows[0].emp_code);
@@ -350,7 +356,7 @@ router.post("/supervisor-login", async (req, res) => {
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: JWT_EXPIRES_IN }
     );
 
     const access = await getUserAccessProfile(user.rows[0].user_id);
