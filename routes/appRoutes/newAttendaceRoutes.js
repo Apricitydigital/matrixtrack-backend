@@ -2279,29 +2279,72 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     const matchedFace = matchedFaceResult?.Face ?? null;
 
     // 🔒 STRICT IDENTITY CHECK
-    // If we found a face in the system, it MUST be the selected employee.
+    // If we found a face in the system, it MUST resolve to the selected employee.
     if (matchedFace) {
       const matchedExternalRaw = matchedFace.ExternalImageId ?? null;
       const matchedExternalId = normalizeId(matchedExternalRaw);
-      const matchedExternalCode =
-        matchedExternalRaw !== null && matchedExternalRaw !== undefined
-          ? String(matchedExternalRaw).trim().toLowerCase()
-          : null;
-      const requestedCode = employeeRecord?.emp_code
-        ? String(employeeRecord.emp_code).trim().toLowerCase()
-        : null;
+      const resolvedMatchedEmployee = await resolveEmployeeFromFaceIdentifiers({
+        faceId: matchedFace.FaceId ?? null,
+        matchedExternalId: matchedExternalRaw,
+        requestedEmpId: null,
+      });
       const isMatchingSelectedEmployee =
-        (matchedExternalId !== null &&
-          String(matchedExternalId) === String(requestedEmpId)) ||
-        (matchedExternalCode && requestedCode && matchedExternalCode === requestedCode);
+        resolvedMatchedEmployee &&
+        String(resolvedMatchedEmployee.emp_id) === String(requestedEmpId);
 
       if (!isMatchingSelectedEmployee) {
-        safeDebugLog(`[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${matchedExternalId}, but supervisor selected ${requestedEmpId}`);
-        return res.status(403).json({
-          error: "Identity Mismatch",
-          details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
-          suggestion: "Ensure you are punching for the correct person.",
-        });
+        // Last-chance individual verification against the selected employee.
+        // This prevents false mismatch rejects when collection top-match is noisy.
+        try {
+          const selectedFaceBuffer = await loadFaceBuffer(
+            employeeRecord.face_embedding,
+            employeeRecord.emp_id,
+            employeeRecord.emp_code
+          );
+          if (selectedFaceBuffer) {
+            const directMatch = await rekognition.send(
+              new CompareFacesCommand({
+                SourceImage: { Bytes: selectedFaceBuffer },
+                TargetImage: { Bytes: normalizedCaptureBuffer },
+                SimilarityThreshold: Math.max(88, Math.min(matchThreshold, 95)),
+              })
+            );
+            const directSimilarity =
+              directMatch?.FaceMatches?.[0]?.Similarity ?? 0;
+            if (directSimilarity >= Math.max(88, Math.min(matchThreshold, 95))) {
+              safeDebugLog(
+                `[${new Date().toISOString()}] Individual fallback verify passed for requestedEmpId=${requestedEmpId} with similarity=${directSimilarity}`
+              );
+            } else {
+              const resolvedEmp = resolvedMatchedEmployee?.emp_id ?? null;
+              safeDebugLog(`[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${resolvedEmp ?? matchedExternalId}, but supervisor selected ${requestedEmpId}`);
+              return res.status(403).json({
+                error: "Identity Mismatch",
+                details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
+                suggestion: "Ensure you are punching for the correct person.",
+              });
+            }
+          } else {
+            const resolvedEmp = resolvedMatchedEmployee?.emp_id ?? null;
+            safeDebugLog(`[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${resolvedEmp ?? matchedExternalId}, but supervisor selected ${requestedEmpId}`);
+            return res.status(403).json({
+              error: "Identity Mismatch",
+              details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
+              suggestion: "Ensure you are punching for the correct person.",
+            });
+          }
+        } catch (identityFallbackError) {
+          const resolvedEmp = resolvedMatchedEmployee?.emp_id ?? null;
+          safeDebugLog(
+            `[${new Date().toISOString()}] Individual fallback verify error for requestedEmpId=${requestedEmpId}: ${identityFallbackError?.message || identityFallbackError}`
+          );
+          safeDebugLog(`[${new Date().toISOString()}] Individual Punch Failed: Identity Mismatch. Camera saw ${resolvedEmp ?? matchedExternalId}, but supervisor selected ${requestedEmpId}`);
+          return res.status(403).json({
+            error: "Identity Mismatch",
+            details: `The captured face belongs to someone else, not ${employeeRecord.name}.`,
+            suggestion: "Ensure you are punching for the correct person.",
+          });
+        }
       }
     }
 
