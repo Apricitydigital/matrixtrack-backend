@@ -68,3 +68,123 @@
     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
     at async fetchSupervisorEmployees (/Users/Developer/insstanto/MatrixTrack/AttendEaseBackend/routes/appRoutes/supervisorsWard.js:548:18)
     at async /Users/Developer/insstanto/MatrixTrack/AttendEaseBackend/routes/appRoutes/supervisorsWard.js:1176:22
+[2026-05-27T12:09:53.228Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:567:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1236:22
+[2026-05-27T12:09:53.509Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:567:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1236:22
+[2026-05-27T12:09:56.682Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:567:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1236:22
+[2026-05-27T12:10:09.179Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:567:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1236:22
+[2026-05-27T12:10:10.149Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:567:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1236:22
+[2026-05-28T09:14:14.116Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:14:14.331Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:14:15.020Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:14:15.077Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:14:15.345Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:14:16.910Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:14:18.790Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:14:44.311Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:14:44.594Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:14:44.694Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:15:22.017Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:15:22.148Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:15:40.713Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:15:40.935Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:19:31.168Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:19:31.566Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:19:31.863Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:19:33.184Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
+[2026-05-28T09:19:54.423Z] city-summary: error: bind message supplies 6 parameters, but prepared statement "" requires 4
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchCitySummary (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1030:21
