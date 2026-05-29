@@ -651,3 +651,86 @@
     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     at async fetchSupervisorEmployees (C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:548:18)
     at async C:\Users\hmsmi\Downloads\apricity-matrixtrack-project\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1238:22
+[2026-05-29T05:06:54.658Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T05:32:14.088Z] top-supervisors: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1329:20
+[2026-05-29T06:13:02.669Z] kothi-list: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at runNextTicks (node:internal/process/task_queues:60:5)
+    at listOnTimeout (node:internal/timers:540:9)
+    at process.processTimers (node:internal/timers:514:7)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:935:22
+[2026-05-29T06:13:02.683Z] wards-post: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at runNextTicks (node:internal/process/task_queues:60:5)
+    at listOnTimeout (node:internal/timers:540:9)
+    at process.processTimers (node:internal/timers:514:7)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T06:13:02.688Z] wards-post: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at runNextTicks (node:internal/process/task_queues:60:5)
+    at listOnTimeout (node:internal/timers:540:9)
+    at process.processTimers (node:internal/timers:514:7)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T06:13:02.695Z] wards-post: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T06:13:17.704Z] wards-post: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T06:13:17.707Z] wards-post: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T06:13:17.710Z] wards-post: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T06:13:17.718Z] wards-post: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T06:48:46.161Z] kothi-list: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:935:22
+[2026-05-29T06:49:01.221Z] top-supervisors: Error: timeout exceeded when trying to connect
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1329:20
+[2026-05-29T07:01:54.066Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T07:02:09.095Z] wards-post: Error: Connection terminated due to connection timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T07:02:11.575Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T07:02:23.246Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T07:02:29.741Z] wards-post: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:568:18)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1257:22
+[2026-05-29T07:02:38.151Z] top-supervisors: error: canceling statement due to statement timeout
+    at C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async C:\Users\HP\Downloads\Matrix Track Project -april\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1329:20
