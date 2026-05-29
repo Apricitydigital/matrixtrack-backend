@@ -25,6 +25,12 @@ const authenticate = require("../middleware/authMiddleware");
 const { attachCityScope, requireCityScope, buildCityFilterClause } = require("../middleware/cityScope");
 const { attachKothiScope, buildKothiFilterClause } = require("../middleware/kothiScope");
 
+const parseId = (id) => {
+  if (id === null || id === undefined || id === "" || id === "null" || id === "undefined") return null;
+  const parsed = parseInt(id, 10);
+  return isNaN(parsed) ? null : parsed;
+};
+
 const resolveFaceImageUrl = (faceEmbedding, empId) => {
   if (!faceEmbedding) {
     return null;
@@ -55,17 +61,8 @@ const formatEmployeeRow = (row = {}) => {
     face_registered: faceRegistered,
     faceRegistered,
     face_image_url: faceImageUrl,
-    faceImageUrl,
-    aadhar_no: row.aadhar_no,
-    aadhar_url: row.aadhar_url
+    faceImageUrl
   };
-};
-
-const parseId = (id) => {
-  if (id === undefined || id === null) return null;
-  if (typeof id === "string" && id.trim() === "") return null;
-  const parsed = parseInt(id, 10);
-  return isNaN(parsed) ? null : parsed;
 };
 
 // 🟢 Fetch all employees with city, zone, ward, department, and designation
@@ -135,16 +132,28 @@ router.post("/", async (req, res) => {
   `;
 
   try {
+    const pWardId = parseId(ward_id);
+    const pDesignationId = parseId(designation_id);
+
+    if (!pWardId) {
+       console.error("[Employee] ward_id is missing or invalid:", ward_id);
+       return res.status(400).json({ error: "Location (Ward/Kothi) is required" });
+    }
+
     const result = await pool.query(upsertEmployeeQuery, [
       emp_code,
       name,
       phone,
-      parseId(ward_id),
-      parseId(designation_id),
+      pWardId,
+      pDesignationId,
       req.body.aadhar_no || null
     ]);
     return res.status(200).json(result.rows[0]);
   } catch (error) {
+    console.error("[Employee] Upsert error:", error);
+    if (error.code === "23502") {
+      return res.status(400).json({ error: `Field "${error.column}" is required and cannot be null.` });
+    }
     if (error.code === "23505") {
       return res.status(409).json({
         message: "Employee already exists",

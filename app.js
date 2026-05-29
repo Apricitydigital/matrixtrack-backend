@@ -5,10 +5,13 @@ const cookieParser = require("cookie-parser");
 const path = require("path");
 const cron = require("node-cron");
 const { runAutoPunchOut } = require("./utils/autoPunchOutScheduler");
+const { runProfessionalPunchInReminder } = require("./utils/professionalPunchInReminder");
 const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const http = require("http");
+const socketio = require("./utils/socket");
 
 
 process.on("unhandledRejection", (reason) => {
@@ -31,15 +34,31 @@ const authRoutes = require("./routes/authRoutes");
 const allRoutes = require("./routes/index");
 const appRoutes = require("./routes/appRoutes/index");
 const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
+const supervisorAadharRoutes = require("./routes/supervisorAadharRoutes");
+const supervisorPhotoRoutes = require("./routes/supervisorPhotoRoutes");
 
 const app = express();
+
+const resolveTrustProxy = (rawValue) => {
+  const normalized = String(rawValue ?? "").trim().toLowerCase();
+  if (!normalized) return 1; // Default: one reverse proxy hop (nginx/load balancer)
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  const numeric = Number(normalized);
+  if (Number.isInteger(numeric) && numeric >= 0) return numeric;
+  return rawValue; // Allow values like "loopback, linklocal, uniquelocal"
+};
+const trustProxyValue = resolveTrustProxy(process.env.EXPRESS_TRUST_PROXY);
+app.set("trust proxy", trustProxyValue);
+console.log(`[HTTP] trust proxy = ${JSON.stringify(trustProxyValue)}`);
 
 // Middleware
 app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.url}`); 
   next();
 });
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
+app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 const defaultOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
@@ -61,6 +80,8 @@ const defaultOrigins = [
   "http://10.205.83.56:19000",
   "https://portal.matrixtrack.in",
   "https://api.matrixtrack.in",
+  "https://uat.matrixtrack.in",
+  "https://matrixtrack-uat.onrender.com",
 ];
 
 const parseOrigins = (value) =>
@@ -342,43 +363,65 @@ if (isPrimaryCronInstance) {
 
 // =======================
 // ⏰ AUTO PUNCH-OUT CRON
-// Runs at the top of every hour.
-// Keeps re-running for 10 minutes (every 30s) to catch all eligible employees.
+// Runs once daily at 9:00 PM IST.
 // Set AUTO_PUNCHOUT_CRON_ENABLED=false in .env to disable.
 // =======================
 const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "false";
-const AUTO_PUNCHOUT_CRON_EXPR = process.env.AUTO_PUNCHOUT_CRON_EXPR || "0 * * * *";
+const AUTO_PUNCHOUT_CRON_EXPR = "0 21 * * *";
+const PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED =
+  process.env.PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED !== "false";
+const PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR =
+  process.env.PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR || "0 10 * * *";
 
 if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     AUTO_PUNCHOUT_CRON_EXPR,
     async () => {
-      console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
-
-
-
-      const WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-      const INTERVAL_MS = 30 * 1000;    // every 30 seconds
-      const startTime = Date.now();
-
-      // Run immediately on trigger
+      console.log("[AutoPunchOut Cron] ⏰ Daily 9:00 PM trigger started.");
       await runAutoPunchOut();
-
-      // Then repeat every 30s for 10 minutes
-      const intervalId = setInterval(async () => {
-        if (Date.now() - startTime >= WINDOW_MS) {
-          clearInterval(intervalId);
-          console.log("[AutoPunchOut Cron] ✅ 10-minute window complete. Stopping.");
-          return;
-        }
-        await runAutoPunchOut();
-      }, INTERVAL_MS);
     },
     { timezone: "Asia/Kolkata" }
   );
-  console.log(`[AutoPunchOut Cron] ✅ Registered — schedule: "${AUTO_PUNCHOUT_CRON_EXPR}", runs for 10 minutes.`);
+  console.log(`[AutoPunchOut Cron] ✅ Registered — schedule: "${AUTO_PUNCHOUT_CRON_EXPR}" (9:00 PM IST).`);
 } else {
   console.log("[AutoPunchOut Cron] ⏭ Disabled or non-primary instance — skipping.");
+}
+
+if (PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED && isPrimaryCronInstance) {
+  cron.schedule(
+    PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR,
+    async () => {
+      const client = await pool.connect();
+      let lockAcquired = false;
+      const REMINDER_LOCK_ID = 812351;
+      try {
+        const { rows } = await client.query(
+          "SELECT pg_try_advisory_lock($1) AS locked",
+          [REMINDER_LOCK_ID]
+        );
+        lockAcquired = Boolean(rows[0]?.locked);
+        if (!lockAcquired) {
+          console.log("[ProfessionalReminderCron] Another instance is running; skipping.");
+          return;
+        }
+
+        await runProfessionalPunchInReminder();
+      } catch (error) {
+        console.error("[ProfessionalReminderCron] Cron error:", error.message);
+      } finally {
+        if (lockAcquired) {
+          await client.query("SELECT pg_advisory_unlock($1)", [REMINDER_LOCK_ID]);
+        }
+        client.release();
+      }
+    },
+    { timezone: "Asia/Kolkata" }
+  );
+  console.log(
+    `[ProfessionalReminderCron] ✅ Registered — schedule: "${PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR}" (IST).`
+  );
+} else {
+  console.log("[ProfessionalReminderCron] ⏭ Disabled or non-primary instance — skipping.");
 }
 
 // General API Route
@@ -387,6 +430,37 @@ app.get("/", (req, res) => {
 });
 
 // Auth Routes
+app.post("/api/auth/check-duplicate", async (req, res) => {
+  const { email, emp_code, phone, aadhar_number } = req.body;
+  try {
+    let emailExists = false;
+    let empCodeExists = false;
+    let phoneExists = false;
+    let aadharExists = false;
+
+    if (email) {
+      const emailCheck = await pool.query("SELECT user_id FROM users WHERE email = $1 LIMIT 1", [email.trim().toLowerCase()]);
+      emailExists = emailCheck.rowCount > 0;
+    }
+    if (emp_code) {
+      const empCodeCheck = await pool.query("SELECT user_id FROM users WHERE emp_code = $1 LIMIT 1", [emp_code.trim()]);
+      empCodeExists = empCodeCheck.rowCount > 0;
+    }
+    if (phone) {
+      const phoneCheck = await pool.query("SELECT user_id FROM users WHERE phone = $1 LIMIT 1", [phone.trim()]);
+      phoneExists = phoneCheck.rowCount > 0;
+    }
+    if (aadhar_number) {
+      const aadharCheck = await pool.query("SELECT user_id FROM users WHERE aadhar_number = $1 LIMIT 1", [aadhar_number.trim()]);
+      aadharExists = aadharCheck.rowCount > 0;
+    }
+
+    res.json({ emailExists, empCodeExists, phoneExists, aadharExists });
+  } catch (error) {
+    console.error("Duplicate check error:", error);
+    res.status(500).json({ error: "Check failed" });
+  }
+});
 app.use("/api/auth", authRoutes);
 
 // Other Routes
@@ -395,13 +469,19 @@ app.use("/api", allRoutes);
 // App Routes
 app.use("/api/app", appRoutes);
 app.use("/api/app/attendance/employee", selfAttendanceRoutes);
+app.use("/api/supervisor-aadhar", supervisorAadharRoutes);
+app.use("/api/supervisor-photo", supervisorPhotoRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 5000;
 
+// Create HTTP server and initialize Socket.io
+const server = http.createServer(app);
+socketio.init(server);
+
 // Run migrations before starting the server
 runMigrations().then(() => {
-  app.listen(PORT, "0.0.0.0", () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
 }).catch(err => {

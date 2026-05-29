@@ -373,7 +373,8 @@ const buildReportData = async () => {
   const totalRegisteredAcrossZones = cityTotalRegistered;
   const totalPresentAcrossZones = categoryPresentSum;
   const totalAbsentAcrossZones = Math.max(
-    totalRegisteredAcrossZones - totalPresentAcrossZones, 0
+    totalRegisteredAcrossZones - totalPresentAcrossZones,
+    0
   );
 
   return {
