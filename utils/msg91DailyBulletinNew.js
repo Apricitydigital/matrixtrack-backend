@@ -4,7 +4,7 @@ const axios = require("axios");
 const BASE_URL = (process.env.MSG91_WHATSAPP_BASE_URL || "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk").replace(/\/+$/, "");
 const AUTH_KEY = process.env.MSG91_WHATSAPP_AUTH_KEY || process.env.MSG91_AUTH_KEY;
 const TEMPLATE_NAMESPACE = "5c8f516b_8ec5_4384_bb73_3bfd7a369e84";
-const TEMPLATE_NAME = "pmc_swm_pune_daily_bulletin_v2"; // New V2 template name
+const TEMPLATE_NAME = "daily_bulletin_pmc_swm_new";
 const TEMPLATE_LANGUAGE = "en";
 const INTEGRATED_NUMBER = "919111001035";
 
@@ -38,7 +38,30 @@ const getReportDates = (overrideDate) => {
 const generateDailyBulletinData = async (overrideDate) => {
   const { isoDate, displayDate } = getReportDates(overrideDate);
 
-  const query = `
+  const cityQuery = `
+    SELECT
+      COUNT(DISTINCT e.emp_id) as registered,
+      COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN e.emp_id END) as present,
+      COUNT(DISTINCT CASE WHEN a.leave_type IS NOT NULL THEN e.emp_id END) as on_leave
+    FROM employee e
+    JOIN wards w ON e.ward_id = w.ward_id
+    JOIN zones z ON w.zone_id = z.zone_id
+    JOIN cities c ON z.city_id = c.city_id
+    LEFT JOIN attendance a ON e.emp_id = a.emp_id AND a.date::date = $1::date
+    WHERE c.city_name = $2
+      AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
+  `;
+
+  const cityResult = await pool.query(cityQuery, [isoDate, REPORT_CITY]);
+  const cityRow = cityResult.rows[0] || { registered: 0, present: 0, on_leave: 0 };
+
+  const cityRegistered = parseInt(cityRow.registered || 0, 10);
+  const cityPresent = parseInt(cityRow.present || 0, 10);
+  const cityLeave = parseInt(cityRow.on_leave || 0, 10);
+  const cityAbsent = Math.max(cityRegistered - (cityPresent + cityLeave), 0);
+  const cityAttendanceRate = cityRegistered > 0 ? (cityPresent / cityRegistered) * 100 : 0;
+
+  const zoneQuery = `
     SELECT
       z.zone_name,
       COUNT(DISTINCT e.emp_id) as registered,
@@ -53,20 +76,17 @@ const generateDailyBulletinData = async (overrideDate) => {
     LEFT JOIN attendance a ON e.emp_id = a.emp_id AND a.date::date = $1::date
     WHERE c.city_name = $2
       AND dept.department_name = 'Road Sweeping Staff- PMC'
-      AND e.face_embedding IS NOT NULL
+      AND des.designation_name IN ('Ramp Bigari', 'Road Sweeper', 'Supervisor (Mukadam)')
+      AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
     GROUP BY z.zone_name, z.zone_id
     ORDER BY z.zone_name
   `;
 
-  const { rows } = await pool.query(query, [isoDate, REPORT_CITY]);
+  const { rows } = await pool.query(zoneQuery, [isoDate, REPORT_CITY]);
 
   if (!rows || rows.length === 0) {
     throw new Error(`No data found for Pune SWM department on date ${isoDate}.`);
   }
-
-  let cityRegistered = 0;
-  let cityPresent = 0;
-  let cityLeave = 0;
 
   const zonesData = rows.map((row) => {
     const registered = parseInt(row.registered || 0, 10);
@@ -74,10 +94,6 @@ const generateDailyBulletinData = async (overrideDate) => {
     const leave = parseInt(row.on_leave || 0, 10);
     const absent = Math.max(registered - (present + leave), 0);
     const presentRate = registered > 0 ? Math.round((present / registered) * 100) : 0;
-
-    cityRegistered += registered;
-    cityPresent += present;
-    cityLeave += leave;
 
     return {
       zoneName: row.zone_name,
@@ -88,9 +104,6 @@ const generateDailyBulletinData = async (overrideDate) => {
       presentRate,
     };
   });
-
-  const cityAbsent = Math.max(cityRegistered - (cityPresent + cityLeave), 0);
-  const cityAttendanceRate = cityRegistered > 0 ? (cityPresent / cityRegistered) * 100 : 0;
 
   // Determine dynamic City Status and Description (Using % instead of "low")
   let statusText = "🟡 Attendance Variation Observed";

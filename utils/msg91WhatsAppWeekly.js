@@ -40,6 +40,7 @@ const fetchWeeklyReportData = async () => {
   const commonFilter = `
     WHERE c.city_name = $3 
       AND dept.department_name = 'Road Sweeping Staff- PMC'
+      AND des.designation_name IN ('Ramp Bigari', 'Road Sweeper', 'Supervisor (Mukadam)')
       AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
   `;
 

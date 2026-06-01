@@ -53,6 +53,7 @@ const fetchCityReportData = async (date) => {
     LEFT JOIN attendance a ON e.emp_id = a.emp_id AND a.date::date = $1::date
     WHERE c.city_name = $2
       AND dept.department_name = 'Road Sweeping Staff- PMC'
+      AND des.designation_name IN ('Ramp Bigari', 'Road Sweeper', 'Supervisor (Mukadam)')
     GROUP BY des.designation_name
   `;
 
