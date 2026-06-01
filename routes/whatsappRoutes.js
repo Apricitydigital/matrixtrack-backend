@@ -9,6 +9,7 @@ const {
 } = require("../utils/msg91WhatsAppNew");
 const {
   generateDailyBulletin,
+  sendDailyBulletinWhatsApp,
 } = require("../utils/msg91DailyBulletin");
 
 const router = express.Router();
@@ -78,34 +79,39 @@ router.post("/daily-bulletin", async (req, res) => {
   }
 
   try {
-    const data = await generateDailyBulletin(date);
+    const result = await sendDailyBulletinWhatsApp({
+      phoneNumber,
+      date,
+    });
 
-    // Prepare template components mapping so they can see exactly what gets sent!
+    // Prepare template components mapping so they can see exactly what got sent!
     const templateComponents = {
-      body_1: data.date,
-      body_2: data.statusText,
-      body_3: data.statusDesc,
-      body_4: data.cityRegistered,
-      body_5: data.cityPresent,
-      body_6: data.cityLeave,
-      body_7: data.cityAbsent,
-      body_8: data.zoneOverviewText,
-      body_9: data.detailedZoneText,
-      body_10: data.keyObservation,
-      body_11: data.tomorrowFocusZonesStr,
-      body_12: data.manualPunchZonesStr,
+      body_1: result.reportData.date,
+      body_2: result.reportData.statusText,
+      body_3: result.reportData.statusDesc,
+      body_4: result.reportData.cityRegistered,
+      body_5: result.reportData.cityPresent,
+      body_6: result.reportData.cityLeave,
+      body_7: result.reportData.cityAbsent,
+      body_8: result.reportData.zoneOverviewText,
+      body_9: result.reportData.detailedZoneText,
+      body_10: result.reportData.keyObservation,
+      body_11: result.reportData.tomorrowFocusZonesStr,
+      body_12: result.reportData.manualPunchZonesStr,
     };
 
     res.json({
-      message: "Daily bulletin data generated successfully! (MSG91 Call will be integrated once template is approved)",
-      phoneNumber: normalizePhoneNumber(phoneNumber),
+      message: "Daily bulletin WhatsApp report sent successfully!",
+      phoneNumber: result.phoneNumber,
+      providerResponse: result.providerResponse,
       templateComponents,
-      rawPreviewText: data.rawPreviewText,
+      rawPreviewText: result.reportData.rawPreviewText,
     });
   } catch (error) {
-    console.error("Daily bulletin generation error:", error);
-    res.status(500).json({
-      error: error.message || "Unable to generate daily bulletin report data.",
+    console.error("Daily bulletin sending error:", error);
+    res.status(error.statusCode || error.response?.status || 500).json({
+      error: error.message || "Unable to send daily bulletin report.",
+      details: error.response?.data,
     });
   }
 });

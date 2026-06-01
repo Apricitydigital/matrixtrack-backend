@@ -4,7 +4,7 @@ const axios = require("axios");
 const BASE_URL = (process.env.MSG91_WHATSAPP_BASE_URL || "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk").replace(/\/+$/, "");
 const AUTH_KEY = process.env.MSG91_WHATSAPP_AUTH_KEY || process.env.MSG91_AUTH_KEY;
 const TEMPLATE_NAMESPACE = "5c8f516b_8ec5_4384_bb73_3bfd7a369e84";
-const TEMPLATE_NAME = "pmc_swm_oune_daily_bulletin";
+const TEMPLATE_NAME = "pmc_swm_pune_daily_bulletin_v2"; // New V2 template name
 const TEMPLATE_LANGUAGE = "en";
 const INTEGRATED_NUMBER = "919111001035";
 
@@ -18,16 +18,10 @@ const normalizePhoneNumber = (phoneNumber = "") => {
 const REPORT_CITY = "Pune";
 const REPORT_TIMEZONE = "Asia/Kolkata";
 
-/**
- * Format numbers with commas (e.g. 9821 -> "9,821")
- */
 const formatNum = (num) => {
   return Number(num || 0).toLocaleString("en-IN");
 };
 
-/**
- * Helper to get report dates (Yesterday's date)
- */
 const getReportDates = (overrideDate) => {
   // Fix default date to "2026-05-07" for daily bulletin testing as requested
   const targetDateStr = overrideDate || "2026-05-07";
@@ -41,10 +35,7 @@ const getReportDates = (overrideDate) => {
   return { isoDate: targetDateStr, displayDate };
 };
 
-/**
- * Main function to retrieve live Pune SWM data and format the bulletin text
- */
-const generateDailyBulletin = async (overrideDate) => {
+const generateDailyBulletinData = async (overrideDate) => {
   const { isoDate, displayDate } = getReportDates(overrideDate);
 
   const query = `
@@ -73,7 +64,6 @@ const generateDailyBulletin = async (overrideDate) => {
     throw new Error(`No data found for Pune SWM department on date ${isoDate}.`);
   }
 
-  // 1. Calculate City-wide Snapshot
   let cityRegistered = 0;
   let cityPresent = 0;
   let cityLeave = 0;
@@ -102,19 +92,18 @@ const generateDailyBulletin = async (overrideDate) => {
   const cityAbsent = Math.max(cityRegistered - (cityPresent + cityLeave), 0);
   const cityAttendanceRate = cityRegistered > 0 ? (cityPresent / cityRegistered) * 100 : 0;
 
-  // Determine dynamic City Status and Description
+  // Determine dynamic City Status and Description (Using % instead of "low")
   let statusText = "🟡 Attendance Variation Observed";
-  let statusDesc = "City attendance stable overall, with mixed turnout across zones.";
+  let statusDesc = `City attendance stable overall, with ${cityAttendanceRate.toFixed(2)}% turnout across zones.`;
 
   if (cityAttendanceRate >= 70) {
     statusText = "🟢 Strong Attendance Observed";
-    statusDesc = "City attendance stable and strong overall, with high turnout across zones.";
+    statusDesc = `City attendance stable and strong overall, with ${cityAttendanceRate.toFixed(2)}% turnout across zones.`;
   } else if (cityAttendanceRate < 50) {
     statusText = "🔴 Turnout Attention Required";
-    statusDesc = "City attendance below average today, with low turnout across zones.";
+    statusDesc = `City attendance below average today, with ${cityAttendanceRate.toFixed(2)}% turnout across zones.`;
   }
 
-  // 2. Sort Zones by performance (descending presentRate) to build Zone-wise Attendance Overview
   const sortedZones = [...zonesData].sort((a, b) => b.presentRate - a.presentRate);
 
   const overviewLines = sortedZones.map((zone, idx) => {
@@ -128,22 +117,16 @@ const generateDailyBulletin = async (overrideDate) => {
       suffix = " attendance";
     } else if (idx === 2) {
       prefix = "🥉 ";
-    } else {
-      prefix = "";
     }
 
     const rateText = suffix ? `(${zone.presentRate}%${suffix})` : `(${zone.presentRate}%)`;
     return `${prefix}${zone.zoneName} — ${formatNum(zone.present)} present ${rateText}`;
   });
-  const zoneOverviewText = overviewLines.join("\n");
 
-  // 3. Build Detailed Zone Summary blocks (Strictly matching clean spacing and bullets)
   const detailedZoneBlocks = zonesData.map((zone) => {
-    return `🔹 ${zone.zoneName}\n\n  • Registered: ${formatNum(zone.registered)}\n  • Present: ${formatNum(zone.present)}\n  • Leave: ${formatNum(zone.leave)}\n  • Absent: ${formatNum(zone.absent)}`;
+    return `🔹 ${zone.zoneName}\n  • Registered: ${formatNum(zone.registered)}\n  • Present: ${formatNum(zone.present)}\n  • Leave: ${formatNum(zone.leave)}\n  • Absent: ${formatNum(zone.absent)}`;
   });
-  const detailedZoneText = detailedZoneBlocks.join("\n\n");
 
-  // 4. Generate dynamic Key Observation based on thresholds (>= 65% presentRate) and lowest performer
   const strongZones = zonesData.filter((z) => z.presentRate >= 65).map((z) => z.zoneName);
   const lowestZone = zonesData.reduce((prev, curr) => (prev.presentRate < curr.presentRate ? prev : curr), zonesData[0]);
 
@@ -157,7 +140,6 @@ const generateDailyBulletin = async (overrideDate) => {
     keyObservation = `All zones delivered attendance performance below 65%, with ${lowestZone.zoneName} recording the lowest turnout today and requiring focused follow-up at ward level.`;
   }
 
-  // 5. Tomorrow's Focus and Manual Punch-out (targeting lowest performers)
   const bottomZones = [...zonesData].sort((a, b) => a.presentRate - b.presentRate).slice(0, 2);
   const tomorrowFocusZonesStr = bottomZones.length >= 2 
     ? `${bottomZones[0].zoneName} and ${bottomZones[1].zoneName}` 
@@ -166,25 +148,23 @@ const generateDailyBulletin = async (overrideDate) => {
   const secondLowestZone = bottomZones[1] || lowestZone;
   const manualPunchZonesStr = `${secondLowestZone.zoneName} and ${lowestZone.zoneName}`;
 
-  // Assemble full text block for pristine preview in logs / response
+  // Pristine text preview for CLI / Logs
   const rawPreviewText = `🌆 *PMC SWM Pune — Daily Bulletin* 
-📅 ${displayDate}  Status: ${statusText}
+📅 ${displayDate}
+Status: ${statusText}
 ${statusDesc}
 
 City-wide Snapshot 👥
-
   • Total Registered Workers: ${formatNum(cityRegistered)}
   • Present Today: ${formatNum(cityPresent)}
   • On Leave: ${formatNum(cityLeave)}
   • Absent: ${formatNum(cityAbsent)}
 
 Zone-wise Attendance Overview 📊
-
-${zoneOverviewText}
+${overviewLines.join("\n")}
 
 Detailed Zone Summary 🏙️
-
-${detailedZoneText}
+${detailedZoneBlocks.join("\n\n")}
 
 Key Observation 🔍
 ${keyObservation}
@@ -207,27 +187,17 @@ Powered by Apricity Digital Labs Pvt Ltd`;
     cityPresent: formatNum(cityPresent),
     cityLeave: formatNum(cityLeave),
     cityAbsent: formatNum(cityAbsent),
-    zoneOverviewText,
-    detailedZoneText,
+    sortedZones,
+    zonesData,
     keyObservation,
     tomorrowFocusZonesStr,
     manualPunchZonesStr,
     rawPreviewText,
+    overviewLines,
   };
 };
 
-const cleanForWhatsApp = (val) => {
-  if (!val) return "";
-  return String(val)
-    .replace(/\r?\n+/g, " | ")
-    .replace(/\s*\|\s*/g, " | ")
-    .trim();
-};
-
-/**
- * Send the Pune SWM Daily Bulletin via MSG91 WhatsApp API
- */
-const sendDailyBulletinWhatsApp = async ({ phoneNumber, date }) => {
+const sendDailyBulletinWhatsAppNew = async ({ phoneNumber, date }) => {
   if (!phoneNumber) {
     throw new Error("phoneNumber is required.");
   }
@@ -245,10 +215,81 @@ const sendDailyBulletinWhatsApp = async ({ phoneNumber, date }) => {
     throw new Error("Valid phone number is required.");
   }
 
-  // 1. Generate the daily bulletin data
-  const data = await generateDailyBulletin(date);
+  // 1. Generate SWM data
+  const data = await generateDailyBulletinData(date);
 
-  // 2. Build MSG91 payload matching the exact shape required for "pmc_swm_oune_daily_bulletin"
+  const getOverviewText = (idx) => {
+    return data.overviewLines[idx] || "";
+  };
+
+  const getDetailedZone = (idx) => {
+    return data.zonesData[idx] || { zoneName: "", registered: 0, present: 0, leave: 0, absent: 0 };
+  };
+
+  const z0 = getDetailedZone(0);
+  const z1 = getDetailedZone(1);
+  const z2 = getDetailedZone(2);
+  const z3 = getDetailedZone(3);
+  const z4 = getDetailedZone(4);
+
+  // 2. Build MSG91 components (Strictly no newlines, layout is hardcoded in the template structure)
+  const components = {
+    body_1: { type: "text", value: String(data.date).trim() },
+    body_2: { type: "text", value: String(data.statusText).trim() },
+    body_3: { type: "text", value: String(data.statusDesc).trim() },
+    
+    body_4: { type: "text", value: String(data.cityRegistered).trim() },
+    body_5: { type: "text", value: String(data.cityPresent).trim() },
+    body_6: { type: "text", value: String(data.cityLeave).trim() },
+    body_7: { type: "text", value: String(data.cityAbsent).trim() },
+    
+    // Zone Overview List
+    body_8: { type: "text", value: String(getOverviewText(0)).trim() || "-" },
+    body_9: { type: "text", value: String(getOverviewText(1)).trim() || "-" },
+    body_10: { type: "text", value: String(getOverviewText(2)).trim() || "-" },
+    body_11: { type: "text", value: String(getOverviewText(3)).trim() || "-" },
+    body_12: { type: "text", value: String(getOverviewText(4)).trim() || "-" },
+    
+    // Detailed Zone 1
+    body_13: { type: "text", value: String(z0.zoneName).trim() || "-" },
+    body_14: { type: "text", value: String(formatNum(z0.registered)).trim() },
+    body_15: { type: "text", value: String(formatNum(z0.present)).trim() },
+    body_16: { type: "text", value: String(formatNum(z0.leave)).trim() },
+    body_17: { type: "text", value: String(formatNum(z0.absent)).trim() },
+    
+    // Detailed Zone 2
+    body_18: { type: "text", value: String(z1.zoneName).trim() || "-" },
+    body_19: { type: "text", value: String(formatNum(z1.registered)).trim() },
+    body_20: { type: "text", value: String(formatNum(z1.present)).trim() },
+    body_21: { type: "text", value: String(formatNum(z1.leave)).trim() },
+    body_22: { type: "text", value: String(formatNum(z1.absent)).trim() },
+    
+    // Detailed Zone 3
+    body_23: { type: "text", value: String(z2.zoneName).trim() || "-" },
+    body_24: { type: "text", value: String(formatNum(z2.registered)).trim() },
+    body_25: { type: "text", value: String(formatNum(z2.present)).trim() },
+    body_26: { type: "text", value: String(formatNum(z2.leave)).trim() },
+    body_27: { type: "text", value: String(formatNum(z2.absent)).trim() },
+    
+    // Detailed Zone 4
+    body_28: { type: "text", value: String(z3.zoneName).trim() || "-" },
+    body_29: { type: "text", value: String(formatNum(z3.registered)).trim() },
+    body_30: { type: "text", value: String(formatNum(z3.present)).trim() },
+    body_31: { type: "text", value: String(formatNum(z3.leave)).trim() },
+    body_32: { type: "text", value: String(formatNum(z3.absent)).trim() },
+    
+    // Detailed Zone 5
+    body_33: { type: "text", value: String(z4.zoneName).trim() || "-" },
+    body_34: { type: "text", value: String(formatNum(z4.registered)).trim() },
+    body_35: { type: "text", value: String(formatNum(z4.present)).trim() },
+    body_36: { type: "text", value: String(formatNum(z4.leave)).trim() },
+    body_37: { type: "text", value: String(formatNum(z4.absent)).trim() },
+    
+    body_38: { type: "text", value: String(data.keyObservation).trim() },
+    body_39: { type: "text", value: String(data.tomorrowFocusZonesStr).trim() },
+    body_40: { type: "text", value: String(data.manualPunchZonesStr).trim() },
+  };
+
   const payload = {
     integrated_number: INTEGRATED_NUMBER,
     content_type: "template",
@@ -265,20 +306,7 @@ const sendDailyBulletinWhatsApp = async ({ phoneNumber, date }) => {
         to_and_components: [
           {
             to: recipients,
-            components: {
-              body_1: { type: "text", value: cleanForWhatsApp(data.date) },
-              body_2: { type: "text", value: cleanForWhatsApp(data.statusText) },
-              body_3: { type: "text", value: cleanForWhatsApp(data.statusDesc) },
-              body_4: { type: "text", value: cleanForWhatsApp(data.cityRegistered) },
-              body_5: { type: "text", value: cleanForWhatsApp(data.cityPresent) },
-              body_6: { type: "text", value: cleanForWhatsApp(data.cityLeave) },
-              body_7: { type: "text", value: cleanForWhatsApp(data.cityAbsent) },
-              body_8: { type: "text", value: cleanForWhatsApp(data.zoneOverviewText) },
-              body_9: { type: "text", value: cleanForWhatsApp(data.detailedZoneText) },
-              body_10: { type: "text", value: cleanForWhatsApp(data.keyObservation) },
-              body_11: { type: "text", value: cleanForWhatsApp(data.tomorrowFocusZonesStr) },
-              body_12: { type: "text", value: cleanForWhatsApp(data.manualPunchZonesStr) },
-            },
+            components,
           },
         ],
       },
@@ -303,7 +331,7 @@ const sendDailyBulletinWhatsApp = async ({ phoneNumber, date }) => {
 };
 
 module.exports = {
-  generateDailyBulletin,
-  sendDailyBulletinWhatsApp,
+  generateDailyBulletinData,
+  sendDailyBulletinWhatsAppNew,
   normalizePhoneNumber,
 };

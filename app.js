@@ -148,6 +148,8 @@ const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
 const { sendWeeklyWhatsAppReportNew } = require("./utils/msg91WhatsAppWeeklyNew");
 // const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
+const { sendDailyBulletinWhatsApp } = require("./utils/msg91DailyBulletin");
+const { sendDailyBulletinWhatsAppNew } = require("./utils/msg91DailyBulletinNew");
 
 const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
 const hasSentTodayDailyFinal = (key) => {
@@ -168,7 +170,9 @@ const markSentTodayDailyFinal = (key) => {
 
 if (isPrimaryCronInstance) {
 
-  // Daily Final Report Cron (9:30 AM IST) - ISOLATED
+  // =========================================================================
+  // 📢 OLD DAILY BULLETIN REPORT (v1) - RUNS DAILY AT 09:30 AM IST
+  // =========================================================================
   cron.schedule(
     "30 09 * * *",
     async () => {
@@ -191,17 +195,17 @@ if (isPrimaryCronInstance) {
           return;
         }
 
+        // 📝 RECIPIENTS FOR THE OLD V1 DAILY BULLETIN REPORT:
+        // Edit this array to add/remove phone numbers for the V1 report:
         const recipients = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999","918349733213","918007773301"];
         
-        for (const mobile of recipients) {
-          try {
-            const { reportData } = await sendDailyWhatsAppReportFinal({
-              phoneNumber: mobile,
-            });
-            console.log('[WhatsApp Daily Final Cron] Sent to:', mobile, reportData.date);
-          } catch (error) {
-            console.error('[WhatsApp Daily Final Cron] Failed for:', mobile, error.message);
-          }
+        try {
+          const { reportData } = await sendDailyBulletinWhatsApp({
+            phoneNumber: recipients,
+          });
+          console.log('[WhatsApp Daily Final Cron] Sent PMC SWM Daily Bulletin in bulk to:', recipients.join(", "), 'for date:', reportData.date);
+        } catch (error) {
+          console.error('[WhatsApp Daily Final Cron] Failed bulk send:', error.message);
         }
 
         markSentTodayDailyFinal(runKey);
@@ -213,6 +217,79 @@ if (isPrimaryCronInstance) {
       } finally {
         if (lockAcquired) {
           await client.query("SELECT pg_advisory_unlock($1)", [FINAL_DAILY_LOCK_ID]);
+        }
+        client.release();
+      }
+    },
+    {
+      timezone: "Asia/Kolkata",
+    }
+  );
+
+  // =========================================================================
+  // 📢 NEW V2 DAILY BULLETIN REPORT (v2) - RUNS DAILY AT 09:35 AM IST
+  // =========================================================================
+  const LAST_RUN_FILE_DAILY_V2 = path.join(__dirname, "whatsapp_report_daily_v2_last_run.txt");
+  const hasSentTodayDailyV2 = (key) => {
+    try {
+      const stored = fs.readFileSync(LAST_RUN_FILE_DAILY_V2, "utf8").trim();
+      return stored === key;
+    } catch (err) {
+      return false;
+    }
+  };
+  const markSentTodayDailyV2 = (key) => {
+    try {
+      fs.writeFileSync(LAST_RUN_FILE_DAILY_V2, key, "utf8");
+    } catch (err) {
+      console.error("Unable to record Daily V2 WhatsApp send date:", err.message);
+    }
+  };
+
+  cron.schedule(
+    "35 09 * * *",
+    async () => {
+      console.log('[WhatsApp Daily V2 Cron] Daily V2 bulletin report triggered');
+      const client = await pool.connect();
+      let lockAcquired = false;
+      const V2_DAILY_LOCK_ID = 812352; // Unique Lock ID
+      try {
+        const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [V2_DAILY_LOCK_ID]);
+        lockAcquired = Boolean(rows[0]?.locked);
+
+        if (!lockAcquired) {
+          console.log("[WhatsApp Daily V2 Cron] Another instance is handling V2 send; skipping.");
+          return;
+        }
+
+        const runKey = todayKey();
+        if (hasSentTodayDailyV2(runKey)) {
+          console.log("[WhatsApp Daily V2 Cron] Already sent today, skipping.");
+          return;
+        }
+
+        // 📝 RECIPIENTS FOR THE NEW V2 DAILY BULLETIN REPORT:
+        // Edit this array to add/remove phone numbers for the V2 report:
+        const recipientsV2 = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999","918349733213","918007773301"];
+        
+        try {
+          const { reportData } = await sendDailyBulletinWhatsAppNew({
+            phoneNumber: recipientsV2,
+          });
+          console.log('[WhatsApp Daily V2 Cron] Sent PMC SWM V2 Daily Bulletin in bulk to:', recipientsV2.join(", "), 'for date:', reportData.date);
+        } catch (error) {
+          console.error('[WhatsApp Daily V2 Cron] Failed bulk send V2:', error.message);
+        }
+
+        markSentTodayDailyV2(runKey);
+
+        await client.query("SELECT pg_advisory_unlock($1)", [V2_DAILY_LOCK_ID]);
+        lockAcquired = false;
+      } catch (err) {
+        console.error('[WhatsApp Daily V2 Cron] Cron error:', err.message);
+      } finally {
+        if (lockAcquired) {
+          await client.query("SELECT pg_advisory_unlock($1)", [V2_DAILY_LOCK_ID]);
         }
         client.release();
       }
