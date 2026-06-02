@@ -2175,6 +2175,36 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           }
 
           // 🔒 Session-aware validation per employee in group (prevents re-punch-in)
+          try {
+            const leaveCheck = await pool.query(
+              `SELECT attendance_id, leave_type
+               FROM attendance
+               WHERE emp_id = $1 AND date = $2::date
+               ORDER BY attendance_id DESC
+               LIMIT 1`,
+              [employeeRecord.emp_id, attendanceDate]
+            );
+            const leaveRow = leaveCheck?.rows?.[0];
+            if (leaveRow?.leave_type) {
+              results.push({
+                faceIndex,
+                status: "skipped",
+                employeeId: employeeRecord.emp_id,
+                employeeName: employeeRecord.name,
+                similarity,
+                message: `Leave already marked (${leaveRow.leave_type}). Punch skipped.`,
+                code: "LEAVE_MARKED",
+              });
+              processedEmployees.add(employeeRecord.emp_id);
+              continue;
+            }
+          } catch (leaveCheckError) {
+            console.error(
+              `[Group] Leave-check failed for emp_id=${employeeRecord.emp_id} date=${attendanceDate}:`,
+              leaveCheckError?.message || leaveCheckError
+            );
+          }
+
           const sessionError = await validatePunchSession(
             employeeRecord.emp_id,
             attendanceDate,
