@@ -381,13 +381,14 @@ const fetchSupervisorSummary = async (
     SELECT
       (SELECT COUNT(*) FROM scoped_employees) AS total_employees,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
-      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
+      /* Priority Rule: Count as on_leave only if leave is marked AND they did NOT punch in */
+      COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
       GREATEST(
         (SELECT COUNT(*) FROM scoped_employees) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
-        COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0),
         0
       ) AS not_marked
     FROM attendance_status;
@@ -528,11 +529,12 @@ const fetchSupervisorEmployees = async (
         JOIN users su ON sw2.supervisor_id = su.user_id
         WHERE sw2.ward_id = se.ward_id
       ) AS supervisor_name,
+      /* Priority Rule: Present / Punch Start takes absolute priority over Leave status */
       CASE
+        WHEN COALESCE(summary.has_punch_start, 0) = 1 AND COALESCE(summary.has_punch_out, 0) = 1 THEN 'Marked'
+        WHEN COALESCE(summary.has_punch_start, 0) = 1 THEN 'In Progress'
         WHEN COALESCE(summary.has_leave, 0) = 1 THEN 'Leave'
-        WHEN COALESCE(summary.has_punch_start, 0) = 0 THEN 'Not Marked'
-        WHEN COALESCE(summary.has_punch_out, 0) = 1 THEN 'Marked'
-        ELSE 'In Progress'
+        ELSE 'Not Marked'
       END AS attendance_status,
       COALESCE(summary.days_present, 0) AS days_present,
       COALESCE(summary.days_marked, 0) AS days_marked,
@@ -625,13 +627,14 @@ const fetchCitySummary = async (
       city_name,
       COUNT(*) AS total_employees,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
-      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
+      /* Priority Rule: Count under leave ONLY if they did not punch in (Present takes priority) */
+      COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
       GREATEST(
         COUNT(*) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
-        COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0),
         0
       ) AS not_marked
     FROM attendance_status
@@ -716,10 +719,16 @@ const fetchZoneSummary = async (
       zone_name,
       COUNT(*) AS total_employees,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
-      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
+      /* Priority Rule: Count under leave ONLY if they did not punch in (Present takes priority) */
+      COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
-      GREATEST(COUNT(*) - COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0), 0) AS not_marked
+      GREATEST(
+        COUNT(*) - 
+        COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) - 
+        COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0), 
+        0
+      ) AS not_marked
     FROM attendance_status
     GROUP BY zone_id, zone_name
     ORDER BY zone_name;

@@ -44,7 +44,8 @@ const buildExcelDocument = async (rows, headers, summaryRowData = null) => {
             }
           }
         }
-        rowData[header.key] = rawValue ?? "";
+        
+        rowData[header.key] = rawValue;
       });
       const addedRow = sheet.addRow(rowData);
       headers.forEach((header, idx) => {
@@ -388,6 +389,9 @@ const groupingConfigs = {
       TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
       TO_CHAR(a.mid_shift_punch_in_time, 'HH24:MI:SS') AS mid_shift_punch_in_time,
       TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
+      a.punch_in_image,
+      a.mid_shift_punch_in_image,
+      a.punch_out_image,
       a.duration,
       a.in_address,
       a.out_address,
@@ -415,7 +419,7 @@ const groupingConfigs = {
       END AS punched_out_by
     `,
     orderBy: "a.date DESC, a.attendance_id DESC",
-    csvHeaders: [
+    csvHeaders: ({ baseUrl }) => [
       { key: "sr_no", label: "Sr No." },
       { key: "attendance_date", label: "Date" },
       { key: "zone_name", label: "Zone", formatter: (val) => val || "-" },
@@ -426,17 +430,20 @@ const groupingConfigs = {
       { key: "emp_code", label: "Emp Code", formatter: (val) => val ? `="${val}"` : "-" },
       { key: "contact_no", label: "Contact No.", formatter: (val) => val ? `="${val}"` : "-" },
       { key: "punch_in_time", label: "Punch In Time", formatter: (val) => val || "-" },
+      { key: "punch_in_image", label: "Punch In Image", formatter: (val, row) => val ? { text: "view", hyperlink: `${baseUrl}/app/attendance/employee/image?attendance_id=${row.attendance_id}&punch_type=in` } : "-" },
       { key: "punched_in_by", label: "Punched In By", formatter: (val, row) => row.punch_in_time ? val : "-" },
+      { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
+      { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? { text: `${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}`, hyperlink: `https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}` } : "-" },
       { key: "mid_shift_punch_in_time", label: "Mid Shift Punch In", formatter: (val) => val || "-" },
+      { key: "mid_shift_punch_in_image", label: "Mid In Image", formatter: (val, row) => val ? { text: "view", hyperlink: `${baseUrl}/app/attendance/employee/image?attendance_id=${row.attendance_id}&punch_type=mid_in` } : "-" },
       { key: "mid_shift_punched_in_by", label: "Mid Shift Punched By", formatter: (val, row) => row.mid_shift_punch_in_time ? val : "-" },
       { key: "mid_in_address", label: "Mid In Address", formatter: (val) => val || "-" },
-      { key: "latitude_mid_in", label: "Mid In Lat / Long", formatter: (_, row) => (row.latitude_mid_in && row.longitude_mid_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_mid_in},${row.longitude_mid_in}", "${Number(row.latitude_mid_in).toFixed(6)}, ${Number(row.longitude_mid_in).toFixed(6)}")` : "-" },
-      { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
-      { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}", "${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}")` : "-" },
+      { key: "latitude_mid_in", label: "Mid In Lat / Long", formatter: (_, row) => (row.latitude_mid_in && row.longitude_mid_in) ? { text: `${Number(row.latitude_mid_in).toFixed(6)}, ${Number(row.longitude_mid_in).toFixed(6)}`, hyperlink: `https://www.google.com/maps?q=${row.latitude_mid_in},${row.longitude_mid_in}` } : "-" },
       { key: "punch_out_time", label: "Punch Out Time", formatter: (val) => val || "-" },
+      { key: "punch_out_image", label: "Punch Out Image", formatter: (val, row) => val ? { text: "view", hyperlink: `${baseUrl}/app/attendance/employee/image?attendance_id=${row.attendance_id}&punch_type=out` } : "-" },
       { key: "punched_out_by", label: "Punched Out By", formatter: (val, row) => row.punch_out_time ? val : "-" },
       { key: "out_address", label: "Out Address", formatter: (val) => val || "-" },
-      { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}", "${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}")` : "-" },
+      { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? { text: `${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}`, hyperlink: `https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}` } : "-" },
     ],
   },
   zone: {
@@ -729,6 +736,7 @@ const createAttendanceDownloadHandler =
         if (!cityScope.all) {
           const allowedIds = (cityScope.ids || []).map((id) => Number(id));
           if (!allowedIds.length) {
+            console.error("403 ERROR 1: allowedIds is empty", { cityScope });
             return res
               .status(403)
               .json({ error: "No city access assigned. Please contact admin." });
@@ -737,6 +745,7 @@ const createAttendanceDownloadHandler =
             requestedCityId !== null &&
             !allowedIds.includes(Number(requestedCityId))
           ) {
+            console.error("403 ERROR 2: city mismatch", { requestedCityId, allowedIds });
             return res.status(403).json({
               error: "Forbidden: city not assigned to the current user.",
             });
@@ -866,6 +875,9 @@ const createAttendanceDownloadHandler =
               TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
               TO_CHAR(a.mid_shift_punch_in_time, 'HH24:MI:SS') AS mid_shift_punch_in_time,
               TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
+              a.punch_in_image,
+              a.mid_shift_punch_in_image,
+              a.punch_out_image,
               a.duration,
               a.in_address,
               a.latitude_in,
@@ -909,6 +921,9 @@ const createAttendanceDownloadHandler =
                 att.punch_in_time, 
                 att.mid_shift_punch_in_time,
                 att.punch_out_time, 
+                att.punch_in_image,
+                att.mid_shift_punch_in_image,
+                att.punch_out_image,
                 att.duration, 
                 att.in_address,
                 att.latitude_in,
@@ -1014,6 +1029,7 @@ const createAttendanceDownloadHandler =
         if (allRows && allRows.length) {
           allRows.forEach((row, idx) => {
             row.sr_no = idx + 1;
+            if (idx < 5) console.log(`DEBUG: Row ${idx+1} punch_in_image:`, row.punch_in_image);
           });
         }
 
@@ -1027,9 +1043,10 @@ const createAttendanceDownloadHandler =
           });
         }
 
+        const baseUrl = process.env.API_BASE_URL || (req.protocol + '://' + req.get('host') + '/api');
         const headers =
           typeof groupConfig.csvHeaders === "function"
-            ? groupConfig.csvHeaders({ locationExpression })
+            ? groupConfig.csvHeaders({ locationExpression, baseUrl })
             : groupConfig.csvHeaders;
 
         let summaryRowData = null;

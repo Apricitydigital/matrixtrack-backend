@@ -198,7 +198,7 @@ router.get("/short-report", async (req, res) => {
 
     COUNT(
       DISTINCT CASE
-        WHEN a.leave_type IS NOT NULL
+        WHEN a.leave_type IS NOT NULL AND a.punch_in_time IS NULL
         THEN e.emp_id
       END
     ) AS total_leave_employees,
@@ -271,6 +271,11 @@ router.get("/short-report", async (req, res) => {
 
   LEFT JOIN public.employee e
     ON e.ward_id = w.ward_id
+    AND (
+      e.face_verified = true OR e.face_enrolled = true OR e.face_registered = true OR e.face_enrolled_flag = true
+      OR e.face_embedding IS NOT NULL OR e.face_id IS NOT NULL OR e.face_image_url IS NOT NULL
+      OR (e.face_gallery IS NOT NULL AND jsonb_array_length(e.face_gallery) > 0)
+    )
 
   LEFT JOIN public.designation des
     ON e.designation_id = des.designation_id

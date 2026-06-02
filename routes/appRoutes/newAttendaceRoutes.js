@@ -1692,6 +1692,46 @@ router.put("/", upload.single("image"), async (req, res) => {
   }
 });
 
+
+
+router.get("/location-viewer", async (req, res) => {
+  const { lat, lng } = req.query;
+  const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+  
+  const html = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Location Viewer</title>
+      <style>
+        body { margin: 0; background-color: #0f172a; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; overflow: hidden; }
+        .top-bar { position: absolute; top: 0; left: 0; width: 100%; padding: 15px 20px; box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(5px); z-index: 10; }
+        .back-btn { background: #3b82f6; color: white; padding: 10px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; transition: 0.2s; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        .back-btn:hover { background: #2563eb; }
+        .new-tab-btn { background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; transition: 0.2s; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        .new-tab-btn:hover { background: #059669; }
+        .help-text { color: #94a3b8; margin-top: 30px; font-size: 14px; text-align: center; }
+        .title { color: white; font-size: 24px; margin-bottom: 20px; }
+      </style>
+    </head>
+    
+    <body>
+      <div class="top-bar" style="justify-content: center;">
+        <span style="color: white; font-weight: bold; font-size: 18px;">MatrixTrack Image Viewer</span>
+      </div>
+      <div class="img-container">
+        <img src="${imageUrl}" alt="Attendance Image" />
+      </div>
+      <div class="help-text">Tip: To go back to Excel, click the Excel icon on your taskbar or press Alt+Tab.</div>
+    </body>
+
+    </html>
+  `;
+  res.send(html);
+});
+
 router.get("/image", async (req, res) => {
   const { attendance_id, punch_type } = req.query;
 
