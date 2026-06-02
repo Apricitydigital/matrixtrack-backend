@@ -62,12 +62,17 @@ router.post("/", async (req, res) => {
         dept.department_name AS department,
         des.designation_name AS designation,
         e.phone AS contact_no, 
-        TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in, 
+        TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in, 
         a.in_address,
         a.latitude_in,
         a.longitude_in,
         a.punch_in_image, 
-        TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out, 
+        TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in,
+        a.mid_in_address,
+        a.latitude_mid_in,
+        a.longitude_mid_in,
+        a.mid_shift_punch_in_image,
+        TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_out, 
         a.out_address,
         a.latitude_out,
         a.longitude_out,
@@ -76,6 +81,7 @@ router.post("/", async (req, res) => {
         a.duration,
         a.leave_type,
         u.name AS punched_in_by,
+        u2.name AS mid_shift_punched_in_by,
         u1.name AS punched_out_by
       FROM attendance a
       JOIN employee e ON a.emp_id = e.emp_id
@@ -85,6 +91,7 @@ router.post("/", async (req, res) => {
       LEFT JOIN designation des ON e.designation_id = des.designation_id
       LEFT JOIN department dept ON des.department_id = dept.department_id
       LEFT JOIN users u ON a.punched_in_by = u.user_id
+      LEFT JOIN users u2 ON a.mid_shift_punched_in_by = u2.user_id
       LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
       WHERE ${dateFilter}
         ${cityFilter.clause} ${kothiFilter.clause}

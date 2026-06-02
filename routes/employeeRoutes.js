@@ -48,7 +48,7 @@ const resolveFaceImageUrl = (faceEmbedding, empId) => {
 
 const formatEmployeeRow = (row = {}) => {
   const faceImageUrl = resolveFaceImageUrl(row.face_embedding, row.emp_id);
-  const faceRegistered = Boolean(row.face_embedding);
+  const faceRegistered = Boolean(row.face_embedding || row.face_id);
 
   return {
     ...row,
@@ -95,6 +95,7 @@ router.get(
         d.department_name AS department, 
         ds.designation_name AS designation,
         e.face_embedding,
+        e.face_id,
         e.aadhar_no,
         e.aadhar_url
       FROM employee e
@@ -186,6 +187,7 @@ router.put("/:id", async (req, res) => {
           d.department_name AS department, 
           ds.designation_name AS designation,
           e.face_embedding,
+          e.face_id,
           e.aadhar_no,
           e.aadhar_url
        FROM employee e

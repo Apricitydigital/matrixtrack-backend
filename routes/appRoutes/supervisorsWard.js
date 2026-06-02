@@ -268,17 +268,23 @@ const mapRowsToWards = (rows) => {
       selfAttendanceEnabled: Boolean(row.self_attendance_enabled),
       punch_in_time: row.punch_in_time,
       punch_out_time: row.punch_out_time,
+      mid_shift_punch_in_time: row.mid_shift_punch_in_time,
       last_punch_time: row.last_punch_time,
       punch_in_display: row.punch_in_display,
       punch_out_display: row.punch_out_display,
+      mid_shift_punch_in_display: row.mid_shift_punch_in_display,
       last_punch_display: row.last_punch_display,
       has_punch_in: Boolean(row.has_punch_in),
       has_punch_out: Boolean(row.has_punch_out),
+      has_mid_shift_punch_in: Boolean(row.has_mid_shift_punch_in),
       punch_in_epoch: row.punch_in_epoch
         ? Number(row.punch_in_epoch)
         : null,
       punch_out_epoch: row.punch_out_epoch
         ? Number(row.punch_out_epoch)
+        : null,
+      mid_shift_punch_in_epoch: row.mid_shift_punch_in_epoch
+        ? Number(row.mid_shift_punch_in_epoch)
         : null,
       last_punch_epoch: row.last_punch_epoch
         ? Number(row.last_punch_epoch)
@@ -295,6 +301,7 @@ const EMPTY_SUMMARY = {
   marked: 0,
   fullyMarked: 0,
   inProgress: 0,
+  midShiftPunchIn: 0,
   onLeave: 0,
   notMarked: 0,
   attendanceRate: 0,
@@ -362,7 +369,8 @@ const fetchSupervisorSummary = async (
         se.emp_id,
         MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
-        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in
       FROM scoped_employees se
       LEFT JOIN attendance a
         ON a.emp_id = se.emp_id
@@ -375,6 +383,7 @@ const fetchSupervisorSummary = async (
       COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_mid_shift_punch_in = 1 THEN 1 ELSE 0 END), 0) AS mid_shift_punch_in,
       GREATEST(
         (SELECT COUNT(*) FROM scoped_employees) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
@@ -392,6 +401,7 @@ const fetchSupervisorSummary = async (
   const onLeave = Number(row.on_leave) || 0;
   const fullyMarked = Number(row.fully_marked) || 0;
   const inProgress = Number(row.in_progress) || 0;
+  const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
   const notMarked = Number(row.not_marked) || 0;
   const attendanceRate =
     totalEmployees > 0
@@ -404,6 +414,7 @@ const fetchSupervisorSummary = async (
     marked: present,
     fullyMarked,
     inProgress,
+    midShiftPunchIn,
     onLeave,
     notMarked,
     attendanceRate,
@@ -463,14 +474,18 @@ const fetchSupervisorEmployees = async (
       COALESCE(summary.days_marked, 0) AS days_marked,
       summary.has_punch_in,
       summary.has_punch_out,
+      summary.has_mid_shift_punch_in,
       summary.last_punch_time,
       summary.punch_in_time,
       summary.punch_out_time,
+      summary.mid_shift_punch_in_time,
       summary.punch_in_display,
       summary.punch_out_display,
+      summary.mid_shift_punch_in_display,
       summary.last_punch_display,
       summary.punch_in_epoch,
       summary.punch_out_epoch,
+      summary.mid_shift_punch_in_epoch,
       summary.last_punch_epoch
     FROM employee e
     LEFT JOIN wards w ON e.ward_id = w.ward_id
@@ -489,23 +504,28 @@ const fetchSupervisorEmployees = async (
         MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in,
         COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_in_time IS NOT NULL) AS days_present,
         COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
         MAX(a.punch_out_time) FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,
+        MAX(a.mid_shift_punch_in_time) FILTER (WHERE a.mid_shift_punch_in_time IS NOT NULL) AS mid_shift_punch_in_time,
         MAX(
           CASE
             WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
+            WHEN a.mid_shift_punch_in_time IS NOT NULL THEN a.mid_shift_punch_in_time
             WHEN a.punch_in_time IS NOT NULL THEN a.punch_in_time
             ELSE NULL
           END
         ) AS last_punch_time,
         TO_CHAR((MAX(a.punch_in_time) AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_in_display,
         TO_CHAR((MAX(a.punch_out_time) AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_out_display,
+        TO_CHAR((MAX(a.mid_shift_punch_in_time) AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS mid_shift_punch_in_display,
         TO_CHAR((
           MAX(
             CASE
               WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
+              WHEN a.mid_shift_punch_in_time IS NOT NULL THEN a.mid_shift_punch_in_time
               WHEN a.punch_in_time IS NOT NULL THEN a.punch_in_time
               ELSE NULL
             END
@@ -513,9 +533,11 @@ const fetchSupervisorEmployees = async (
         ), 'HH12:MI AM') AS last_punch_display,
         EXTRACT(EPOCH FROM MAX(a.punch_in_time)) AS punch_in_epoch,
         EXTRACT(EPOCH FROM MAX(a.punch_out_time)) AS punch_out_epoch,
+        EXTRACT(EPOCH FROM MAX(a.mid_shift_punch_in_time)) AS mid_shift_punch_in_epoch,
         EXTRACT(EPOCH FROM MAX(
           CASE
             WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
+            WHEN a.mid_shift_punch_in_time IS NOT NULL THEN a.mid_shift_punch_in_time
             WHEN a.punch_in_time IS NOT NULL THEN a.punch_in_time
             ELSE NULL
           END

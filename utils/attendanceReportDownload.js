@@ -385,13 +385,17 @@ const groupingConfigs = {
       e.emp_code,
       e.phone AS contact_no,
       TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,
-      TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
-      TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
+      TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in_time,
+      TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in_time,
+      TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_out_time,
       a.duration,
       a.in_address,
+      a.mid_in_address,
       a.out_address,
       a.latitude_in,
       a.longitude_in,
+      a.latitude_mid_in,
+      a.longitude_mid_in,
       a.latitude_out,
       a.longitude_out,
       w.ward_id,
@@ -404,6 +408,7 @@ const groupingConfigs = {
       0 AS supervisor_id,
       COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
       COALESCE(u.name, '-') AS punched_in_by,
+      COALESCE(u2.name, '-') AS mid_shift_punched_in_by,
       CASE 
         WHEN a.is_auto_punch_out = true THEN 'System (Auto)'
         ELSE COALESCE(u1.name, '-')
@@ -422,6 +427,10 @@ const groupingConfigs = {
       { key: "punched_in_by", label: "Punched In By", formatter: (val, row) => row.punch_in_time ? val : "-" },
       { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
       { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}", "${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}")` : "-" },
+      { key: "mid_shift_punch_in_time", label: "Mid Shift Punch In Time", formatter: (val) => val || "-" },
+      { key: "mid_shift_punched_in_by", label: "Mid Shift Punched In By", formatter: (val, row) => row.mid_shift_punch_in_time ? val : "-" },
+      { key: "mid_in_address", label: "Mid In Address", formatter: (val) => val || "-" },
+      { key: "latitude_mid_in", label: "Mid In Lat / Long", formatter: (_, row) => (row.latitude_mid_in && row.longitude_mid_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_mid_in},${row.longitude_mid_in}", "${Number(row.latitude_mid_in).toFixed(6)}, ${Number(row.longitude_mid_in).toFixed(6)}")` : "-" },
       { key: "punch_out_time", label: "Punch Out Time", formatter: (val) => val || "-" },
       { key: "punched_out_by", label: "Punched Out By", formatter: (val, row) => row.punch_out_time ? val : "-" },
       { key: "out_address", label: "Out Address", formatter: (val) => val || "-" },
@@ -442,8 +451,8 @@ const groupingConfigs = {
       COUNT(a.punch_out_time) AS punch_out_count,
       TO_CHAR(MIN(a.date), 'DD-MM-YYYY') AS first_attendance_date,
       TO_CHAR(MAX(a.date), 'DD-MM-YYYY') AS last_attendance_date,
-      TO_CHAR(MIN(a.punch_in_time), 'DD-MM-YYYY HH24:MI:SS') AS first_punch_in_time,
-      TO_CHAR(MAX(a.punch_out_time), 'DD-MM-YYYY HH24:MI:SS') AS last_punch_out_time
+      TO_CHAR(MIN(a.punch_in_time) AT TIME ZONE 'Asia/Kolkata', 'DD-MM-YYYY HH24:MI:SS') AS first_punch_in_time,
+      TO_CHAR(MAX(a.punch_out_time) AT TIME ZONE 'Asia/Kolkata', 'DD-MM-YYYY HH24:MI:SS') AS last_punch_out_time
     `,
     groupBy: "z.zone_id, z.zone_name, c.city_id, c.city_name",
     orderBy: "c.city_name, z.zone_name",
@@ -842,13 +851,17 @@ const createAttendanceDownloadHandler =
               e.emp_code,
               e.phone AS contact_no,
               TO_CHAR($1::date, 'DD-MM-YYYY') AS attendance_date,
-              TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
-              TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
+              TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in_time,
+              TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in_time,
+              TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_out_time,
               a.duration,
               a.in_address,
+              a.mid_in_address,
+              a.out_address,
               a.latitude_in,
               a.longitude_in,
-              a.out_address,
+              a.latitude_mid_in,
+              a.longitude_mid_in,
               a.latitude_out,
               a.longitude_out,
               w.ward_id,
@@ -862,6 +875,7 @@ const createAttendanceDownloadHandler =
               0 AS supervisor_id,
               COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
               COALESCE(u.name, 'Self') AS punched_in_by,
+              COALESCE(u2.name, 'Self') AS mid_shift_punched_in_by,
               COALESCE(u1.name, 'Self') AS punched_out_by
             FROM employee e
             JOIN wards w ON e.ward_id = w.ward_id
@@ -882,14 +896,19 @@ const createAttendanceDownloadHandler =
                 att.attendance_id, 
                 att.punch_in_time, 
                 att.punch_out_time, 
+                att.mid_shift_punch_in_time,
                 att.duration, 
                 att.in_address,
+                att.mid_in_address,
+                att.out_address,
                 att.latitude_in,
                 att.longitude_in,
-                att.out_address,
+                att.latitude_mid_in,
+                att.longitude_mid_in,
                 att.latitude_out,
                 att.longitude_out,
                 att.punched_in_by,
+                att.mid_shift_punched_in_by,
                 att.punched_out_by
               FROM attendance att
               WHERE att.emp_id = e.emp_id 
@@ -898,6 +917,7 @@ const createAttendanceDownloadHandler =
               LIMIT 1
             ) a ON TRUE
             LEFT JOIN users u ON a.punched_in_by = u.user_id
+            LEFT JOIN users u2 ON a.mid_shift_punched_in_by = u2.user_id
             LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
             ${whereCombined}
             ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC;
@@ -942,6 +962,7 @@ const createAttendanceDownloadHandler =
           GROUP BY sw_agg.ward_id
         ) supervisor_agg ON w.ward_id = supervisor_agg.ward_id
         LEFT JOIN users u ON a.punched_in_by = u.user_id
+        LEFT JOIN users u2 ON a.mid_shift_punched_in_by = u2.user_id
         LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
       `;
 
@@ -1003,7 +1024,7 @@ const createAttendanceDownloadHandler =
         if (requestedGrouping === "detail" && allRows.length > 0) {
           const totalRecords = allRows.length;
           const presentCount = allRows.filter(r => r.punch_in_time && r.punch_in_time !== '-').length;
-          
+
           summaryRowData = {};
           headers.forEach(h => {
             if (h.key === "sr_no") summaryRowData[h.key] = "TOTAL";

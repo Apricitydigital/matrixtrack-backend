@@ -52,8 +52,8 @@ router.post("/", async (req, res) => {
     // Check if attendance record exists
     const result = await pool.query(
       `SELECT a.attendance_id, CAST(a.date AS VARCHAR) AS date, 
-              TO_CHAR(a.punch_in_time, 'HH12:MI AM') AS punch_in_time, 
-              TO_CHAR(a.punch_out_time, 'HH12:MI AM') AS punch_out_time, 
+              TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH12:MI AM') AS punch_in_time, 
+              TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH12:MI AM') AS punch_out_time, 
               a.duration, a.punch_in_image, a.punch_out_image, 
               a.latitude_in, a.longitude_in, a.in_address, 
               a.latitude_out, a.longitude_out, a.out_address,

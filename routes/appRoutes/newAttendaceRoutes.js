@@ -55,6 +55,7 @@ ensureSelfAttendanceSupport().catch((error) => {
 const PUNCH_TYPES = {
   IN: "IN",
   OUT: "OUT",
+  MID_IN: "MID_IN",
 };
 
 const DEFAULT_ATTENDANCE_TIMEZONE =
@@ -825,7 +826,13 @@ async function processPunch(
     uploadContext = await getAttendanceUploadContext(pool, attendanceId);
     const locationMeta = locationData || {};
     const punchLabel =
-      punchType === PUNCH_TYPES.IN ? "punch-in" : punchType === PUNCH_TYPES.OUT ? "punch-out" : punchType;
+      punchType === PUNCH_TYPES.IN 
+        ? "punch-in" 
+        : punchType === PUNCH_TYPES.OUT 
+          ? "punch-out" 
+          : punchType === PUNCH_TYPES.MID_IN 
+            ? "mid-punch" 
+            : punchType;
     const attendanceImageFile =
       buildAttendanceImagePath({
         attendanceDate: uploadContext?.attendance_date,
@@ -879,12 +886,44 @@ async function processPunch(
   }
 
   const isPunchIn = punchType === PUNCH_TYPES.IN;
-  const targetTimeField = isPunchIn ? "punch_in_time" : "punch_out_time";
-  const targetLatField = isPunchIn ? "latitude_in" : "latitude_out";
-  const targetLngField = isPunchIn ? "longitude_in" : "longitude_out";
-  const targetAddrField = isPunchIn ? "in_address" : "out_address";
-  const targetImgField = isPunchIn ? "punch_in_image" : "punch_out_image";
-  const targetByField = isPunchIn ? "punched_in_by" : "punched_out_by";
+  const isPunchOut = punchType === PUNCH_TYPES.OUT;
+  const isMidIn = punchType === PUNCH_TYPES.MID_IN;
+
+  const targetTimeField = isPunchIn 
+    ? "punch_in_time" 
+    : isPunchOut 
+      ? "punch_out_time" 
+      : "mid_shift_punch_in_time";
+
+  const targetLatField = isPunchIn 
+    ? "latitude_in" 
+    : isPunchOut 
+      ? "latitude_out" 
+      : "latitude_mid_in";
+
+  const targetLngField = isPunchIn 
+    ? "longitude_in" 
+    : isPunchOut 
+      ? "longitude_out" 
+      : "longitude_mid_in";
+
+  const targetAddrField = isPunchIn 
+    ? "in_address" 
+    : isPunchOut 
+      ? "out_address" 
+      : "mid_in_address";
+
+  const targetImgField = isPunchIn 
+    ? "punch_in_image" 
+    : isPunchOut 
+      ? "punch_out_image" 
+      : "mid_shift_punch_in_image";
+
+  const targetByField = isPunchIn 
+    ? "punched_in_by" 
+    : isPunchOut 
+      ? "punched_out_by" 
+      : "mid_shift_punched_in_by";
 
   const updateQuery = `
     UPDATE attendance SET 
@@ -1533,7 +1572,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     const punchType =
       normalizedPunchType === PUNCH_TYPES.OUT
         ? PUNCH_TYPES.OUT
-        : PUNCH_TYPES.IN;
+        : normalizedPunchType === PUNCH_TYPES.MID_IN
+          ? PUNCH_TYPES.MID_IN
+          : PUNCH_TYPES.IN;
 
     const thresholdCandidate = Number(rawThreshold);
     const matchThreshold = Number.isFinite(thresholdCandidate)
