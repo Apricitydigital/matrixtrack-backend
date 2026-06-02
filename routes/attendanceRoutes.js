@@ -62,8 +62,8 @@ router.post("/", async (req, res) => {
         dept.department_name AS department,
         des.designation_name AS designation,
         e.phone AS contact_no, 
-        TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in, 
-        TO_CHAR((a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH24:MI:SS') AS mid_shift_punch_in,
+        TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in, 
+        TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in,
         a.in_address,
         a.latitude_in,
         a.longitude_in,
@@ -72,7 +72,7 @@ router.post("/", async (req, res) => {
         a.latitude_mid_in,
         a.longitude_mid_in,
         a.mid_shift_punch_in_image,
-        TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out, 
+        TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_out, 
         a.out_address,
         a.latitude_out,
         a.longitude_out,
@@ -125,7 +125,13 @@ router.get("/short-report", async (req, res) => {
       .json({ error: "cityName query param is required." });
   }
 
-  const targetDate = date || formatDateIST();
+  let targetDate = date || formatDateIST();
+  if (targetDate && typeof targetDate === "string") {
+    const parts = targetDate.split("-");
+    if (parts.length === 3 && parts[2].length === 4) {
+      targetDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
+    }
+  }
   const scope = req.cityScope || { all: false, ids: [] };
 
   try {
@@ -272,9 +278,7 @@ router.get("/short-report", async (req, res) => {
   LEFT JOIN public.employee e
     ON e.ward_id = w.ward_id
     AND (
-      e.face_verified = true OR e.face_enrolled = true OR e.face_registered = true OR e.face_enrolled_flag = true
-      OR e.face_embedding IS NOT NULL OR e.face_id IS NOT NULL OR e.face_image_url IS NOT NULL
-      OR (e.face_gallery IS NOT NULL AND jsonb_array_length(e.face_gallery) > 0)
+      e.face_embedding IS NOT NULL OR e.face_id IS NOT NULL
     )
 
   LEFT JOIN public.designation des

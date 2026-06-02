@@ -304,6 +304,7 @@ const EMPTY_SUMMARY = {
   marked: 0,
   fullyMarked: 0,
   inProgress: 0,
+  midShiftPunchIn: 0,
   onLeave: 0,
   notMarked: 0,
   attendanceRate: 0,
@@ -371,7 +372,8 @@ const fetchSupervisorSummary = async (
         se.emp_id,
         MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
-        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in
       FROM scoped_employees se
       LEFT JOIN attendance a
         ON a.emp_id = se.emp_id
@@ -385,6 +387,7 @@ const fetchSupervisorSummary = async (
       COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_mid_shift_punch_in = 1 THEN 1 ELSE 0 END), 0) AS mid_shift_punch_in,
       GREATEST(
         (SELECT COUNT(*) FROM scoped_employees) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
@@ -402,6 +405,7 @@ const fetchSupervisorSummary = async (
   const onLeave = Number(row.on_leave) || 0;
   const fullyMarked = Number(row.fully_marked) || 0;
   const inProgress = Number(row.in_progress) || 0;
+  const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
   const notMarked = Number(row.not_marked) || 0;
   const attendanceRate =
     totalEmployees > 0
@@ -414,6 +418,7 @@ const fetchSupervisorSummary = async (
     marked: present,
     fullyMarked,
     inProgress,
+    midShiftPunchIn,
     onLeave,
     notMarked,
     attendanceRate,

@@ -167,6 +167,7 @@ const markSentTodayWeekly = (key) => {
 const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
 // const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
+const { sendDailyBulletinWhatsAppNew } = require("./utils/msg91DailyBulletinNew");
 
 const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
 const hasSentTodayDailyFinal = (key) => {
@@ -295,7 +296,109 @@ if (isPrimaryCronInstance) {
     }
   );
 
+  // =========================================================================
+  // 📢 NEW DAILY BULLETIN REPORT (v2) - TRIGGERS TWICE DAILY AT 7:00 PM & 11:59 PM IST
+  // PMC SWM Pune — Sends city-wide + zone-wise WhatsApp bulletin
+  // Lock IDs: 812352 (7pm), 812353 (11:59pm) — unique, never reuse
+  // =========================================================================
+  const LAST_RUN_FILE_DAILY_V2 = path.join(__dirname, "whatsapp_report_daily_v2_last_run.txt");
+  const hasSentTodayDailyV2 = (key) => {
+    try {
+      const stored = fs.readFileSync(LAST_RUN_FILE_DAILY_V2, "utf8").trim();
+      return stored === key;
+    } catch (err) {
+      return false;
+    }
+  };
+  const markSentTodayDailyV2 = (key) => {
+    try {
+      fs.writeFileSync(LAST_RUN_FILE_DAILY_V2, key, "utf8");
+    } catch (err) {
+      console.error("Unable to record Daily V2 WhatsApp send date:", err.message);
+    }
+  };
+
+  // Helper to trigger SWM daily bulletin report (reused for both 7pm & 11:59pm)
+  const triggerDailyBulletinNew = async (triggerName, lockId) => {
+    console.log(`[WhatsApp Daily V2 Cron] Daily V2 bulletin report triggered for ${triggerName}`);
+    const client = await pool.connect();
+    let lockAcquired = false;
+    try {
+      const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [lockId]);
+      lockAcquired = Boolean(rows[0]?.locked);
+      if (!lockAcquired) {
+        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Another instance is handling send; skipping.`);
+        return;
+      }
+
+      const runKey = `${todayKey()}-${triggerName}`;
+      if (hasSentTodayDailyV2(runKey)) {
+        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Already sent today for ${triggerName}, skipping.`);
+        return;
+      }
+
+      // 📝 EDIT RECIPIENT PHONE NUMBERS HERE:
+      const recipientsV2 = [
+        "918827232995", // Admin 1
+        "919111899909", // Admin 2
+        "919131042937", // Admin 3
+        "918349733213", // Admin 4
+      ];
+
+      try {
+        const { reportData } = await sendDailyBulletinWhatsAppNew({
+          phoneNumber: recipientsV2,
+          date: todayKey(),
+        });
+        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Sent PMC SWM V2 Daily Bulletin in bulk to:`, recipientsV2.join(", "), 'for date:', reportData.date);
+      } catch (error) {
+        console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Failed bulk send V2:`, error.message);
+      }
+
+      markSentTodayDailyV2(runKey);
+
+      await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+      lockAcquired = false;
+    } catch (err) {
+      console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Cron error:`, err.message);
+    } finally {
+      if (lockAcquired) {
+        await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+      }
+      client.release();
+    }
+  };
+
+  // ⏰ Trigger 1: 7:00 PM IST
+  cron.schedule(
+    "00 19 * * *",
+    async () => {
+      await triggerDailyBulletinNew("7pm", 812352);
+    },
+    {
+      timezone: "Asia/Kolkata",
+    }
+  );
+
+  // ⏰ Trigger 2: 11:59 PM IST
+  cron.schedule(
+    "59 23 * * *",
+    async () => {
+      await triggerDailyBulletinNew("1159pm", 812353);
+    },
+    {
+      timezone: "Asia/Kolkata",
+    }
+  );
+
   // =============================================
+  // =============================================
+  // Below: Other crons (Supervisor, AutoPunchOut)
+  // =============================================
+  // =============================================
+
+  // =============================================
+
   // Supervisor Daily Report Cron (8:00 PM IST)
   // ISOLATED: own lock ID (812347), own tracking file
   // Recipients: defined inside msg91SupervisorDailyReport.js

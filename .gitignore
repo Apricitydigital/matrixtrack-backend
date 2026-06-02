@@ -21,6 +21,7 @@ coverage/
 Thumbs.db
 
 # local-only scripts/files
+scratch/
 check_*.js
 run_query.js
 
