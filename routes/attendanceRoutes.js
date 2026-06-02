@@ -15,14 +15,36 @@ const formatDateIST = (date = new Date()) => {
   });
 };
 
+const readParam = (req, keys = []) => {
+  for (const key of keys) {
+    const value = req?.query?.[key] ?? req?.body?.[key];
+    if (
+      value !== undefined &&
+      value !== null &&
+      String(value).trim() !== "" &&
+      String(value).toLowerCase() !== "undefined" &&
+      String(value).toLowerCase() !== "null"
+    ) {
+      return String(value).trim();
+    }
+  }
+  return null;
+};
+
+const normalizeDateInput = (raw) => {
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+};
+
 router.use(authenticate, attachKothiScope, attachCityScope, requireCityScope());
 
 // 🟢 Fetch attendance report for a specific date or date range
-router.post("/", async (req, res) => {
-  // Exhaustive check for all possible date param names from query or body
-  const startDate = req.query.startDate || req.body.startDate || req.query.start_date || req.body.start_date;
-  const endDate = req.query.endDate || req.body.endDate || req.query.end_date || req.body.end_date;
-  const singleDate = req.query.date || req.body.date || req.query.singleDate || req.body.singleDate;
+const handleAttendanceReport = async (req, res) => {
+  const startDateRaw = readParam(req, ["startDate", "start_date", "fromDate", "from_date", "from"]);
+  const endDateRaw = readParam(req, ["endDate", "end_date", "toDate", "to_date", "to"]);
+  const singleDateRaw = readParam(req, ["date", "singleDate", "single_date"]);
 
   const scope = req.cityScope || { all: false, ids: [] };
   const kothiScope = req.kothiScope || { all: true, ids: [] };
@@ -34,12 +56,30 @@ router.post("/", async (req, res) => {
   }
 
   try {
+    const startDate = normalizeDateInput(startDateRaw);
+    const endDate = normalizeDateInput(endDateRaw);
+    const singleDate = normalizeDateInput(singleDateRaw);
+
+    if (
+      (startDateRaw && !startDate) ||
+      (endDateRaw && !endDate) ||
+      (singleDateRaw && !singleDate)
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Invalid date format. Use YYYY-MM-DD or ISO date." });
+    }
+
     let dateFilter;
     let params;
 
-    if (startDate && endDate && startDate !== "undefined" && endDate !== "undefined") {
+    if (startDate || endDate) {
+      const start = startDate || endDate;
+      const end = endDate || startDate;
+      const rangeStart = start <= end ? start : end;
+      const rangeEnd = start <= end ? end : start;
       dateFilter = "a.date::date BETWEEN $1 AND $2";
-      params = [startDate, endDate];
+      params = [rangeStart, rangeEnd];
     } else {
       dateFilter = "a.date::date = $1";
       params = [singleDate || formatDateIST()];
@@ -104,7 +144,10 @@ router.post("/", async (req, res) => {
     console.error("Error fetching attendance report:", error);
     res.status(500).json({ error: "Database error", details: error.message });
   }
-});
+};
+
+router.get("/", handleAttendanceReport);
+router.post("/", handleAttendanceReport);
 
 const handleAttendanceDownload = createAttendanceDownloadHandler({
   pool,

@@ -427,6 +427,7 @@ const groupingConfigs = {
       { key: "department_name", label: "Department", formatter: (val) => val || "-" },
       { key: "designation_name", label: "Designation", formatter: (val) => val || "-" },
       { key: "employee_name", label: "Employee Name", formatter: (val) => val || "-" },
+      { key: "leave_type", label: "Leave Type", formatter: (val) => val || "-" },
       { key: "emp_code", label: "Emp Code", formatter: (val) => val ? `="${val}"` : "-" },
       { key: "contact_no", label: "Contact No.", formatter: (val) => val ? `="${val}"` : "-" },
       { key: "punch_in_time", label: "Punch In Time", formatter: (val) => val || "-" },
