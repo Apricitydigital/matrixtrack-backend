@@ -107,16 +107,18 @@ if (AUTO_HEAL_CRON_ENABLED && isPrimaryCronInstance) {
 app.use(
   cors({
     origin: (origin, callback) => {
+      console.log("Request Origin =>", origin);
+
       if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-        return;
+        return callback(null, true);
       }
-      callback(new Error("Not allowed by CORS"));
+
+      console.log("Blocked Origin =>", origin);
+      return callback(null, true); // TEMPORARY FOR DEBUG
     },
     credentials: true,
   })
 );
-
 app.use(cookieParser());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
