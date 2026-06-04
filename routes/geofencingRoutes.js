@@ -16,7 +16,6 @@ router.get("/summary", authenticate, async (req, res) => {
             LEFT JOIN wards w ON g.ward_id = w.ward_id
             ORDER BY c.city_name, z.zone_name, w.ward_name, g.geofence_id
         `);
-        console.log("Summary data returned:", result.rows);
         res.json(result.rows);
     } catch (error) {
         console.error("Error fetching geofencing summary:", error);
@@ -265,7 +264,6 @@ router.get("/my-request", authenticate, async (req, res) => {
 
 // GET /api/geofencing/requests — admin fetches all pending requests
 router.get("/requests", authenticate, async (req, res) => {
-    console.log("GET /api/geofencing/requests - fetching all requests");
     try {
         const result = await pool.query(`
             SELECT gr.*, 
@@ -342,7 +340,7 @@ router.patch("/requests/:id", authenticate, authorize("master", "manage"), async
                         VALUES ($1, $2, $3, $4, $5, $6)`,
                         [finalZoneId || null, finalWardId || null, updatedRequest.latitude, updatedRequest.longitude, 150, 'meters']
                     );
-                    console.log(`✅ Auto-created geofence for ward ${finalWardId} upon approval.`);
+                    console.log(`[Geofencing] Auto-created geofence for ward ${finalWardId}.`);
                 }
             } catch (autoErr) {
                 console.error("Failed to auto-create geofence entry:", autoErr);
