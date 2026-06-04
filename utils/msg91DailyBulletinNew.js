@@ -71,12 +71,8 @@ const generateDailyBulletinData = async (overrideDate) => {
     JOIN wards w ON e.ward_id = w.ward_id
     JOIN zones z ON w.zone_id = z.zone_id
     JOIN cities c ON z.city_id = c.city_id
-    JOIN designation des ON e.designation_id = des.designation_id
-    JOIN department dept ON des.department_id = dept.department_id
     LEFT JOIN attendance a ON e.emp_id = a.emp_id AND a.date::date = $1::date
     WHERE c.city_name = $2
-      AND dept.department_name = 'Road Sweeping Staff- PMC'
-      AND des.designation_name IN ('Ramp Bigari', 'Road Sweeper', 'Supervisor (Mukadam)')
       AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
     GROUP BY z.zone_name, z.zone_id
     ORDER BY z.zone_name
@@ -85,7 +81,7 @@ const generateDailyBulletinData = async (overrideDate) => {
   const { rows } = await pool.query(zoneQuery, [isoDate, REPORT_CITY]);
 
   if (!rows || rows.length === 0) {
-    throw new Error(`No data found for Pune SWM department on date ${isoDate}.`);
+    throw new Error(`No data found for Pune on date ${isoDate}.`);
   }
 
   const zonesData = rows.map((row) => {

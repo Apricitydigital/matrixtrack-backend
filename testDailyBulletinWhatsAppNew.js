@@ -13,10 +13,8 @@ require("dotenv").config();
 // =========================================================================
 // ⚙️ CONFIGURATION: Edit these default values for future testing
 // =========================================================================
-const DEFAULT_PHONE_NUMBER = [
-  "918827232995",
-  "919131042937"
-]; // 📞 Change this to your default phone number
+const DEFAULT_PHONE_NUMBER =
+  "918827232995"; // 📞 Change this to your default phone number
 
 // Helper to get Yesterday's date (Today - 1 day) in YYYY-MM-DD format (IST timezone)
 const getYesterdayDateString = () => {
@@ -31,7 +29,7 @@ const getYesterdayDateString = () => {
 //  const DEFAULT_DATE = getYesterdayDateString();
 
 // Note: If you want to force a specific hardcoded date for testing, you can uncomment below:
-const DEFAULT_DATE = "2026-05-07";
+const DEFAULT_DATE = "2026-05-14";
 // =========================================================================
 
 async function main() {
