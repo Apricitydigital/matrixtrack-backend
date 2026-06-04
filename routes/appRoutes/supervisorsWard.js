@@ -356,7 +356,7 @@ const fetchSupervisorSummary = async (
 
   const summaryQuery = `
     WITH scoped_employees AS (
-      SELECT DISTINCT e.emp_id, e.face_id, e.face_embedding
+      SELECT DISTINCT e.emp_id
       FROM employee e
       JOIN wards w ON e.ward_id = w.ward_id
       JOIN zones z ON w.zone_id = z.zone_id
@@ -364,41 +364,42 @@ const fetchSupervisorSummary = async (
       LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
       ${whereClause}
     ),
-    attendance_summary AS (
+    attendance_status AS (
       SELECT
-        a.emp_id,
-        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS is_present,
-        MAX(CASE WHEN a.leave_type IS NOT NULL AND a.punch_in_time IS NULL THEN 1 ELSE 0 END) AS is_on_leave,
-        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in,
+        se.emp_id,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
-      FROM attendance a
-      WHERE a.date::date BETWEEN $${startParam}::date AND $${endParam}::date
-      GROUP BY a.emp_id
+      FROM scoped_employees se
+      LEFT JOIN attendance a
+        ON a.emp_id = se.emp_id
+       AND a.date::date BETWEEN $${startParam}::date AND $${endParam}::date
+      GROUP BY se.emp_id
     )
     SELECT
-      COUNT(DISTINCT se.emp_id) AS total_employees,
-      COUNT(DISTINCT CASE WHEN se.face_id IS NOT NULL OR se.face_embedding IS NOT NULL THEN se.emp_id END) AS total_face_registered,
-      COUNT(DISTINCT CASE WHEN att.is_present = 1 THEN se.emp_id END) AS present,
-      COUNT(DISTINCT CASE WHEN att.is_on_leave = 1 THEN se.emp_id END) AS on_leave,
-      COUNT(DISTINCT CASE WHEN COALESCE(att.is_present, 0) = 0 AND COALESCE(att.is_on_leave, 0) = 0 THEN se.emp_id END) AS absent,
-      COUNT(DISTINCT CASE WHEN att.has_mid_shift_punch_in = 1 THEN se.emp_id END) AS mid_shift_punch_in,
-      COUNT(DISTINCT CASE WHEN att.is_present = 1 AND att.has_punch_out = 1 THEN se.emp_id END) AS fully_marked,
-      COUNT(DISTINCT CASE WHEN att.is_present = 1 AND COALESCE(att.has_punch_out, 0) = 0 THEN se.emp_id END) AS in_progress
-    FROM scoped_employees se
-    LEFT JOIN attendance_summary att ON att.emp_id = se.emp_id;
+      (SELECT COUNT(*) FROM scoped_employees) AS total_employees,
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
+      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
+      COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
+      COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      GREATEST(
+        (SELECT COUNT(*) FROM scoped_employees) -
+        COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0),
+        0
+      ) AS not_marked
+    FROM attendance_status;
   `;
 
   params.push(startDate, endDate);
   const result = await pool.query(summaryQuery, params);
   const row = result.rows[0] || {};
   const totalEmployees = Number(row.total_employees) || 0;
-  const totalFaceRegistered = Number(row.total_face_registered) || 0;
   const present = Number(row.present) || 0;
   const onLeave = Number(row.on_leave) || 0;
   const fullyMarked = Number(row.fully_marked) || 0;
   const inProgress = Number(row.in_progress) || 0;
-  const notMarked = Number(row.absent) || 0;
-  const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
+  const notMarked = Number(row.not_marked) || 0;
   const attendanceRate =
     totalEmployees > 0
       ? Number((((present + onLeave) / totalEmployees) * 100).toFixed(1))
@@ -406,14 +407,12 @@ const fetchSupervisorSummary = async (
 
   return {
     totalEmployees,
-    totalFaceRegistered,
     present,
     marked: present,
     fullyMarked,
     inProgress,
     onLeave,
     notMarked,
-    midShiftPunchIn,
     attendanceRate,
   };
 };
@@ -491,17 +490,16 @@ const fetchSupervisorEmployees = async (
             WHERE uz.zone_id = w.zone_id AND uz.user_id = $1::int
           )
         )
-        AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
     ),
     attendance_summary AS (
       SELECT
         a.emp_id,
-        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in,
-        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_start,
-        MAX(CASE WHEN a.leave_type IS NOT NULL AND a.punch_in_time IS NULL THEN 1 ELSE 0 END) AS has_leave,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_start,
+        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
-        COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_in_time IS NOT NULL) AS days_present,
+        COUNT(DISTINCT a.date::date) FILTER (WHERE (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)) AS days_present,
         COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
         MAX(a.mid_shift_punch_in_time) FILTER (WHERE a.mid_shift_punch_in_time IS NOT NULL) AS mid_shift_punch_in_time,
@@ -584,7 +582,7 @@ const fetchCitySummary = async (
   const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
   const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
 
-    const query = `
+  const query = `
     WITH employee_city AS (
       SELECT DISTINCT
         e.emp_id,
@@ -604,15 +602,14 @@ const fetchCitySummary = async (
         AND ($4::int IS NULL OR c.city_id = $4::int)
         ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
         ${hasKothiFilter ? `AND w.ward_id = ANY($${hasZoneFilter ? 6 : 5}::int[])` : ""}
-        AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
     ),
     attendance_status AS (
       SELECT
         ec.city_id,
         ec.city_name,
         ec.emp_id,
-        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
-        MAX(CASE WHEN a.leave_type IS NOT NULL AND a.punch_in_time IS NULL THEN 1 ELSE 0 END) AS has_leave,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
       FROM employee_city ec
       LEFT JOIN attendance a
@@ -675,7 +672,7 @@ const fetchZoneSummary = async (
   const cityFallbackClause = options.isAdmin
     ? "OR z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)"
     : "";
-    const query = `
+  const query = `
     WITH employee_zone AS (
       SELECT DISTINCT
         e.emp_id,
@@ -696,16 +693,15 @@ const fetchZoneSummary = async (
         AND ($4::int IS NULL OR c.city_id = $4::int)
         ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
         ${hasKothiFilter ? `AND w.ward_id = ANY($${hasZoneFilter ? 6 : 5}::int[])` : ""}
-        AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
     ),
     attendance_status AS (
       SELECT
         ez.zone_id,
         ez.zone_name,
         ez.emp_id,
-        MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
-        MAX(CASE WHEN a.leave_type IS NOT NULL AND a.punch_in_time IS NULL THEN 1 ELSE 0 END) AS has_leave
+        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave
       FROM employee_zone ez
       LEFT JOIN attendance a
         ON a.emp_id = ez.emp_id
