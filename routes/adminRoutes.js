@@ -828,7 +828,7 @@ router.get("/analytics/ward-trends", async (req, res) => {
         u.name as supervisor_name
       FROM wards w
       LEFT JOIN zones z ON w.zone_id = z.zone_id
-      LEFT JOIN employee e ON w.ward_id = e.ward_id
+      LEFT JOIN employee e ON w.ward_id = e.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       LEFT JOIN attendance a ON e.emp_id = a.emp_id
         AND a.created_at >= CURRENT_DATE - INTERVAL '30 days'
       LEFT JOIN supervisor_ward aw ON w.ward_id = aw.ward_id
@@ -867,7 +867,7 @@ router.get("/supervisors", async (req, res) => {
       FROM users u
       LEFT JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
       LEFT JOIN wards w ON sw.ward_id = w.ward_id
-      LEFT JOIN employee e ON w.ward_id = e.ward_id
+      LEFT JOIN employee e ON w.ward_id = e.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       WHERE u.role = 'supervisor'
       GROUP BY u.user_id, u.name, u.email, u.emp_code, u.phone, u.created_at
       ORDER BY u.name
@@ -904,7 +904,7 @@ router.get("/supervisors/:id", async (req, res) => {
       FROM supervisor_ward aw
       JOIN wards w ON aw.ward_id = w.ward_id
       LEFT JOIN zones z ON w.zone_id = z.zone_id
-      LEFT JOIN employee e ON w.ward_id = e.ward_id
+      LEFT JOIN employee e ON w.ward_id = e.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       WHERE aw.supervisor_id = $1
       GROUP BY w.ward_id, w.ward_name, z.zone_name
     `, [id]);
@@ -915,7 +915,7 @@ router.get("/supervisors/:id", async (req, res) => {
         COUNT(DISTINCT a.emp_id) as employees_marked,
         COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN a.emp_id END) as present_count
       FROM attendance a
-      JOIN employee e ON a.emp_id = e.emp_id
+      JOIN employee e ON a.emp_id = e.emp_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       JOIN supervisor_ward aw ON e.ward_id = aw.ward_id
       WHERE aw.supervisor_id = $1 
         AND a.created_at >= CURRENT_DATE - INTERVAL '7 days'
@@ -981,7 +981,7 @@ router.get("/employees", async (req, res) => {
     const { page = 1, limit = 50, search = '', ward_id = '', status = '' } = req.query;
     const offset = (page - 1) * limit;
 
-    let whereClause = 'WHERE 1=1';
+    let whereClause = 'WHERE (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)';
     let params = [];
     let paramCount = 0;
 
@@ -1165,7 +1165,7 @@ router.get("/wards", async (req, res) => {
       FROM wards w
       LEFT JOIN zones z ON w.zone_id = z.zone_id
       LEFT JOIN cities c ON z.city_id = c.city_id
-      LEFT JOIN employee e ON w.ward_id = e.ward_id
+      LEFT JOIN employee e ON w.ward_id = e.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       LEFT JOIN supervisor_ward aw ON w.ward_id = aw.ward_id
       LEFT JOIN users u ON aw.supervisor_id = u.user_id
       GROUP BY w.ward_id, w.ward_name, z.zone_name, c.city_name, u.name

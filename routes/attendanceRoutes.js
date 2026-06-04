@@ -234,44 +234,42 @@ router.get("/short-report", async (req, res) => {
 
     COUNT(
       DISTINCT CASE
-        WHEN a.punch_in_time IS NOT NULL
+        WHEN a.is_present = 1
         THEN e.emp_id
       END
     ) AS total_present_employees,
 
     COUNT(
       DISTINCT CASE
-        WHEN a.leave_type IS NOT NULL
+        WHEN a.is_on_leave = 1
         THEN e.emp_id
       END
     ) AS total_leave_employees,
 
     COUNT(
       DISTINCT CASE
-        WHEN a.mid_shift_punch_in_time IS NOT NULL
+        WHEN a.has_mid_shift_punch_in = 1
         THEN e.emp_id
       END
     ) AS total_mid_shift_punch_in,
 
     COUNT(
       DISTINCT CASE
-        WHEN a.punch_out_time IS NOT NULL
-          AND (a.auto_punched_out IS FALSE OR a.auto_punched_out IS NULL)
+        WHEN a.has_manual_punch_out = 1
         THEN e.emp_id
       END
     ) AS manual_punch_out_count,
 
     COUNT(
       DISTINCT CASE
-        WHEN a.punch_out_time IS NOT NULL
-          AND a.auto_punched_out IS TRUE
+        WHEN a.has_auto_punch_out = 1
         THEN e.emp_id
       END
     ) AS auto_punch_out_count,
 
     COUNT(
       DISTINCT CASE
-        WHEN a.punch_out_time IS NOT NULL
+        WHEN a.has_punch_out = 1
         THEN e.emp_id
       END
     ) AS total_completed_punch_out,
@@ -284,7 +282,7 @@ router.get("/short-report", async (req, res) => {
     ARRAY_REMOVE(
       ARRAY_AGG(
         DISTINCT CASE
-          WHEN a.punch_in_time IS NOT NULL
+          WHEN a.is_present = 1
           THEN e.emp_id
         END
       ),
@@ -294,7 +292,7 @@ router.get("/short-report", async (req, res) => {
     ARRAY_REMOVE(
       ARRAY_AGG(
         DISTINCT CASE
-          WHEN a.leave_type IS NOT NULL
+          WHEN a.is_on_leave = 1
           THEN e.emp_id
         END
       ),
@@ -329,17 +327,17 @@ router.get("/short-report", async (req, res) => {
   ) sup ON sup.ward_id = w.ward_id
 
   LEFT JOIN (
-    SELECT DISTINCT ON (emp_id)
-      emp_id,
-      date,
-      punch_in_time,
-      punch_out_time,
-      mid_shift_punch_in_time,
-      auto_punched_out,
-      leave_type
-    FROM public.attendance
-    WHERE date = $2::date
-    ORDER BY emp_id, attendance_id DESC
+    SELECT
+      a.emp_id,
+      MAX(CASE WHEN a.punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS is_present,
+      MAX(CASE WHEN a.leave_type IS NOT NULL AND a.punch_in_time IS NULL THEN 1 ELSE 0 END) AS is_on_leave,
+      MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in,
+      MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+      MAX(CASE WHEN a.punch_out_time IS NOT NULL AND a.auto_punched_out IS TRUE THEN 1 ELSE 0 END) AS has_auto_punch_out,
+      MAX(CASE WHEN a.punch_out_time IS NOT NULL AND (a.auto_punched_out IS FALSE OR a.auto_punched_out IS NULL) THEN 1 ELSE 0 END) AS has_manual_punch_out
+    FROM public.attendance a
+    WHERE a.date = $2::date
+    GROUP BY a.emp_id
   ) a
     ON a.emp_id = e.emp_id
 
