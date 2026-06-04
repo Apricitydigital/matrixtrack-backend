@@ -264,12 +264,10 @@ if (isPrimaryCronInstance) {
       // 📝 EDIT RECIPIENT PHONE NUMBERS HERE:
       // You can add, remove, or edit phone numbers in this list to configure who receives the reports.
       const recipientsV2 = [
-        "918827232995", // Admin 1  
-        "919131042937", // Admin 2
-        // Admin 3
-        // "91XXXXXXXXXX", // Dummy number 1 (Uncomment and replace with real number)
-        // "91YYYYYYYYYY", // Dummy number 2 (Uncomment and replace with real number)
-        // "91ZZZZZZZZZZ", // Dummy number 3 (Uncomment and replace with real number)
+        "918827232995",
+        "919131042937",
+        "919111899909",
+        "918349733213",
       ];
 
       try {
@@ -296,11 +294,11 @@ if (isPrimaryCronInstance) {
     }
   };
 
-  // ⏰ Trigger 1: 7:00 PM IST
+  // ⏰ Trigger 1: 7:30 PM IST
   cron.schedule(
-    "00 19 * * *",
+    "30 19 * * *",
     async () => {
-      await triggerDailyBulletinNew("7pm", 812352);
+      await triggerDailyBulletinNew("730pm", 812352);
     },
     {
       timezone: "Asia/Kolkata",

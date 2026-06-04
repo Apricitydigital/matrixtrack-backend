@@ -62,6 +62,7 @@ const generateDailyBulletinData = async (overrideDate) => {
     JOIN cities c ON z.city_id = c.city_id
     LEFT JOIN attendance_summary att ON att.emp_id = e.emp_id
     WHERE c.city_name = $2
+      AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
   `;
 
   const cityResult = await pool.query(cityQuery, [isoDate, REPORT_CITY]);
@@ -98,6 +99,7 @@ const generateDailyBulletinData = async (overrideDate) => {
     JOIN cities c ON z.city_id = c.city_id
     LEFT JOIN attendance_summary att ON att.emp_id = e.emp_id
     WHERE c.city_name = $2
+      AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
     GROUP BY z.zone_name, z.zone_id
     ORDER BY z.zone_name
   `;
