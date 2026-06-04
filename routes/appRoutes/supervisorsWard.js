@@ -250,6 +250,8 @@ const mapRowsToWards = (rows) => {
       department: row.department_name,
       supervisor_name: row.supervisor_name,
       attendance_status: row.attendance_status,
+      leave_type: row.leave_type,
+      leaveType: row.leave_type,
       days_present: Number(row.days_present ?? 0),
       days_marked: Number(row.days_marked ?? 0),
       face_embedding: row.face_embedding,
@@ -302,6 +304,7 @@ const EMPTY_SUMMARY = {
   marked: 0,
   fullyMarked: 0,
   inProgress: 0,
+  midShiftPunchIn: 0,
   onLeave: 0,
   notMarked: 0,
   attendanceRate: 0,
@@ -369,7 +372,8 @@ const fetchSupervisorSummary = async (
         se.emp_id,
         MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
-        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in
       FROM scoped_employees se
       LEFT JOIN attendance a
         ON a.emp_id = se.emp_id
@@ -379,13 +383,15 @@ const fetchSupervisorSummary = async (
     SELECT
       (SELECT COUNT(*) FROM scoped_employees) AS total_employees,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
-      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
+      /* Priority Rule: Count as on_leave only if leave is marked AND they did NOT punch in */
+      COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_mid_shift_punch_in = 1 THEN 1 ELSE 0 END), 0) AS mid_shift_punch_in,
       GREATEST(
         (SELECT COUNT(*) FROM scoped_employees) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
-        COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0),
         0
       ) AS not_marked
     FROM attendance_status;
@@ -399,6 +405,7 @@ const fetchSupervisorSummary = async (
   const onLeave = Number(row.on_leave) || 0;
   const fullyMarked = Number(row.fully_marked) || 0;
   const inProgress = Number(row.in_progress) || 0;
+  const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
   const notMarked = Number(row.not_marked) || 0;
   const attendanceRate =
     totalEmployees > 0
@@ -411,6 +418,7 @@ const fetchSupervisorSummary = async (
     marked: present,
     fullyMarked,
     inProgress,
+    midShiftPunchIn,
     onLeave,
     notMarked,
     attendanceRate,
@@ -501,6 +509,7 @@ const fetchSupervisorEmployees = async (
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
         COUNT(DISTINCT a.date::date) FILTER (WHERE (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)) AS days_present,
         COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
+        MAX(a.leave_type) FILTER (WHERE a.leave_type IS NOT NULL) AS leave_type,
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
         MAX(a.mid_shift_punch_in_time) FILTER (WHERE a.mid_shift_punch_in_time IS NOT NULL) AS mid_shift_punch_in_time,
         MAX(a.punch_out_time) FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,
@@ -525,11 +534,12 @@ const fetchSupervisorEmployees = async (
         JOIN users su ON sw2.supervisor_id = su.user_id
         WHERE sw2.ward_id = se.ward_id
       ) AS supervisor_name,
+      /* Priority Rule: Present / Punch Start takes absolute priority over Leave status */
       CASE
+        WHEN COALESCE(summary.has_punch_start, 0) = 1 AND COALESCE(summary.has_punch_out, 0) = 1 THEN 'Marked'
+        WHEN COALESCE(summary.has_punch_start, 0) = 1 THEN 'In Progress'
         WHEN COALESCE(summary.has_leave, 0) = 1 THEN 'Leave'
-        WHEN COALESCE(summary.has_punch_start, 0) = 0 THEN 'Not Marked'
-        WHEN COALESCE(summary.has_punch_out, 0) = 1 THEN 'Marked'
-        ELSE 'In Progress'
+        ELSE 'Not Marked'
       END AS attendance_status,
       COALESCE(summary.days_present, 0) AS days_present,
       COALESCE(summary.days_marked, 0) AS days_marked,
@@ -622,13 +632,14 @@ const fetchCitySummary = async (
       city_name,
       COUNT(*) AS total_employees,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
-      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
+      /* Priority Rule: Count under leave ONLY if they did not punch in (Present takes priority) */
+      COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
       GREATEST(
         COUNT(*) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
-        COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0),
         0
       ) AS not_marked
     FROM attendance_status
@@ -713,10 +724,16 @@ const fetchZoneSummary = async (
       zone_name,
       COUNT(*) AS total_employees,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
-      COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
+      /* Priority Rule: Count under leave ONLY if they did not punch in (Present takes priority) */
+      COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
-      GREATEST(COUNT(*) - COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0), 0) AS not_marked
+      GREATEST(
+        COUNT(*) - 
+        COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) - 
+        COALESCE(SUM(CASE WHEN has_leave = 1 AND has_punch_in = 0 THEN 1 ELSE 0 END), 0), 
+        0
+      ) AS not_marked
     FROM attendance_status
     GROUP BY zone_id, zone_name
     ORDER BY zone_name;

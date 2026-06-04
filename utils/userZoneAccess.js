@@ -166,6 +166,8 @@ const syncUserZoneAccess = async (
     userId,
   ]);
 
+
+  
   if (ids.length === 0) {
     invalidateZoneAccessCache();
     invalidateKothiAccessCache(); // zone changes alter derived kothi scopes
@@ -184,6 +186,7 @@ const syncUserZoneAccess = async (
   invalidateZoneAccessCache();
   invalidateKothiAccessCache(); // keep kothi scope cache in sync when zones change
 };
+
 
 module.exports = {
   fetchUserZoneAccess,

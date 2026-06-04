@@ -10,9 +10,10 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }, // Required for RDS connections
   max: 10,                            // Max DB connections (prevents RDS exhaustion)
   min: 2,                             // Keep a minimum of 2 connections alive
-  connectionTimeoutMillis: 8000,      // Wait max 8s for a free connection
+  connectionTimeoutMillis: 15000,     // Wait max 15s for a free connection
   idleTimeoutMillis: 30000,           // Close idle connections after 30s
-  statement_timeout: 15000,           // Kill any query running > 15s
+  // IMPORTANT: Some dashboard queries can exceed 60s on RDS; allow more time without changing logic/data.
+  statement_timeout: 180000,          // Cancel any query running > 3 minutes
 });
 
 module.exports = pool;

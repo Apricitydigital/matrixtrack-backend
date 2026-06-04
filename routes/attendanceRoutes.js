@@ -15,14 +15,36 @@ const formatDateIST = (date = new Date()) => {
   });
 };
 
+const readParam = (req, keys = []) => {
+  for (const key of keys) {
+    const value = req?.query?.[key] ?? req?.body?.[key];
+    if (
+      value !== undefined &&
+      value !== null &&
+      String(value).trim() !== "" &&
+      String(value).toLowerCase() !== "undefined" &&
+      String(value).toLowerCase() !== "null"
+    ) {
+      return String(value).trim();
+    }
+  }
+  return null;
+};
+
+const normalizeDateInput = (raw) => {
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+};
+
 router.use(authenticate, attachKothiScope, attachCityScope, requireCityScope());
 
 // 🟢 Fetch attendance report for a specific date or date range
-router.post("/", async (req, res) => {
-  // Exhaustive check for all possible date param names from query or body
-  const startDate = req.query.startDate || req.body.startDate || req.query.start_date || req.body.start_date;
-  const endDate = req.query.endDate || req.body.endDate || req.query.end_date || req.body.end_date;
-  const singleDate = req.query.date || req.body.date || req.query.singleDate || req.body.singleDate;
+const handleAttendanceReport = async (req, res) => {
+  const startDateRaw = readParam(req, ["startDate", "start_date", "fromDate", "from_date", "from"]);
+  const endDateRaw = readParam(req, ["endDate", "end_date", "toDate", "to_date", "to"]);
+  const singleDateRaw = readParam(req, ["date", "singleDate", "single_date"]);
 
   const scope = req.cityScope || { all: false, ids: [] };
   const kothiScope = req.kothiScope || { all: true, ids: [] };
@@ -34,12 +56,30 @@ router.post("/", async (req, res) => {
   }
 
   try {
+    const startDate = normalizeDateInput(startDateRaw);
+    const endDate = normalizeDateInput(endDateRaw);
+    const singleDate = normalizeDateInput(singleDateRaw);
+
+    if (
+      (startDateRaw && !startDate) ||
+      (endDateRaw && !endDate) ||
+      (singleDateRaw && !singleDate)
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Invalid date format. Use YYYY-MM-DD or ISO date." });
+    }
+
     let dateFilter;
     let params;
 
-    if (startDate && endDate && startDate !== "undefined" && endDate !== "undefined") {
+    if (startDate || endDate) {
+      const start = startDate || endDate;
+      const end = endDate || startDate;
+      const rangeStart = start <= end ? start : end;
+      const rangeEnd = start <= end ? end : start;
       dateFilter = "a.date::date BETWEEN $1 AND $2";
-      params = [startDate, endDate];
+      params = [rangeStart, rangeEnd];
     } else {
       dateFilter = "a.date::date = $1";
       params = [singleDate || formatDateIST()];
@@ -62,8 +102,8 @@ router.post("/", async (req, res) => {
         dept.department_name AS department,
         des.designation_name AS designation,
         e.phone AS contact_no, 
-        TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in, 
-        TO_CHAR((a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH24:MI:SS') AS mid_shift_punch_in,
+        TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in, 
+        TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in,
         a.in_address,
         a.latitude_in,
         a.longitude_in,
@@ -72,7 +112,7 @@ router.post("/", async (req, res) => {
         a.latitude_mid_in,
         a.longitude_mid_in,
         a.mid_shift_punch_in_image,
-        TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out, 
+        TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_out, 
         a.out_address,
         a.latitude_out,
         a.longitude_out,
@@ -104,7 +144,10 @@ router.post("/", async (req, res) => {
     console.error("Error fetching attendance report:", error);
     res.status(500).json({ error: "Database error", details: error.message });
   }
-});
+};
+
+router.get("/", handleAttendanceReport);
+router.post("/", handleAttendanceReport);
 
 const handleAttendanceDownload = createAttendanceDownloadHandler({
   pool,
@@ -125,7 +168,13 @@ router.get("/short-report", async (req, res) => {
       .json({ error: "cityName query param is required." });
   }
 
-  const targetDate = date || formatDateIST();
+  let targetDate = date || formatDateIST();
+  if (targetDate && typeof targetDate === "string") {
+    const parts = targetDate.split("-");
+    if (parts.length === 3 && parts[2].length === 4) {
+      targetDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
+    }
+  }
   const scope = req.cityScope || { all: false, ids: [] };
 
   try {
@@ -198,7 +247,7 @@ router.get("/short-report", async (req, res) => {
 
     COUNT(
       DISTINCT CASE
-        WHEN a.leave_type IS NOT NULL
+        WHEN a.leave_type IS NOT NULL AND a.punch_in_time IS NULL
         THEN e.emp_id
       END
     ) AS total_leave_employees,
@@ -271,6 +320,9 @@ router.get("/short-report", async (req, res) => {
 
   LEFT JOIN public.employee e
     ON e.ward_id = w.ward_id
+    AND (
+      e.face_embedding IS NOT NULL OR e.face_id IS NOT NULL
+    )
 
   LEFT JOIN public.designation des
     ON e.designation_id = des.designation_id

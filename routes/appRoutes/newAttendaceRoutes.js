@@ -1692,6 +1692,46 @@ router.put("/", upload.single("image"), async (req, res) => {
   }
 });
 
+
+
+router.get("/location-viewer", async (req, res) => {
+  const { lat, lng } = req.query;
+  const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+  
+  const html = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Location Viewer</title>
+      <style>
+        body { margin: 0; background-color: #0f172a; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; overflow: hidden; }
+        .top-bar { position: absolute; top: 0; left: 0; width: 100%; padding: 15px 20px; box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(5px); z-index: 10; }
+        .back-btn { background: #3b82f6; color: white; padding: 10px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; transition: 0.2s; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        .back-btn:hover { background: #2563eb; }
+        .new-tab-btn { background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; transition: 0.2s; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        .new-tab-btn:hover { background: #059669; }
+        .help-text { color: #94a3b8; margin-top: 30px; font-size: 14px; text-align: center; }
+        .title { color: white; font-size: 24px; margin-bottom: 20px; }
+      </style>
+    </head>
+    
+    <body>
+      <div class="top-bar" style="justify-content: center;">
+        <span style="color: white; font-weight: bold; font-size: 18px;">MatrixTrack Image Viewer</span>
+      </div>
+      <div class="img-container">
+        <img src="${imageUrl}" alt="Attendance Image" />
+      </div>
+      <div class="help-text">Tip: To go back to Excel, click the Excel icon on your taskbar or press Alt+Tab.</div>
+    </body>
+
+    </html>
+  `;
+  res.send(html);
+});
+
 router.get("/image", async (req, res) => {
   const { attendance_id, punch_type } = req.query;
 
@@ -2135,6 +2175,36 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           }
 
           // 🔒 Session-aware validation per employee in group (prevents re-punch-in)
+          try {
+            const leaveCheck = await pool.query(
+              `SELECT attendance_id, leave_type
+               FROM attendance
+               WHERE emp_id = $1 AND date = $2::date
+               ORDER BY attendance_id DESC
+               LIMIT 1`,
+              [employeeRecord.emp_id, attendanceDate]
+            );
+            const leaveRow = leaveCheck?.rows?.[0];
+            if (leaveRow?.leave_type) {
+              results.push({
+                faceIndex,
+                status: "skipped",
+                employeeId: employeeRecord.emp_id,
+                employeeName: employeeRecord.name,
+                similarity,
+                message: `Leave already marked (${leaveRow.leave_type}). Punch skipped.`,
+                code: "LEAVE_MARKED",
+              });
+              processedEmployees.add(employeeRecord.emp_id);
+              continue;
+            }
+          } catch (leaveCheckError) {
+            console.error(
+              `[Group] Leave-check failed for emp_id=${employeeRecord.emp_id} date=${attendanceDate}:`,
+              leaveCheckError?.message || leaveCheckError
+            );
+          }
+
           const sessionError = await validatePunchSession(
             employeeRecord.emp_id,
             attendanceDate,
@@ -2205,6 +2275,10 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             employeeName: employeeRecord.name,
             similarity,
             attendanceId: attendance.attendance_id,
+            punchedAt:
+              punchType === PUNCH_TYPES.IN
+                ? formatPunchTimeForClient(updated.punch_in_time)
+                : formatPunchTimeForClient(updated.punch_out_time),
             punchedAt: formatPunchTimeForClient(
               resolvePunchRecordTime(updated, punchType)
             ),
@@ -2454,6 +2528,10 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold:
         updated.face_match_threshold ?? matchThreshold,
+      time:
+        punchType === PUNCH_TYPES.IN
+          ? formatPunchTimeForClient(updated.punch_in_time)
+          : formatPunchTimeForClient(updated.punch_out_time),
       time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
@@ -2653,6 +2731,10 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold: updated.face_match_threshold ?? matchThreshold,
       attendance_id: attendance.attendance_id,
+      time:
+        punchType === PUNCH_TYPES.IN
+          ? formatPunchTimeForClient(updated.punch_in_time)
+          : formatPunchTimeForClient(updated.punch_out_time),
       time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
@@ -3105,6 +3187,10 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
       punch_type: punchType,
       face_similarity: updated.face_similarity ?? null,
       face_match_threshold: updated.face_match_threshold ?? null,
+      time:
+        punchType === PUNCH_TYPES.IN
+          ? formatPunchTimeForClient(updated.punch_in_time)
+          : formatPunchTimeForClient(updated.punch_out_time),
       time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
     });
   } catch (error) {
