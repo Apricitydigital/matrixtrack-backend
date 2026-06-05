@@ -196,8 +196,14 @@ router.get("/short-report", async (req, res) => {
     }
 
     if (wardId && wardId !== "all" && wardId !== "undefined" && wardId !== "") {
-      params.push(Number(wardId));
-      extraClause += ` AND w.sector_id = $${params.length}`;
+      const wardIds = String(wardId)
+        .split(",")
+        .map((id) => Number(id.trim()))
+        .filter((id) => !isNaN(id) && id > 0);
+      if (wardIds.length > 0) {
+        params.push(wardIds);
+        extraClause += ` AND w.sector_id = ANY($${params.length})`;
+      }
     }
 
     if (kothiId && kothiId !== "all" && kothiId !== "undefined" && kothiId !== "") {
@@ -214,6 +220,28 @@ router.get("/short-report", async (req, res) => {
     if (!scope.all) {
       params.push(scope.ids.map(Number).filter((id) => !isNaN(id)));
       extraClause += ` AND c.city_id = ANY($${params.length})`;
+    }
+
+    // Restrict access by supervisor's allowed kothi/ward scope
+    let kothiScope = req.kothiScope;
+    if (req.user && req.user.role && req.user.role.toLowerCase() === "admin") {
+      const { fetchUserKothiAccess } = require("../utils/userKothiAccess");
+      const scopeCheck = await fetchUserKothiAccess(req.user.user_id, {
+        allowZoneFallback: true,
+        allowCityFallback: false,
+      });
+      if (scopeCheck.ids && scopeCheck.ids.length > 0) {
+        kothiScope = {
+          all: false,
+          ids: scopeCheck.ids,
+        };
+      }
+    }
+
+    const kothiFilter = buildKothiFilterClause(kothiScope, "w", params);
+    const finalParams = kothiFilter.params;
+    if (kothiFilter.clause) {
+      extraClause += ` ${kothiFilter.clause}`;
     }
 
     const { rows } = await pool.query(
@@ -357,7 +385,7 @@ router.get("/short-report", async (req, res) => {
   ORDER BY
     s.sector_name ASC NULLS LAST,
     w.ward_name ASC`,
-      params
+      finalParams
     );
 
     res.json(rows);
