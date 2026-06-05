@@ -29,7 +29,7 @@ const getYesterdayDateString = () => {
 //  const DEFAULT_DATE = getYesterdayDateString();
 
 // Note: If you want to force a specific hardcoded date for testing, you can uncomment below:
-const DEFAULT_DATE = "2026-05-14";
+const DEFAULT_DATE = "2026-05-15";
 // =========================================================================
 
 async function main() {
