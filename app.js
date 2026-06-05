@@ -242,7 +242,7 @@ if (isPrimaryCronInstance) {
   };
 
   // Helper to trigger SWM daily bulletin report
-  const triggerDailyBulletinNew = async (triggerName, lockId) => {
+  const triggerDailyBulletinNew = async (triggerName, lockId, targetDate) => {
     console.log(`[WhatsApp Daily V2 Cron] Daily V2 bulletin report triggered for ${triggerName}`);
     const client = await pool.connect();
     let lockAcquired = false;
@@ -270,10 +270,12 @@ if (isPrimaryCronInstance) {
         "918349733213",
       ];
 
+      const reportDate = targetDate || todayKey();
+
       try {
         const { reportData } = await sendDailyBulletinWhatsAppNew({
           phoneNumber: recipientsV2,
-          date: todayKey(), // Shared for the SAME DATE
+          date: reportDate, // Shared for the SAME DATE
         });
         console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Sent PMC SWM V2 Daily Bulletin in bulk to:`, recipientsV2.join(", "), 'for date:', reportData.date);
       } catch (error) {
@@ -294,22 +296,12 @@ if (isPrimaryCronInstance) {
     }
   };
 
-  // ⏰ Trigger 1: 7:30 PM IST
+  // ⏰ Trigger: 9:00 AM IST (Sends yesterday's bulletin report)
   cron.schedule(
-    "30 19 * * *",
+    "00 09 * * *",
     async () => {
-      await triggerDailyBulletinNew("730pm", 812352);
-    },
-    {
-      timezone: "Asia/Kolkata",
-    }
-  );
-
-  // ⏰ Trigger 2: 11:59 PM IST
-  cron.schedule(
-    "59 23 * * *",
-    async () => {
-      await triggerDailyBulletinNew("1159pm", 812353);
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      await triggerDailyBulletinNew("9am", 812352, yesterday);
     },
     {
       timezone: "Asia/Kolkata",
