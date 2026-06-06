@@ -91,6 +91,12 @@ const BASE_PERMISSIONS = [
     label: "Manage Master Data",
     description: "Create and update master records",
   },
+  {
+    module: "supervisor-attendance",
+    action: "view",
+    label: "View Supervisor Attendance",
+    description: "Access to supervisor activity-based attendance reports",
+  },
 ];
 
 let schemaPromise = null;
