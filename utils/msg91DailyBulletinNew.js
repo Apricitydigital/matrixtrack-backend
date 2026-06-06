@@ -23,8 +23,18 @@ const formatNum = (num) => {
 };
 
 const getReportDates = (overrideDate) => {
-  // Fix default date to "2026-05-07" for daily bulletin testing as requested
-  const targetDateStr = overrideDate || "2026-05-07";
+  let targetDateStr = overrideDate;
+  if (!targetDateStr) {
+    const nowUtc = new Date();
+    const istNow = new Date(nowUtc.toLocaleString("en-US", { timeZone: REPORT_TIMEZONE }));
+    const yesterday = new Date(istNow);
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    const yyyy = yesterday.getFullYear();
+    const mm = String(yesterday.getMonth() + 1).padStart(2, "0");
+    const dd = String(yesterday.getDate()).padStart(2, "0");
+    targetDateStr = `${yyyy}-${mm}-${dd}`;
+  }
   const reportDate = new Date(`${targetDateStr}T00:00:00+05:30`);
   const displayDate = reportDate.toLocaleDateString("en-IN", {
     day: "2-digit",
