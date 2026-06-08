@@ -4,11 +4,7 @@
   "main": "app.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node app.js",
-    "start:prod": "mkdir -p logs && pm2 start ecosystem.config.js --env production",
-    "stop:prod": "pm2 stop attendease-backend",
-    "reload:prod": "pm2 reload attendease-backend --update-env",
-    "logs:prod": "pm2 logs attendease-backend"
+    "start": "node app.js"
   },
   "keywords": [],
   "author": "",

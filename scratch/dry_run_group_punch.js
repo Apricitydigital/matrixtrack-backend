@@ -11,8 +11,8 @@ x/**
 // ─── MOCK SETUP ─────────────────────────────────────────────────────────────
 
 const GROUP_FACE_SEARCH_TIMEOUT_MS = 5000;
-const al
 const GROUP_DOUBLE_VERIFY_ENABLED = false;
+
 
 // Mock sharp — returns a valid buffer
 const sharp = (buf) => ({
