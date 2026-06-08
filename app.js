@@ -20,11 +20,17 @@ process.on("uncaughtException", (error) => {
 });
 
 // const DEFAULT_TEST_NUMBERS = ["918827232995", "919131042937", "918982622996", "919111899909"];
-// const NEW_REPORT_WEEKLY_RECIPIENTS = ["918827232995"];
-const WEEKLY_REPORT_NEW_RECIPIENTS = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999", "918349733213"];
+const WEEKLY_REPORT_NEW_RECIPIENTS = ["918827232995"];
 
 const todayKey = () =>
   new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+const yesterdayKey = () => {
+  const now = new Date();
+  const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+  istTime.setDate(istTime.getDate() - 1);
+  return istTime.toISOString().split("T")[0];
+};
 
 
 // Import Routes
@@ -148,7 +154,7 @@ const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
 const { sendWeeklyWhatsAppReportNew } = require("./utils/msg91WhatsAppWeeklyNew");
 // const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
-const { sendDailyBulletinWhatsAppNew } = require("./utils/msg91DailyBulletinNew");
+const { sendDailyBulletinWhatsAppNew } = require("./utils/MT Daily Bulletin SWM pune");
 
 const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
 const hasSentTodayDailyFinal = (key) => {
@@ -212,18 +218,16 @@ if (isPrimaryCronInstance) {
       // 📝 EDIT RECIPIENT PHONE NUMBERS HERE:
       // You can add, remove, or edit phone numbers in this list to configure who receives the reports.
       const recipientsV2 = [
-        "918827232995", // Admin 1  
-        "919131042937", // Admin 2
-        // Admin 3
-        // "91XXXXXXXXXX", // Dummy number 1 (Uncomment and replace with real number)
-        // "91YYYYYYYYYY", // Dummy number 2 (Uncomment and replace with real number)
-        // "91ZZZZZZZZZZ", // Dummy number 3 (Uncomment and replace with real number)
+        "918827232995",
+        "919131042937",
+        "918982622996",
+        "919111899909"
       ];
 
       try {
         const { reportData } = await sendDailyBulletinWhatsAppNew({
           phoneNumber: recipientsV2,
-          date: todayKey(), // Shared for the SAME DATE
+          date: yesterdayKey(), // Shared for the YESTERDAY'S DATE
         });
         console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Sent PMC SWM V2 Daily Bulletin in bulk to:`, recipientsV2.join(", "), 'for date:', reportData.date);
       } catch (error) {
@@ -244,22 +248,67 @@ if (isPrimaryCronInstance) {
     }
   };
 
-  // ⏰ Trigger 1: 7:00 PM IST
+  // ⏰ Daily Trigger: Scheduled for 9:00 AM IST
   cron.schedule(
-    "00 19 * * *",
+    "00 09 * * *", // 9:00 AM IST daily
     async () => {
-      await triggerDailyBulletinNew("7pm", 812352);
+      await triggerDailyBulletinNew("9am", 812352);
     },
     {
       timezone: "Asia/Kolkata",
     }
   );
 
-  // ⏰ Trigger 2: 11:59 PM IST
+
+  // =============================================
+  // 🔔 SIMPLE DAILY REPORT (9:30 AM IST)
+  // =============================================
   cron.schedule(
-    "59 23 * * *",
+    "20 12 * * *", // 12:20 PM IST temporary for testing (normally 9:30 AM IST)
     async () => {
-      await triggerDailyBulletinNew("1159pm", 812353);
+      console.log("[Daily Final Cron] Daily final report triggered.");
+      const client = await pool.connect();
+      let lockAcquired = false;
+      const DAILY_FINAL_LOCK_ID = 812350; // Unique lock ID
+      try {
+        const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [DAILY_FINAL_LOCK_ID]);
+        lockAcquired = Boolean(rows[0]?.locked);
+
+        if (!lockAcquired) {
+          console.log("[Daily Final Cron] Another instance is handling send; skipping.");
+          return;
+        }
+
+        const runKey = todayKey();
+        if (hasSentTodayDailyFinal(runKey)) {
+          console.log("[Daily Final Cron] Already sent today, skipping.");
+          return;
+        }
+
+        const recipients = ["918827232995"];
+        for (const mobile of recipients) {
+          try {
+            await sendDailyWhatsAppReportFinal({
+              phoneNumber: mobile,
+            });
+            console.log("[Daily Final Cron] Sent to:", mobile);
+          } catch (error) {
+            console.error("[Daily Final Cron] Failed for:", mobile, error.message);
+          }
+        }
+
+        markSentTodayDailyFinal(runKey);
+
+        await client.query("SELECT pg_advisory_unlock($1)", [DAILY_FINAL_LOCK_ID]);
+        lockAcquired = false;
+      } catch (err) {
+        console.error("[Daily Final Cron] Cron error:", err.message);
+      } finally {
+        if (lockAcquired) {
+          await client.query("SELECT pg_advisory_unlock($1)", [DAILY_FINAL_LOCK_ID]);
+        }
+        client.release();
+      }
     },
     {
       timezone: "Asia/Kolkata",
