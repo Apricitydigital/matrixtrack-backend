@@ -264,7 +264,7 @@ if (isPrimaryCronInstance) {
   // 🔔 SIMPLE DAILY REPORT (9:30 AM IST)
   // =============================================
   cron.schedule(
-    "20 12 * * *", // 12:20 PM IST temporary for testing (normally 9:30 AM IST)
+    "30 09 * * *", // 9:30 AM IST daily
     async () => {
       console.log("[Daily Final Cron] Daily final report triggered.");
       const client = await pool.connect();
