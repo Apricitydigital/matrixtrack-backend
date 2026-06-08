@@ -15,3 +15,4 @@ run_query.js
 #test files
 test_*.js
 supervisor_errors.log
+scratch/dry_run_group_punch.js
