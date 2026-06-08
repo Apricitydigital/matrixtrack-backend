@@ -146,7 +146,7 @@ const markSentTodayWeekly = (key) => {
 const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
 // const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
-const { sendDailyBulletinWhatsAppNew } = require("./utils/msg91DailyBulletinNew");
+const { sendDailyBulletinWhatsAppNew } = require("./utils/MT Daily Bulletin SWM pune");
 
 const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
 const hasSentTodayDailyFinal = (key) => {
@@ -190,8 +190,8 @@ if (isPrimaryCronInstance) {
           return;
         }
 
-        const recipients = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999","918349733213"];
-        
+        const recipients = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999", "918349733213"];
+
         for (const mobile of recipients) {
           try {
             const { reportData } = await sendDailyWhatsAppReportFinal({
@@ -261,14 +261,15 @@ if (isPrimaryCronInstance) {
         return;
       }
 
-      // 📝 EDIT RECIPIENT PHONE NUMBERS HERE:
       // You can add, remove, or edit phone numbers in this list to configure who receives the reports.
       const recipientsV2 = [
         "918827232995",
-        "919131042937",
-        "919111899909",
+        "919111899909",//aditi ma'am
+        "919371222202",//saheb sir
+        "918007773301",//varule sir 
+        "919229499999", //md sir 
         "918349733213",
-      ];
+        "919131042937"];
 
       const reportDate = targetDate || todayKey();
 
