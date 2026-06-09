@@ -295,6 +295,7 @@ router.put("/update", async (req, res) => {
     role,
     passChange = false,
     password,
+    aadhar_number,
   } = req.body;
 
   if (!user_id || !name || !emp_code || !email || !phone || !role) {
@@ -321,9 +322,10 @@ router.put("/update", async (req, res) => {
             email = $4,
             phone = $5,
             role = $6,
-            password_hash = $7
+            password_hash = $7,
+            aadhar_number = $8
         WHERE user_id = $1
-        RETURNING user_id, name, emp_code, email, phone, role
+        RETURNING user_id, name, emp_code, email, phone, role, aadhar_number
       `;
       queryParams = [
         user_id,
@@ -333,6 +335,7 @@ router.put("/update", async (req, res) => {
         phone,
         role,
         hashedPassword,
+        aadhar_number,
       ];
     } else {
       queryText = `
@@ -341,11 +344,12 @@ router.put("/update", async (req, res) => {
             emp_code = $3,
             email = $4,
             phone = $5,
-            role = $6
+            role = $6,
+            aadhar_number = $7
         WHERE user_id = $1
-        RETURNING user_id, name, emp_code, email, phone, role
+        RETURNING user_id, name, emp_code, email, phone, role, aadhar_number
       `;
-      queryParams = [user_id, name, emp_code, email, phone, role];
+      queryParams = [user_id, name, emp_code, email, phone, role, aadhar_number];
     }
 
     const result = await pool.query(queryText, queryParams);

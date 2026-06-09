@@ -23,7 +23,7 @@ const enforceCityScope = (req, requestedCityId) => {
   }
 
   if (requestedCityId === null || requestedCityId === undefined) {
-    return { cityId: allowedCityIds[0], allowed: true };
+    return { cityId: null, allowed: true };
   }
 
   const numeric = Number(requestedCityId);
@@ -63,32 +63,61 @@ router.get("/", requireCityScope(), async (req, res) => {
     let params;
 
     if (scopedCityId === null) {
-      // Admin with no city filter — return ALL supervisors
-      query = `
-        SELECT DISTINCT ON (u.user_id)
-          u.user_id,
-          u.name,
-          u.emp_code,
-          u.email,
-          u.phone,
-          u.role,
-          u.aadhar_number,
-          u.profile_photo_url,
-          u.aadhar_doc_url,
-          c.city_name,
-          z.zone_name,
-          s.sector_name as ward_group,
-          w.ward_name as kothi_name
-        FROM users u
-        LEFT JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
-        LEFT JOIN wards w ON sw.ward_id = w.ward_id
-        LEFT JOIN zones z ON w.zone_id = z.zone_id
-        LEFT JOIN cities c ON z.city_id = c.city_id
-        LEFT JOIN sectors s ON w.sector_id = s.sector_id
-        WHERE u.role = 'supervisor' OR u.role = 'admin'
-        ORDER BY u.user_id, u.name
-      `;
-      params = [];
+      if (!req.cityScope.all && req.cityScope.ids?.length) {
+        // City-scoped user requesting ALL their cities
+        query = `
+          SELECT DISTINCT ON (u.user_id)
+            u.user_id,
+            u.name,
+            u.emp_code,
+            u.email,
+            u.phone,
+            u.role,
+            u.aadhar_number,
+            u.profile_photo_url,
+            u.aadhar_doc_url,
+            c.city_name,
+            z.zone_name,
+            s.sector_name as ward_group,
+            w.ward_name as kothi_name
+          FROM users u
+          INNER JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
+          INNER JOIN wards w ON sw.ward_id = w.ward_id
+          INNER JOIN zones z ON w.zone_id = z.zone_id
+          INNER JOIN cities c ON z.city_id = c.city_id
+          LEFT JOIN sectors s ON w.sector_id = s.sector_id
+          WHERE c.city_id = ANY($1::int[]) AND (u.role = 'supervisor' OR u.role = 'admin')
+          ORDER BY u.user_id, u.name
+        `;
+        params = [req.cityScope.ids];
+      } else {
+        // Admin with no city filter — return ALL supervisors
+        query = `
+          SELECT DISTINCT ON (u.user_id)
+            u.user_id,
+            u.name,
+            u.emp_code,
+            u.email,
+            u.phone,
+            u.role,
+            u.aadhar_number,
+            u.profile_photo_url,
+            u.aadhar_doc_url,
+            c.city_name,
+            z.zone_name,
+            s.sector_name as ward_group,
+            w.ward_name as kothi_name
+          FROM users u
+          LEFT JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
+          LEFT JOIN wards w ON sw.ward_id = w.ward_id
+          LEFT JOIN zones z ON w.zone_id = z.zone_id
+          LEFT JOIN cities c ON z.city_id = c.city_id
+          LEFT JOIN sectors s ON w.sector_id = s.sector_id
+          WHERE u.role = 'supervisor' OR u.role = 'admin'
+          ORDER BY u.user_id, u.name
+        `;
+        params = [];
+      }
     } else {
       // City-scoped user — return ONLY supervisors assigned to that city
       query = `

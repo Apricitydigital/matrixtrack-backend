@@ -119,10 +119,10 @@ router.post("/download", handleAttendanceDownload);
 // Short Attendance summarized report - supports optional wardId (sector) and kothiId filters
 router.get("/short-report", async (req, res) => {
   const { cityName, zoneName, wardId, kothiId, date } = req.query;
-  if (!cityName || !zoneName) {
+  if (!cityName) {
     return res
       .status(400)
-      .json({ error: "cityName and zoneName query params are required." });
+      .json({ error: "cityName query param is required." });
   }
 
   const targetDate = date || formatDateIST();
@@ -144,15 +144,26 @@ router.get("/short-report", async (req, res) => {
         .json({ error: "Forbidden: city not assigned to this user." });
     }
 
-    const params = [cityName, zoneName, targetDate];
+    const params = [cityName, targetDate];
     let extraClause = "";
 
-    if (wardId && wardId !== "all") {
-      params.push(Number(wardId));
-      extraClause += ` AND w.sector_id = $${params.length}`;
+    if (zoneName && zoneName !== "all" && zoneName !== "undefined" && zoneName !== "") {
+      params.push(zoneName);
+      extraClause += ` AND z.zone_name = $${params.length}`;
     }
 
-    if (kothiId && kothiId !== "all") {
+    if (wardId && wardId !== "all" && wardId !== "undefined" && wardId !== "") {
+      const wardIds = String(wardId)
+        .split(",")
+        .map((id) => Number(id.trim()))
+        .filter((id) => !isNaN(id) && id > 0);
+      if (wardIds.length > 0) {
+        params.push(wardIds);
+        extraClause += ` AND w.sector_id = ANY($${params.length})`;
+      }
+    }
+
+    if (kothiId && kothiId !== "all" && kothiId !== "undefined" && kothiId !== "") {
       const kothiIds = String(kothiId)
         .split(",")
         .map((id) => Number(id.trim()))
@@ -168,6 +179,28 @@ router.get("/short-report", async (req, res) => {
       extraClause += ` AND c.city_id = ANY($${params.length})`;
     }
 
+    // Restrict access by supervisor's allowed kothi/ward scope
+    let kothiScope = req.kothiScope;
+    if (req.user && req.user.role && req.user.role.toLowerCase() === "admin") {
+      const { fetchUserKothiAccess } = require("../utils/userKothiAccess");
+      const scopeCheck = await fetchUserKothiAccess(req.user.user_id, {
+        allowZoneFallback: true,
+        allowCityFallback: false,
+      });
+      if (scopeCheck.ids && scopeCheck.ids.length > 0) {
+        kothiScope = {
+          all: false,
+          ids: scopeCheck.ids,
+        };
+      }
+    }
+
+    const kothiFilter = buildKothiFilterClause(kothiScope, "w", params);
+    const finalParams = kothiFilter.params;
+    if (kothiFilter.clause) {
+      extraClause += ` ${kothiFilter.clause}`;
+    }
+
     const { rows } = await pool.query(
       `SELECT
     c.city_name,
@@ -175,10 +208,7 @@ router.get("/short-report", async (req, res) => {
     s.sector_name AS ward_name,
     w.ward_name AS kothi_name,
 
-    COALESCE(
-      STRING_AGG(DISTINCT u.name, ', ' ORDER BY u.name),
-      ''
-    ) AS supervisor_names,
+    COALESCE(sup.supervisor_names, '') AS supervisor_names,
 
     COALESCE(
       STRING_AGG(DISTINCT dept.department_name, ', ' ORDER BY dept.department_name),
@@ -276,11 +306,12 @@ router.get("/short-report", async (req, res) => {
   LEFT JOIN public.department dept
     ON des.department_id = dept.department_id
 
-  LEFT JOIN public.supervisor_ward sw
-    ON sw.ward_id = w.ward_id
-
-  LEFT JOIN public.users u
-    ON u.user_id = sw.supervisor_id
+  LEFT JOIN (
+    SELECT sw.ward_id, STRING_AGG(u.name, ', ' ORDER BY u.name) AS supervisor_names
+    FROM public.supervisor_ward sw
+    JOIN public.users u ON u.user_id = sw.supervisor_id
+    GROUP BY sw.ward_id
+  ) sup ON sup.ward_id = w.ward_id
 
   LEFT JOIN (
     SELECT DISTINCT ON (emp_id)
@@ -288,16 +319,16 @@ router.get("/short-report", async (req, res) => {
       date,
       punch_in_time,
       punch_out_time,
+      mid_shift_punch_in_time,
       auto_punched_out,
       leave_type
     FROM public.attendance
-    WHERE date::date = $3::date
+    WHERE date = $2::date
     ORDER BY emp_id, attendance_id DESC
   ) a
     ON a.emp_id = e.emp_id
 
   WHERE c.city_name = $1
-    AND z.zone_name = $2
     ${extraClause}
 
   GROUP BY
@@ -305,12 +336,13 @@ router.get("/short-report", async (req, res) => {
     z.zone_name,
     s.sector_name,
     w.ward_id,
-    w.ward_name
+    w.ward_name,
+    sup.supervisor_names
 
   ORDER BY
     s.sector_name ASC NULLS LAST,
     w.ward_name ASC`,
-      params
+      finalParams
     );
 
     res.json(rows);
