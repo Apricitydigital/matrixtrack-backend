@@ -1,0 +1,463 @@
+﻿diff --git a/routes/adminRoutes.js b/routes/adminRoutes.js
+index 259292e..2529cb7 100644
+--- a/routes/adminRoutes.js
++++ b/routes/adminRoutes.js
+@@ -7,9 +7,6 @@ const {
+   createAttendanceDownloadHandler,
+ } = require("../utils/attendanceReportDownload");
+ const { attachCityScope } = require("../middleware/cityScope");
+-const { syncUserKothiAccess } = require("../utils/userKothiAccess");
+-const { syncUserZoneAccess } = require("../utils/userZoneAccess");
+-const { syncUserCityAccess } = require("../utils/userCityAccess");
+ 
+ const router = express.Router();
+ 
+@@ -119,34 +116,10 @@ router.get("/migration/context", async (req, res) => {
+            ORDER BY c.city_name ASC, z.zone_name ASC, s.sector_name ASC NULLS LAST, w.ward_name ASC`
+         ),
+         pool.query(
+-          `SELECT
+-            u.user_id,
+-            u.name,
+-            u.emp_code,
+-            COALESCE(
+-              json_agg(
+-                json_build_object(
+-                  'ward_id', w.ward_id,
+-                  'ward_name', w.ward_name,
+-                  'sector_id', s.sector_id,
+-                  'sector_name', s.sector_name,
+-                  'zone_id', z.zone_id,
+-                  'zone_name', z.zone_name,
+-                  'city_id', c.city_id,
+-                  'city_name', c.city_name
+-                )
+-              ) FILTER (WHERE w.ward_id IS NOT NULL),
+-              '[]'::json
+-            ) AS assignments
+-           FROM users u
+-           LEFT JOIN supervisor_ward sw ON sw.supervisor_id = u.user_id
+-           LEFT JOIN wards w ON w.ward_id = sw.ward_id
+-           LEFT JOIN sectors s ON s.sector_id = w.sector_id
+-           LEFT JOIN zones z ON z.zone_id = w.zone_id
+-           LEFT JOIN cities c ON c.city_id = z.city_id
+-           WHERE u.role = 'supervisor'
+-           GROUP BY u.user_id, u.name, u.emp_code
+-           ORDER BY u.name ASC`
++          `SELECT user_id, name, emp_code
++           FROM users
++           WHERE role = 'supervisor'
++           ORDER BY name ASC`
+         ),
+       ]);
+ 
+@@ -228,89 +201,31 @@ router.get("/migration/history", async (req, res) => {
+       Math.max(1, parseInteger(req.query?.limit) || 100)
+     );
+ 
+-    let rows = [];
+-    try {
+-      const historyResult = await pool.query(
+-        `SELECT *
+-        FROM (
+-          SELECT
+-          transfer_id,
+-          transfer_batch_id,
+-          transfer_mode,
+-          emp_id,
+-          emp_code,
+-          employee_name,
+-          from_city_name,
+-          from_zone_name,
+-          from_sector_name,
+-          from_kothi_name,
+-          to_city_name,
+-          to_zone_name,
+-          to_sector_name,
+-          to_kothi_name,
+-          transfer_key_name,
+-          transferred_by_user_id,
+-          transferred_by_name,
+-          transferred_at
+-          FROM employee_transfer_history
+-          UNION ALL
+-          SELECT
+-            transfer_id,
+-            transfer_batch_id,
+-            transfer_mode,
+-            NULL::integer AS emp_id,
+-            supervisor_emp_code AS emp_code,
+-            COALESCE(supervisor_name, 'Supervisor') AS employee_name,
+-            from_city_name,
+-            from_zone_name,
+-            from_sector_name,
+-            from_kothi_name,
+-            to_city_name,
+-            to_zone_name,
+-            to_sector_name,
+-            to_kothi_name,
+-            transfer_key_name,
+-            transferred_by_user_id,
+-            transferred_by_name,
+-            transferred_at
+-          FROM supervisor_transfer_history
+-        ) t
+-        ORDER BY transferred_at DESC
+-        LIMIT $1`,
+-        [limit]
+-      );
+-      rows = historyResult.rows;
+-    } catch (unionError) {
+-      if (unionError?.code !== "42P01") {
+-        throw unionError;
+-      }
+-      const fallbackResult = await pool.query(
+-        `SELECT
+-          transfer_id,
+-          transfer_batch_id,
+-          transfer_mode,
+-          emp_id,
+-          emp_code,
+-          employee_name,
+-          from_city_name,
+-          from_zone_name,
+-          from_sector_name,
+-          from_kothi_name,
+-          to_city_name,
+-          to_zone_name,
+-          to_sector_name,
+-          to_kothi_name,
+-          transfer_key_name,
+-          transferred_by_user_id,
+-          transferred_by_name,
+-          transferred_at
+-        FROM employee_transfer_history
+-        ORDER BY transferred_at DESC
+-        LIMIT $1`,
+-        [limit]
+-      );
+-      rows = fallbackResult.rows;
+-    }
++    const { rows } = await pool.query(
++      `SELECT
++        transfer_id,
++        transfer_batch_id,
++        transfer_mode,
++        emp_id,
++        emp_code,
++        employee_name,
++        from_city_name,
++        from_zone_name,
++        from_sector_name,
++        from_kothi_name,
++        to_city_name,
++        to_zone_name,
++        to_sector_name,
++        to_kothi_name,
++        transfer_key_name,
++        transferred_by_user_id,
++        transferred_by_name,
++        transferred_at
++      FROM employee_transfer_history
++      ORDER BY transferred_at DESC
++      LIMIT $1`,
++      [limit]
++    );
+ 
+     res.json(rows);
+   } catch (error) {
+@@ -332,19 +247,6 @@ router.post("/migration/transfer", async (req, res) => {
+     const selectedEmpIds = Array.isArray(req.body?.employeeIds)
+       ? req.body.employeeIds.map(parseInteger).filter((id) => id !== null)
+       : [];
+-    const supervisorTransferModeRaw = String(
+-      req.body?.supervisorTransferMode || "employees_only"
+-    ).trim();
+-    const allowedSupervisorTransferModes = new Set([
+-      "employees_only",
+-      "with_supervisor",
+-      "supervisor_only",
+-    ]);
+-    const supervisorTransferMode = allowedSupervisorTransferModes.has(
+-      supervisorTransferModeRaw
+-    )
+-      ? supervisorTransferModeRaw
+-      : "employees_only";
+ 
+     if (!destinationWardId) {
+       return res.status(400).json({ error: "destinationWardId is required" });
+@@ -377,13 +279,8 @@ router.post("/migration/transfer", async (req, res) => {
+     if (!destination) {
+       return res.status(404).json({ error: "Destination kothi not found" });
+     }
+-    const actorUserId = parseInteger(req.user?.user_id);
+-    const actorName = await getActorName(actorUserId);
+-    const transferBatchId = randomUUID();
+ 
+     let sourceEmployees = [];
+-    let supervisorProfile = null;
+-    let supervisorAssignments = [];
+     if (mode === "employee_selection") {
+       const employeeLookup = await client.query(
+         `SELECT
+@@ -408,35 +305,6 @@ router.post("/migration/transfer", async (req, res) => {
+       );
+       sourceEmployees = employeeLookup.rows;
+     } else {
+-      const supervisorResult = await client.query(
+-        `SELECT user_id, name, emp_code
+-         FROM users
+-         WHERE user_id = $1 AND role = 'supervisor'
+-         LIMIT 1`,
+-        [supervisorId]
+-      );
+-      supervisorProfile = supervisorResult.rows[0] || null;
+-
+-      const supervisorAssignmentResult = await client.query(
+-        `SELECT
+-          sw.ward_id,
+-          w.ward_name,
+-          s.sector_id,
+-          s.sector_name,
+-          z.zone_id,
+-          z.zone_name,
+-          c.city_id,
+-          c.city_name
+-        FROM supervisor_ward sw
+-        LEFT JOIN wards w ON w.ward_id = sw.ward_id
+-        LEFT JOIN sectors s ON s.sector_id = w.sector_id
+-        LEFT JOIN zones z ON z.zone_id = w.zone_id
+-        LEFT JOIN cities c ON c.city_id = z.city_id
+-        WHERE sw.supervisor_id = $1`,
+-        [supervisorId]
+-      );
+-      supervisorAssignments = supervisorAssignmentResult.rows;
+-
+       const supervisorEmployees = await client.query(
+         `SELECT DISTINCT
+           e.emp_id,
+@@ -462,161 +330,7 @@ router.post("/migration/transfer", async (req, res) => {
+       sourceEmployees = supervisorEmployees.rows;
+     }
+ 
+-    if (
+-      mode === "supervisor_selection" &&
+-      (supervisorTransferMode === "with_supervisor" ||
+-        supervisorTransferMode === "supervisor_only") &&
+-      parseInteger(destinationWardId) !== null
+-    ) {
+-      // For supervisor movement, shift assignment from existing wards to destination ward.
+-      // Keep only one explicit destination assignment to make "one place to another" predictable.
+-      await client.query("BEGIN");
+-      transactionStarted = true;
+-
+-      await client.query(
+-        `DELETE FROM supervisor_ward
+-         WHERE supervisor_id = $1`,
+-        [supervisorId]
+-      );
+-      await client.query(
+-        `INSERT INTO supervisor_ward (supervisor_id, ward_id)
+-         VALUES ($1, $2)
+-         ON CONFLICT DO NOTHING`,
+-        [supervisorId, destinationWardId]
+-      );
+-      // Keep legacy and RBAC mappings aligned so mobile app scope resolves to new location only.
+-      await client.query(`DELETE FROM supervisor_kothi WHERE supervisor_id = $1`, [
+-        supervisorId,
+-      ]);
+-      await client.query(
+-        `INSERT INTO supervisor_kothi (supervisor_id, ward_id)
+-         VALUES ($1, $2)
+-         ON CONFLICT DO NOTHING`,
+-        [supervisorId, destinationWardId]
+-      );
+-      await syncUserKothiAccess(
+-        supervisorId,
+-        [destinationWardId],
+-        actorUserId,
+-        client
+-      );
+-      await syncUserZoneAccess(
+-        supervisorId,
+-        destination.zone_id ? [destination.zone_id] : [],
+-        actorUserId,
+-        client
+-      );
+-      await syncUserCityAccess(
+-        supervisorId,
+-        destination.city_id ? [destination.city_id] : [],
+-        actorUserId,
+-        client
+-      );
+-      await client.query(`
+-        CREATE TABLE IF NOT EXISTS supervisor_transfer_history (
+-          transfer_id BIGSERIAL PRIMARY KEY,
+-          supervisor_id INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
+-          supervisor_emp_code VARCHAR(120),
+-          supervisor_name VARCHAR(255),
+-          from_city_id INTEGER REFERENCES cities(city_id) ON DELETE SET NULL,
+-          from_city_name VARCHAR(255),
+-          from_zone_id INTEGER REFERENCES zones(zone_id) ON DELETE SET NULL,
+-          from_zone_name VARCHAR(255),
+-          from_sector_id INTEGER REFERENCES sectors(sector_id) ON DELETE SET NULL,
+-          from_sector_name VARCHAR(255),
+-          from_kothi_id INTEGER REFERENCES wards(ward_id) ON DELETE SET NULL,
+-          from_kothi_name VARCHAR(255),
+-          to_city_id INTEGER REFERENCES cities(city_id) ON DELETE SET NULL,
+-          to_city_name VARCHAR(255),
+-          to_zone_id INTEGER REFERENCES zones(zone_id) ON DELETE SET NULL,
+-          to_zone_name VARCHAR(255),
+-          to_sector_id INTEGER REFERENCES sectors(sector_id) ON DELETE SET NULL,
+-          to_sector_name VARCHAR(255),
+-          to_kothi_id INTEGER REFERENCES wards(ward_id) ON DELETE SET NULL,
+-          to_kothi_name VARCHAR(255),
+-          transfer_mode VARCHAR(40) NOT NULL,
+-          transfer_batch_id UUID NOT NULL,
+-          transfer_key_name VARCHAR(120) NOT NULL,
+-          transferred_by_user_id INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
+-          transferred_by_name VARCHAR(255),
+-          transferred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+-        )
+-      `);
+-
+-      const fromLocation =
+-        supervisorAssignments.length === 1
+-          ? supervisorAssignments[0]
+-          : null;
+-      await client.query(
+-        `INSERT INTO supervisor_transfer_history (
+-          supervisor_id, supervisor_emp_code, supervisor_name,
+-          from_city_id, from_city_name, from_zone_id, from_zone_name, from_sector_id, from_sector_name, from_kothi_id, from_kothi_name,
+-          to_city_id, to_city_name, to_zone_id, to_zone_name, to_sector_id, to_sector_name, to_kothi_id, to_kothi_name,
+-          transfer_mode, transfer_batch_id, transfer_key_name, transferred_by_user_id, transferred_by_name
+-        ) VALUES (
+-          $1, $2, $3,
+-          $4, $5, $6, $7, $8, $9, $10, $11,
+-          $12, $13, $14, $15, $16, $17, $18, $19,
+-          $20, $21::uuid, $22, $23, $24
+-        )`,
+-        [
+-          supervisorId,
+-          supervisorProfile?.emp_code || null,
+-          supervisorProfile?.name || null,
+-          fromLocation?.city_id || null,
+-          fromLocation?.city_name ||
+-            (supervisorAssignments.length > 1 ? "Multiple Assignments" : null),
+-          fromLocation?.zone_id || null,
+-          fromLocation?.zone_name || null,
+-          fromLocation?.sector_id || null,
+-          fromLocation?.sector_name || null,
+-          fromLocation?.ward_id || null,
+-          fromLocation?.ward_name || null,
+-          destination.city_id,
+-          destination.city_name,
+-          destination.zone_id,
+-          destination.zone_name,
+-          destination.sector_id || null,
+-          destination.sector_name || null,
+-          destination.ward_id,
+-          destination.ward_name,
+-          supervisorTransferMode,
+-          transferBatchId,
+-          verifiedKey.key_name,
+-          actorUserId,
+-          actorName,
+-        ]
+-      );
+-
+-      if (supervisorTransferMode === "supervisor_only") {
+-        await client.query("COMMIT");
+-        return res.json({
+-          message: "Supervisor transferred successfully",
+-          transferredCount: 0,
+-          supervisorTransferred: true,
+-          transferMode: "supervisor_only",
+-          transferKeyName: verifiedKey.key_name,
+-        });
+-      }
+-    }
+-
+     if (!sourceEmployees.length) {
+-      if (transactionStarted) {
+-        await client.query("COMMIT");
+-      }
+-      if (
+-        mode === "supervisor_selection" &&
+-        supervisorTransferMode === "with_supervisor"
+-      ) {
+-        return res.status(200).json({
+-          message:
+-            "Supervisor transferred successfully. No employees found under this supervisor.",
+-          transferredCount: 0,
+-          transferMode: "with_supervisor",
+-          supervisorTransferred: true,
+-          transferKeyName: verifiedKey.key_name,
+-        });
+-      }
+       return res.status(404).json({ error: "No employees found for transfer" });
+     }
+ 
+@@ -625,13 +339,6 @@ router.post("/migration/transfer", async (req, res) => {
+     );
+ 
+     if (!affectedEmployees.length) {
+-      if (
+-        transactionStarted &&
+-        mode === "supervisor_selection" &&
+-        supervisorTransferMode === "with_supervisor"
+-      ) {
+-        await client.query("COMMIT");
+-      }
+       return res.status(200).json({
+         message: "No employee required transfer. Already in selected kothi.",
+         transferredCount: 0,
+@@ -642,10 +349,12 @@ router.post("/migration/transfer", async (req, res) => {
+       .map((row) => parseInteger(row.emp_id))
+       .filter((id) => id !== null);
+ 
+-    if (!transactionStarted) {
+-      await client.query("BEGIN");
+-      transactionStarted = true;
+-    }
++    const actorUserId = parseInteger(req.user?.user_id);
++    const actorName = await getActorName(actorUserId);
++    const transferBatchId = randomUUID();
++
++    await client.query("BEGIN");
++    transactionStarted = true;
+ 
+     await client.query(
+       `UPDATE employee
+@@ -687,9 +396,7 @@ router.post("/migration/transfer", async (req, res) => {
+           destination.sector_name || null,
+           destination.ward_id,
+           destination.ward_name,
+-          mode === "supervisor_selection" && supervisorTransferMode === "with_supervisor"
+-            ? "supervisor_selection_with_supervisor"
+-            : mode,
++          mode,
+           transferBatchId,
+           verifiedKey.key_name,
+           actorUserId,
+@@ -701,18 +408,10 @@ router.post("/migration/transfer", async (req, res) => {
+     await client.query("COMMIT");
+ 
+     res.json({
+-      message:
+-        mode === "supervisor_selection" && supervisorTransferMode === "with_supervisor"
+-          ? "Employees and supervisor transferred successfully"
+-          : "Employees transferred successfully",
++      message: "Employees transferred successfully",
+       transferredCount: affectedEmployees.length,
+       transferBatchId,
+-      transferMode:
+-        mode === "supervisor_selection" ? supervisorTransferMode : mode,
+-      supervisorTransferred:
+-        mode === "supervisor_selection" &&
+-        (supervisorTransferMode === "with_supervisor" ||
+-          supervisorTransferMode === "supervisor_only"),
++      transferMode: mode,
+       transferKeyName: verifiedKey.key_name,
+     });
+   } catch (error) {
