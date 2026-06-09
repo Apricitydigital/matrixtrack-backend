@@ -4,13 +4,10 @@
  */
 
 const pool = require("../config/db");
-<<<<<<< HEAD
 const fs = require("fs");
 const path = require("path");
 const { ensureProfessionalLeaveSchema } = require("../utils/professionalLeaveSchema");
-=======
 const bcrypt = require("bcryptjs");
->>>>>>> 3707dc890351e4da0658adc94ac0e8e684a793af
 
 async function runMigrations() {
   const client = await pool.connect();
@@ -29,8 +26,6 @@ async function runMigrations() {
     `);
     console.log("[Migration] updated_at column ready.");
 
-<<<<<<< HEAD
-=======
     await client.query(`
       ALTER TABLE attendance
       ADD COLUMN IF NOT EXISTS mid_shift_punch_in_time TIMESTAMPTZ DEFAULT NULL,
@@ -43,7 +38,6 @@ async function runMigrations() {
     console.log("[Migration] mid shift punch columns ready.");
 
     // Create index on date for faster dashboard queries
->>>>>>> 3707dc890351e4da0658adc94ac0e8e684a793af
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_attendance_date
       ON attendance(date)
@@ -56,7 +50,6 @@ async function runMigrations() {
     `);
     console.log("[Migration] idx_attendance_punch_out_time index ready.");
 
-<<<<<<< HEAD
     console.log("[Migration] Running Self Punch-In migrations...");
     const selfPunchInSqlPath = path.join(__dirname, "migrations", "20260505_self_punch_in_up.sql");
     if (fs.existsSync(selfPunchInSqlPath)) {
@@ -90,8 +83,6 @@ async function runMigrations() {
     await ensureProfessionalLeaveSchema();
     console.log("[Migration] Professional leave schema ready.");
 
-    console.log("[Migration] All migrations complete.");
-=======
     await client.query(`
       CREATE TABLE IF NOT EXISTS employee_transfer_keys (
         key_id SERIAL PRIMARY KEY,
@@ -246,7 +237,6 @@ async function runMigrations() {
     }
 
     console.log("[Migration] ✅ All migrations complete.");
->>>>>>> 3707dc890351e4da0658adc94ac0e8e684a793af
   } catch (err) {
     console.error("[Migration] Migration error (non-fatal):", err.message);
   } finally {
