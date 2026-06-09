@@ -9,7 +9,7 @@ const {
 } = require("../utils/msg91WhatsAppNew");
 const {
   sendDailyBulletinWhatsAppNew,
-} = require("../utils/msg91DailyBulletinNew");
+} = require("../utils/MT Daily Bulletin SWM pune");
 
 const router = express.Router();
 
