@@ -16,3 +16,9 @@ run_query.js
 test_*.js
 supervisor_errors.log
 scratch/dry_run_group_punch.js
+
+scratch/
+testDailyBulletinPuneSWM.js
+testDailyBulletinWhatsAppNew.js
+whatsapp_report_daily_final_last_run.txt
+whatsapp_report_daily_v2_last_run.txt
