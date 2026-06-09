@@ -35,7 +35,6 @@ const enforceCityScope = (req, requestedCityId) => {
 };
 
 router.use(authenticate, attachCityScope);
-
 // ✅ Fetch all supervisors (city-scoped; no special permission needed)
 router.get("/", requireCityScope(), async (req, res) => {
   const { cityId: rawCityId } = req.query;
@@ -60,8 +59,12 @@ router.get("/", requireCityScope(), async (req, res) => {
   }
 
   try {
-    const supervisors = await pool.query(
-      `
+    let query;
+    let params;
+
+    if (scopedCityId === null) {
+      // Admin with no city filter — return ALL supervisors
+      query = `
         SELECT DISTINCT ON (u.user_id)
           u.user_id,
           u.name,
@@ -77,23 +80,166 @@ router.get("/", requireCityScope(), async (req, res) => {
         LEFT JOIN zones z ON w.zone_id = z.zone_id
         LEFT JOIN cities c ON z.city_id = c.city_id
         WHERE u.role = 'supervisor'
-          AND (
-            $1::int IS NULL
-            OR c.city_id = $1::int
-            OR NOT EXISTS (
-              SELECT 1 FROM supervisor_ward sw2 WHERE sw2.supervisor_id = u.user_id
-            )
-          )
         ORDER BY u.user_id, u.name
-      `,
-      [scopedCityId ?? null]
-    );
+      `;
+      params = [];
+    } else {
+      // City-scoped user — return ONLY supervisors assigned to that city
+      query = `
+        SELECT DISTINCT ON (u.user_id)
+          u.user_id,
+          u.name,
+          u.emp_code,
+          u.email,
+          u.phone,
+          u.role,
+          c.city_id,
+          c.city_name
+        FROM users u
+        INNER JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
+        INNER JOIN wards w ON sw.ward_id = w.ward_id
+        INNER JOIN zones z ON w.zone_id = z.zone_id
+        INNER JOIN cities c ON z.city_id = c.city_id
+        WHERE u.role = 'supervisor'
+          AND c.city_id = $1::int
+        ORDER BY u.user_id, u.name
+      `;
+      params = [scopedCityId];
+    }
+
+    const supervisors = await pool.query(query, params);
     res.json(supervisors.rows);
   } catch (error) {
     console.error("Failed to fetch supervisors:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
+// ✅ Get city-wise supervisor counts
+router.get(
+  "/city-wise-count",
+  requireCityScope(),
+  async (req, res) => {
+    try {
+      const scope = req.cityScope || { all: false, ids: [] };
+      const selectedCityId = req.query.cityId;
+
+      let query = `
+        SELECT 
+          COALESCE(c.city_name, 'All Cities') AS city_name,
+          COUNT(DISTINCT sw.supervisor_id) AS supervisor_count
+        FROM supervisor_ward sw
+        JOIN wards w ON sw.ward_id = w.ward_id
+        JOIN zones z ON w.zone_id = z.zone_id
+        JOIN cities c ON z.city_id = c.city_id
+      `;
+
+      const conditions = [];
+      const queryParams = [];
+
+      if (selectedCityId && selectedCityId !== "ALL") {
+        queryParams.push(Number(selectedCityId));
+        conditions.push(`c.city_id = $${queryParams.length}`);
+      }
+
+      if (!scope.all && scope.ids?.length) {
+        queryParams.push(scope.ids);
+        conditions.push(`c.city_id = ANY($${queryParams.length}::int[])`);
+      }
+
+      if (conditions.length > 0) {
+        query += ` WHERE ${conditions.join(" AND ")}`;
+      }
+
+      // ROLLUP only makes sense when fetching all cities (admin, no filter)
+      const useRollup = scope.all && (!selectedCityId || selectedCityId === "ALL");
+
+      query += useRollup
+        ? ` GROUP BY ROLLUP(c.city_name) ORDER BY supervisor_count DESC`
+        : ` GROUP BY c.city_name ORDER BY supervisor_count DESC`;
+
+      const result = await pool.query(query, queryParams);
+
+      res.json(result.rows);
+
+    } catch (error) {
+      console.error("Failed to fetch supervisor city counts:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+router.get(
+  "/city-wise-supervisors",
+  requireCityScope(),
+  async (req, res) => {
+    try {
+      const scope = req.cityScope || { all: false, ids: [] };
+      const selectedCityId = req.query.cityId;
+
+      let query = `
+        SELECT
+          u.user_id,
+          u.name AS supervisor_name,
+          u.phone,
+          u.email,
+          c.city_name,
+          STRING_AGG(DISTINCT z.zone_name, ', ') AS zones,
+          STRING_AGG(DISTINCT w.ward_name, ', ') AS kothis,
+          COUNT(DISTINCT e.emp_id) AS total_employee_count
+        FROM supervisor_ward sw
+        JOIN users u ON sw.supervisor_id = u.user_id
+        JOIN wards w ON sw.ward_id = w.ward_id
+        JOIN zones z ON w.zone_id = z.zone_id
+        JOIN cities c ON z.city_id = c.city_id
+        LEFT JOIN employee e ON e.ward_id = w.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
+      `;
+
+      const conditions = ["u.role = 'supervisor'"];  // ← ADDED
+      const queryParams = [];
+
+      if (selectedCityId && selectedCityId !== "ALL") {
+        if (
+          !scope.all &&
+          scope.ids?.length &&
+          !scope.ids.includes(Number(selectedCityId))
+        ) {
+          return res.status(403).json({ error: "Unauthorized city access" });
+        }
+
+        queryParams.push(Number(selectedCityId));
+        conditions.push(`c.city_id = $${queryParams.length}`);
+
+      } else if (!scope.all && scope.ids?.length) {
+        queryParams.push(scope.ids);
+        conditions.push(`c.city_id = ANY($${queryParams.length}::int[])`);
+      }
+
+      if (conditions.length > 0) {
+        query += ` WHERE ${conditions.join(" AND ")}`;
+      }
+
+      query += `
+        GROUP BY
+          u.user_id,
+          u.name,
+          u.phone,
+          u.email,
+          c.city_name
+        ORDER BY
+          c.city_name,
+          u.name
+      `;
+
+      const result = await pool.query(query, queryParams);
+
+      res.json(result.rows);
+
+    } catch (error) {
+      console.error("Failed to fetch city-wise supervisor details:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
 
 // ✅ Update Supervisor (Name, Phone, Email Only)
 router.put("/:id", authenticate, async (req, res) => {

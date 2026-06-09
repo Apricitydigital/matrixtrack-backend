@@ -12,7 +12,7 @@ const SUPPORTED_GROUPINGS = new Set([
 
 const ExcelJS = require('exceljs');
 
-const buildExcelDocument = async (rows, headers) => {
+const buildExcelDocument = async (rows, headers, summaryRowData = null) => {
   if (!headers?.length) {
     throw new Error("Headers are required");
   }
@@ -55,6 +55,23 @@ const buildExcelDocument = async (rows, headers) => {
       });
     });
 
+    if (summaryRowData) {
+      sheet.addRow([]); // Spacer row
+      const summaryRow = sheet.addRow(summaryRowData);
+      summaryRow.font = { bold: true };
+      summaryRow.eachCell((cell) => {
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFF0F7FF' }
+        };
+        cell.border = {
+          top: { style: 'thin' },
+          bottom: { style: 'double' }
+        };
+      });
+    }
+
     sheet.columns.forEach(column => {
       let maxLength = column.header ? column.header.length : 10;
       column.eachCell({ includeEmpty: false }, cell => {
@@ -68,8 +85,9 @@ const buildExcelDocument = async (rows, headers) => {
   }
 
   const headerRow = sheet.getRow(1);
-  headerRow.font = { bold: true };
-  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } }; // Slate 800
+  headerRow.alignment = { vertical: 'middle', horizontal: 'left' };
 
   return await workbook.xlsx.writeBuffer();
 };
@@ -368,7 +386,9 @@ const groupingConfigs = {
       e.phone AS contact_no,
       TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,
       TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
+      TO_CHAR(a.mid_shift_punch_in_time, 'HH24:MI:SS') AS mid_shift_punch_in_time,
       TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
+      a.leave_type,
       a.duration,
       a.in_address,
       a.out_address,
@@ -376,6 +396,9 @@ const groupingConfigs = {
       a.longitude_in,
       a.latitude_out,
       a.longitude_out,
+      a.mid_in_address,
+      a.latitude_mid_in,
+      a.longitude_mid_in,
       w.ward_id,
       w.ward_name,
       z.zone_id,
@@ -385,8 +408,12 @@ const groupingConfigs = {
       des.designation_name,
       0 AS supervisor_id,
       COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
-      COALESCE(u.name, 'Self') AS punched_in_by,
-      COALESCE(u1.name, 'Self') AS punched_out_by
+      COALESCE(u.name, '-') AS punched_in_by,
+      COALESCE(u2.name, '-') AS mid_shift_punched_in_by,
+      CASE 
+        WHEN a.is_auto_punch_out = true THEN 'System (Auto)'
+        ELSE COALESCE(u1.name, '-')
+      END AS punched_out_by
     `,
     orderBy: "a.date DESC, a.attendance_id DESC",
     csvHeaders: [
@@ -395,14 +422,19 @@ const groupingConfigs = {
       { key: "zone_name", label: "Zone", formatter: (val) => val || "-" },
       { key: "ward_name", label: "Ward", formatter: (val) => val || "-" },
       { key: "employee_name", label: "Employee Name", formatter: (val) => val || "-" },
-      { key: "emp_code", label: "EmpCode", formatter: (val) => val ? `="${val}"` : "-" },
+      { key: "leave_type", label: "Leave Type", formatter: (val) => val || "-" },
+      { key: "emp_code", label: "Emp Code", formatter: (val) => val ? `="${val}"` : "-" },
       { key: "contact_no", label: "Contact No.", formatter: (val) => val ? `="${val}"` : "-" },
-      { key: "punch_in_time", label: "In Time", formatter: (val) => val || "-" },
-      { key: "punched_in_by", label: "PunchedIn By", formatter: (val, row) => row.punch_in_time ? val : "-" },
+      { key: "punch_in_time", label: "Punch In Time", formatter: (val) => val || "-" },
+      { key: "punched_in_by", label: "Punched In By", formatter: (val, row) => row.punch_in_time ? val : "-" },
+      { key: "mid_shift_punch_in_time", label: "Mid Shift Punch In", formatter: (val) => val || "-" },
+      { key: "mid_shift_punched_in_by", label: "Mid Shift Punched By", formatter: (val, row) => row.mid_shift_punch_in_time ? val : "-" },
+      { key: "mid_in_address", label: "Mid In Address", formatter: (val) => val || "-" },
+      { key: "latitude_mid_in", label: "Mid In Lat / Long", formatter: (_, row) => (row.latitude_mid_in && row.longitude_mid_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_mid_in},${row.longitude_mid_in}", "${Number(row.latitude_mid_in).toFixed(6)}, ${Number(row.longitude_mid_in).toFixed(6)}")` : "-" },
       { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
       { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}", "${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}")` : "-" },
-      { key: "punch_out_time", label: "Out Time", formatter: (val) => val || "-" },
-      { key: "punched_out_by", label: "PunchedOut By", formatter: (val, row) => row.punch_out_time ? val : "-" },
+      { key: "punch_out_time", label: "Punch Out Time", formatter: (val) => val || "-" },
+      { key: "punched_out_by", label: "Punched Out By", formatter: (val, row) => row.punch_out_time ? val : "-" },
       { key: "out_address", label: "Out Address", formatter: (val) => val || "-" },
       { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}", "${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}")` : "-" },
     ],
@@ -418,6 +450,7 @@ const groupingConfigs = {
       COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
+      COUNT(a.mid_shift_punch_in_time) AS mid_shift_punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
       TO_CHAR(MIN(a.date), 'DD-MM-YYYY') AS first_attendance_date,
       TO_CHAR(MAX(a.date), 'DD-MM-YYYY') AS last_attendance_date,
@@ -434,6 +467,7 @@ const groupingConfigs = {
       { key: "total_records", label: "Attendance Rows" },
       { key: "employee_count", label: "Unique Employees" },
       { key: "punch_in_count", label: "Punch In Count" },
+      { key: "mid_shift_punch_in_count", label: "Mid Shift Punch In Count" },
       { key: "punch_out_count", label: "Punch Out Count" },
       { key: "first_attendance_date", label: "Earliest Date" },
       { key: "last_attendance_date", label: "Latest Date" },
@@ -455,6 +489,7 @@ const groupingConfigs = {
       COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
+      COUNT(a.mid_shift_punch_in_time) AS mid_shift_punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
       TO_CHAR(MIN(a.date), 'DD-MM-YYYY') AS first_attendance_date,
       TO_CHAR(MAX(a.date), 'DD-MM-YYYY') AS last_attendance_date
@@ -473,6 +508,7 @@ const groupingConfigs = {
       { key: "total_records", label: "Attendance Rows" },
       { key: "employee_count", label: "Unique Employees" },
       { key: "punch_in_count", label: "Punch In Count" },
+      { key: "mid_shift_punch_in_count", label: "Mid Shift Punch In Count" },
       { key: "punch_out_count", label: "Punch Out Count" },
       { key: "first_attendance_date", label: "Earliest Date" },
       { key: "last_attendance_date", label: "Latest Date" },
@@ -488,6 +524,7 @@ const groupingConfigs = {
       COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
+      COUNT(a.mid_shift_punch_in_time) AS mid_shift_punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
       TO_CHAR(MIN(a.date), 'DD-MM-YYYY') AS first_attendance_date,
       TO_CHAR(MAX(a.date), 'DD-MM-YYYY') AS last_attendance_date
@@ -501,6 +538,7 @@ const groupingConfigs = {
       { key: "total_records", label: "Attendance Rows" },
       { key: "employee_count", label: "Unique Employees" },
       { key: "punch_in_count", label: "Punch In Count" },
+      { key: "mid_shift_punch_in_count", label: "Mid Shift Punch In Count" },
       { key: "punch_out_count", label: "Punch Out Count" },
       { key: "first_attendance_date", label: "Earliest Date" },
       { key: "last_attendance_date", label: "Latest Date" },
@@ -519,6 +557,7 @@ const groupingConfigs = {
       COUNT(*) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
+      COUNT(a.mid_shift_punch_in_time) AS mid_shift_punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
       TO_CHAR(MIN(a.date), 'DD-MM-YYYY') AS first_attendance_date,
       TO_CHAR(MAX(a.date), 'DD-MM-YYYY') AS last_attendance_date
@@ -536,6 +575,7 @@ const groupingConfigs = {
       { key: "total_records", label: "Attendance Rows" },
       { key: "employee_count", label: "Unique Employees" },
       { key: "punch_in_count", label: "Punch In Count" },
+      { key: "mid_shift_punch_in_count", label: "Mid Shift Punch In Count" },
       { key: "punch_out_count", label: "Punch Out Count" },
       { key: "first_attendance_date", label: "Earliest Date" },
       { key: "last_attendance_date", label: "Latest Date" },
@@ -601,6 +641,7 @@ const groupingConfigs = {
       COUNT(DISTINCT a.attendance_id) AS total_records,
       COUNT(DISTINCT a.emp_id) AS employee_count,
       COUNT(a.punch_in_time) AS punch_in_count,
+      COUNT(a.mid_shift_punch_in_time) AS mid_shift_punch_in_count,
       COUNT(a.punch_out_time) AS punch_out_count,
       TO_CHAR(MIN(a.date), 'DD-MM-YYYY') AS first_attendance_date,
       TO_CHAR(MAX(a.date), 'DD-MM-YYYY') AS last_attendance_date
@@ -615,6 +656,7 @@ const groupingConfigs = {
       { key: "total_records", label: "Attendance Rows" },
       { key: "employee_count", label: "Unique Employees" },
       { key: "punch_in_count", label: "Punch In Count" },
+      { key: "mid_shift_punch_in_count", label: "Mid Shift Punch In Count" },
       { key: "punch_out_count", label: "Punch Out Count" },
       { key: "first_attendance_date", label: "Earliest Date" },
       { key: "last_attendance_date", label: "Latest Date" },
@@ -822,7 +864,9 @@ const createAttendanceDownloadHandler =
               e.phone AS contact_no,
               TO_CHAR($1::date, 'DD-MM-YYYY') AS attendance_date,
               TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
+              TO_CHAR(a.mid_shift_punch_in_time, 'HH24:MI:SS') AS mid_shift_punch_in_time,
               TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
+              a.leave_type,
               a.duration,
               a.in_address,
               a.latitude_in,
@@ -830,6 +874,9 @@ const createAttendanceDownloadHandler =
               a.out_address,
               a.latitude_out,
               a.longitude_out,
+              a.mid_in_address,
+              a.latitude_mid_in,
+              a.longitude_mid_in,
               w.ward_id,
               w.ward_name,
               z.zone_id,
@@ -841,6 +888,7 @@ const createAttendanceDownloadHandler =
               0 AS supervisor_id,
               COALESCE(supervisor_agg.supervisor_names, 'Unassigned') AS supervisor_name,
               COALESCE(u.name, 'Self') AS punched_in_by,
+              COALESCE(u2.name, 'Self') AS mid_shift_punched_in_by,
               COALESCE(u1.name, 'Self') AS punched_out_by
             FROM employee e
             JOIN wards w ON e.ward_id = w.ward_id
@@ -860,7 +908,9 @@ const createAttendanceDownloadHandler =
               SELECT 
                 att.attendance_id, 
                 att.punch_in_time, 
+                att.mid_shift_punch_in_time,
                 att.punch_out_time, 
+                att.leave_type,
                 att.duration, 
                 att.in_address,
                 att.latitude_in,
@@ -868,7 +918,11 @@ const createAttendanceDownloadHandler =
                 att.out_address,
                 att.latitude_out,
                 att.longitude_out,
+                att.mid_in_address,
+                att.latitude_mid_in,
+                att.longitude_mid_in,
                 att.punched_in_by,
+                att.mid_shift_punched_in_by,
                 att.punched_out_by
               FROM attendance att
               WHERE att.emp_id = e.emp_id 
@@ -877,6 +931,7 @@ const createAttendanceDownloadHandler =
               LIMIT 1
             ) a ON TRUE
             LEFT JOIN users u ON a.punched_in_by = u.user_id
+            LEFT JOIN users u2 ON a.mid_shift_punched_in_by = u2.user_id
             LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
             ${whereCombined}
             ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC;
@@ -921,6 +976,7 @@ const createAttendanceDownloadHandler =
           GROUP BY sw_agg.ward_id
         ) supervisor_agg ON w.ward_id = supervisor_agg.ward_id
         LEFT JOIN users u ON a.punched_in_by = u.user_id
+        LEFT JOIN users u2 ON a.mid_shift_punched_in_by = u2.user_id
         LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
       `;
 
@@ -977,7 +1033,22 @@ const createAttendanceDownloadHandler =
           typeof groupConfig.csvHeaders === "function"
             ? groupConfig.csvHeaders({ locationExpression })
             : groupConfig.csvHeaders;
-        const excelBuffer = await buildExcelDocument(allRows, headers);
+
+        let summaryRowData = null;
+        if (requestedGrouping === "detail" && allRows.length > 0) {
+          const totalRecords = allRows.length;
+          const presentCount = allRows.filter(r => r.punch_in_time && r.punch_in_time !== '-').length;
+          
+          summaryRowData = {};
+          headers.forEach(h => {
+            if (h.key === "sr_no") summaryRowData[h.key] = "TOTAL";
+            else if (h.key === "employee_name") summaryRowData[h.key] = `Records: ${totalRecords}`;
+            else if (h.key === "punch_in_time") summaryRowData[h.key] = `Present: ${presentCount}`;
+            else summaryRowData[h.key] = "";
+          });
+        }
+
+        const excelBuffer = await buildExcelDocument(allRows, headers, summaryRowData);
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
         const filename = `attendance-${groupConfig.filenameSuffix}-report-${timestamp}.xlsx`;
 

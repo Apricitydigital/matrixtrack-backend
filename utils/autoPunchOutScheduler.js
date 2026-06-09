@@ -52,7 +52,11 @@ async function runAutoPunchOut() {
         SET
           punch_out_time = a.punch_in_time + INTERVAL '${AUTO_PUNCHOUT_HOURS} hours',
           duration = TO_CHAR(
+<<<<<<< HEAD
             INTERVAL '${AUTO_PUNCHOUT_HOURS} hours',
+=======
+            ((NOW() AT TIME ZONE 'Asia/Kolkata') - a.punch_in_time),
+>>>>>>> 3707dc890351e4da0658adc94ac0e8e684a793af
             'HH24:MI'
           ),
           auto_punched_out = true,
@@ -61,6 +65,10 @@ async function runAutoPunchOut() {
         WHERE a.date::date = $1::date
           AND a.punch_in_time IS NOT NULL
           AND a.punch_out_time IS NULL
+<<<<<<< HEAD
+=======
+          AND ((NOW() AT TIME ZONE 'Asia/Kolkata') - a.punch_in_time) >= INTERVAL '${AUTO_PUNCHOUT_HOURS} hours'
+>>>>>>> 3707dc890351e4da0658adc94ac0e8e684a793af
         RETURNING a.attendance_id, a.emp_id, a.duration
       )
       SELECT u.attendance_id, u.duration, e.name AS emp_name, e.emp_code

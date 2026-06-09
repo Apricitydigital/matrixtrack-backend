@@ -1,6 +1,0 @@
-Checking duplicates for emp_id 8956 (code: EMP2025)
-Found 1 entries with this emp_code:
- - emp_id: 8956, face_embedding: faces/8956/1768998115456_8956-face-store-1768998115067.jpg
-Checking duplicates for emp_id 9726 (code: MP1692830)
-Found 1 entries with this emp_code:
- - emp_id: 9726, face_embedding: faces/9726/1774512229039_9726-face-store-1774512228737.jpg

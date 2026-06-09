@@ -1,10 +1,15 @@
 const express = require("express");
+const bcrypt = require("bcryptjs");
+const { randomUUID } = require("crypto");
 const pool = require("../config/db");
 const authenticateUser = require("../middleware/authMiddleware");
 const {
   createAttendanceDownloadHandler,
 } = require("../utils/attendanceReportDownload");
 const { attachCityScope } = require("../middleware/cityScope");
+const { syncUserKothiAccess } = require("../utils/userKothiAccess");
+const { syncUserZoneAccess } = require("../utils/userZoneAccess");
+const { syncUserCityAccess } = require("../utils/userCityAccess");
 
 const router = express.Router();
 
@@ -23,6 +28,703 @@ const requireAdmin = (req, res, next) => {
 router.use(authenticateUser);
 router.use(attachCityScope);
 router.use(requireAdmin);
+
+const parseInteger = (value) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : null;
+};
+
+const fetchTransferKeyMatch = async (transferKey, keyName = null) => {
+  const params = [true];
+  let whereClause = "is_active = $1";
+
+  if (keyName) {
+    params.push(keyName.trim());
+    whereClause += ` AND key_name = $${params.length}`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT key_id, key_name, key_hash
+     FROM employee_transfer_keys
+     WHERE ${whereClause}`,
+    params
+  );
+
+  for (const row of rows) {
+    const isMatch = await bcrypt.compare(transferKey, row.key_hash);
+    if (isMatch) {
+      return row;
+    }
+  }
+
+  return null;
+};
+
+const getTransferDestination = async (destinationWardId) => {
+  const { rows } = await pool.query(
+    `SELECT
+      w.ward_id,
+      w.ward_name,
+      s.sector_id,
+      s.sector_name,
+      z.zone_id,
+      z.zone_name,
+      c.city_id,
+      c.city_name
+    FROM wards w
+    LEFT JOIN sectors s ON s.sector_id = w.sector_id
+    JOIN zones z ON z.zone_id = w.zone_id
+    JOIN cities c ON c.city_id = z.city_id
+    WHERE w.ward_id = $1`,
+    [destinationWardId]
+  );
+
+  return rows[0] || null;
+};
+
+const getActorName = async (userId) => {
+  const { rows } = await pool.query(
+    "SELECT name FROM users WHERE user_id = $1 LIMIT 1",
+    [userId]
+  );
+  return rows[0]?.name || `User ${userId}`;
+};
+
+// ===== EMPLOYEE MIGRATION =====
+
+router.get("/migration/context", async (req, res) => {
+  try {
+    const [citiesResult, zonesResult, sectorsResult, kothisResult, supervisorsResult] =
+      await Promise.all([
+        pool.query("SELECT city_id, city_name FROM cities ORDER BY city_name ASC"),
+        pool.query(
+          `SELECT z.zone_id, z.zone_name, z.city_id, c.city_name
+           FROM zones z
+           JOIN cities c ON c.city_id = z.city_id
+           ORDER BY c.city_name ASC, z.zone_name ASC`
+        ),
+        pool.query(
+          `SELECT s.sector_id, s.sector_name, s.zone_id, z.zone_name, z.city_id, c.city_name
+           FROM sectors s
+           JOIN zones z ON z.zone_id = s.zone_id
+           JOIN cities c ON c.city_id = z.city_id
+           ORDER BY c.city_name ASC, z.zone_name ASC, s.sector_name ASC`
+        ),
+        pool.query(
+          `SELECT w.ward_id, w.ward_name, w.sector_id, s.sector_name, w.zone_id, z.zone_name, z.city_id, c.city_name
+           FROM wards w
+           LEFT JOIN sectors s ON s.sector_id = w.sector_id
+           JOIN zones z ON z.zone_id = w.zone_id
+           JOIN cities c ON c.city_id = z.city_id
+           ORDER BY c.city_name ASC, z.zone_name ASC, s.sector_name ASC NULLS LAST, w.ward_name ASC`
+        ),
+        pool.query(
+          `SELECT
+            u.user_id,
+            u.name,
+            u.emp_code,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'ward_id', w.ward_id,
+                  'ward_name', w.ward_name,
+                  'sector_id', s.sector_id,
+                  'sector_name', s.sector_name,
+                  'zone_id', z.zone_id,
+                  'zone_name', z.zone_name,
+                  'city_id', c.city_id,
+                  'city_name', c.city_name
+                )
+              ) FILTER (WHERE w.ward_id IS NOT NULL),
+              '[]'::json
+            ) AS assignments
+           FROM users u
+           LEFT JOIN supervisor_ward sw ON sw.supervisor_id = u.user_id
+           LEFT JOIN wards w ON w.ward_id = sw.ward_id
+           LEFT JOIN sectors s ON s.sector_id = w.sector_id
+           LEFT JOIN zones z ON z.zone_id = w.zone_id
+           LEFT JOIN cities c ON c.city_id = z.city_id
+           WHERE u.role = 'supervisor'
+           GROUP BY u.user_id, u.name, u.emp_code
+           ORDER BY u.name ASC`
+        ),
+      ]);
+
+    res.json({
+      cities: citiesResult.rows,
+      zones: zonesResult.rows,
+      sectors: sectorsResult.rows,
+      kothis: kothisResult.rows,
+      supervisors: supervisorsResult.rows,
+    });
+  } catch (error) {
+    console.error("Migration context error:", error);
+    res.status(500).json({ error: "Unable to load migration context" });
+  }
+});
+
+router.get("/migration/keys", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+        k.key_id,
+        k.key_name,
+        k.is_active,
+        k.created_at,
+        k.updated_at,
+        k.created_by,
+        u.name AS created_by_name
+      FROM employee_transfer_keys k
+      LEFT JOIN users u ON u.user_id = k.created_by
+      ORDER BY k.created_at DESC`
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error("Migration key list error:", error);
+    res.status(500).json({ error: "Unable to load transfer keys" });
+  }
+});
+
+router.post("/migration/keys", async (req, res) => {
+  try {
+    const keyName = String(req.body?.keyName || "").trim();
+    const keyValue = String(req.body?.keyValue || "");
+    const isActive = req.body?.isActive !== false;
+
+    if (!keyName) {
+      return res.status(400).json({ error: "keyName is required" });
+    }
+
+    if (keyValue.length < 4) {
+      return res
+        .status(400)
+        .json({ error: "keyValue must be at least 4 characters" });
+    }
+
+    const keyHash = await bcrypt.hash(keyValue, 10);
+    const createdBy = parseInteger(req.user?.user_id);
+
+    const { rows } = await pool.query(
+      `INSERT INTO employee_transfer_keys (key_name, key_hash, created_by, is_active)
+       VALUES ($1, $2, $3, $4)
+       RETURNING key_id, key_name, is_active, created_by, created_at, updated_at`,
+      [keyName, keyHash, createdBy, isActive]
+    );
+
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Transfer key name already exists" });
+    }
+    console.error("Create migration key error:", error);
+    res.status(500).json({ error: "Unable to create transfer key" });
+  }
+});
+
+router.get("/migration/history", async (req, res) => {
+  try {
+    const limit = Math.min(
+      500,
+      Math.max(1, parseInteger(req.query?.limit) || 100)
+    );
+
+    let rows = [];
+    try {
+      const historyResult = await pool.query(
+        `SELECT *
+        FROM (
+          SELECT
+          transfer_id,
+          transfer_batch_id,
+          transfer_mode,
+          emp_id,
+          emp_code,
+          employee_name,
+          from_city_name,
+          from_zone_name,
+          from_sector_name,
+          from_kothi_name,
+          to_city_name,
+          to_zone_name,
+          to_sector_name,
+          to_kothi_name,
+          transfer_key_name,
+          transferred_by_user_id,
+          transferred_by_name,
+          transferred_at
+          FROM employee_transfer_history
+          UNION ALL
+          SELECT
+            transfer_id,
+            transfer_batch_id,
+            transfer_mode,
+            NULL::integer AS emp_id,
+            supervisor_emp_code AS emp_code,
+            COALESCE(supervisor_name, 'Supervisor') AS employee_name,
+            from_city_name,
+            from_zone_name,
+            from_sector_name,
+            from_kothi_name,
+            to_city_name,
+            to_zone_name,
+            to_sector_name,
+            to_kothi_name,
+            transfer_key_name,
+            transferred_by_user_id,
+            transferred_by_name,
+            transferred_at
+          FROM supervisor_transfer_history
+        ) t
+        ORDER BY transferred_at DESC
+        LIMIT $1`,
+        [limit]
+      );
+      rows = historyResult.rows;
+    } catch (unionError) {
+      if (unionError?.code !== "42P01") {
+        throw unionError;
+      }
+      const fallbackResult = await pool.query(
+        `SELECT
+          transfer_id,
+          transfer_batch_id,
+          transfer_mode,
+          emp_id,
+          emp_code,
+          employee_name,
+          from_city_name,
+          from_zone_name,
+          from_sector_name,
+          from_kothi_name,
+          to_city_name,
+          to_zone_name,
+          to_sector_name,
+          to_kothi_name,
+          transfer_key_name,
+          transferred_by_user_id,
+          transferred_by_name,
+          transferred_at
+        FROM employee_transfer_history
+        ORDER BY transferred_at DESC
+        LIMIT $1`,
+        [limit]
+      );
+      rows = fallbackResult.rows;
+    }
+
+    res.json(rows);
+  } catch (error) {
+    console.error("Migration history error:", error);
+    res.status(500).json({ error: "Unable to load transfer history" });
+  }
+});
+
+router.post("/migration/transfer", async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
+  try {
+    const destinationWardId = parseInteger(req.body?.destinationWardId);
+    const transferKey = String(req.body?.transferKey || "");
+    const requestedKeyName = req.body?.keyName
+      ? String(req.body.keyName).trim()
+      : null;
+    const supervisorId = parseInteger(req.body?.supervisorId);
+    const selectedEmpIds = Array.isArray(req.body?.employeeIds)
+      ? req.body.employeeIds.map(parseInteger).filter((id) => id !== null)
+      : [];
+    const supervisorTransferModeRaw = String(
+      req.body?.supervisorTransferMode || "employees_only"
+    ).trim();
+    const allowedSupervisorTransferModes = new Set([
+      "employees_only",
+      "with_supervisor",
+      "supervisor_only",
+    ]);
+    const supervisorTransferMode = allowedSupervisorTransferModes.has(
+      supervisorTransferModeRaw
+    )
+      ? supervisorTransferModeRaw
+      : "employees_only";
+
+    if (!destinationWardId) {
+      return res.status(400).json({ error: "destinationWardId is required" });
+    }
+
+    if (!transferKey) {
+      return res.status(400).json({ error: "transferKey is required" });
+    }
+
+    const mode =
+      selectedEmpIds.length > 0
+        ? "employee_selection"
+        : supervisorId
+          ? "supervisor_selection"
+          : null;
+
+    if (!mode) {
+      return res.status(400).json({
+        error:
+          "Provide employeeIds for selection transfer or supervisorId for supervisor transfer",
+      });
+    }
+
+    const verifiedKey = await fetchTransferKeyMatch(transferKey, requestedKeyName);
+    if (!verifiedKey) {
+      return res.status(403).json({ error: "Invalid transfer key" });
+    }
+
+    const destination = await getTransferDestination(destinationWardId);
+    if (!destination) {
+      return res.status(404).json({ error: "Destination kothi not found" });
+    }
+    const actorUserId = parseInteger(req.user?.user_id);
+    const actorName = await getActorName(actorUserId);
+    const transferBatchId = randomUUID();
+
+    let sourceEmployees = [];
+    let supervisorProfile = null;
+    let supervisorAssignments = [];
+    if (mode === "employee_selection") {
+      const employeeLookup = await client.query(
+        `SELECT
+          e.emp_id,
+          e.emp_code,
+          e.name AS employee_name,
+          e.ward_id AS from_kothi_id,
+          w.ward_name AS from_kothi_name,
+          s.sector_id AS from_sector_id,
+          s.sector_name AS from_sector_name,
+          z.zone_id AS from_zone_id,
+          z.zone_name AS from_zone_name,
+          c.city_id AS from_city_id,
+          c.city_name AS from_city_name
+        FROM employee e
+        LEFT JOIN wards w ON w.ward_id = e.ward_id
+        LEFT JOIN sectors s ON s.sector_id = w.sector_id
+        LEFT JOIN zones z ON z.zone_id = w.zone_id
+        LEFT JOIN cities c ON c.city_id = z.city_id
+        WHERE e.emp_id = ANY($1::int[])`,
+        [selectedEmpIds]
+      );
+      sourceEmployees = employeeLookup.rows;
+    } else {
+      const supervisorResult = await client.query(
+        `SELECT user_id, name, emp_code
+         FROM users
+         WHERE user_id = $1 AND role = 'supervisor'
+         LIMIT 1`,
+        [supervisorId]
+      );
+      supervisorProfile = supervisorResult.rows[0] || null;
+
+      const supervisorAssignmentResult = await client.query(
+        `SELECT
+          sw.ward_id,
+          w.ward_name,
+          s.sector_id,
+          s.sector_name,
+          z.zone_id,
+          z.zone_name,
+          c.city_id,
+          c.city_name
+        FROM supervisor_ward sw
+        LEFT JOIN wards w ON w.ward_id = sw.ward_id
+        LEFT JOIN sectors s ON s.sector_id = w.sector_id
+        LEFT JOIN zones z ON z.zone_id = w.zone_id
+        LEFT JOIN cities c ON c.city_id = z.city_id
+        WHERE sw.supervisor_id = $1`,
+        [supervisorId]
+      );
+      supervisorAssignments = supervisorAssignmentResult.rows;
+
+      const supervisorEmployees = await client.query(
+        `SELECT DISTINCT
+          e.emp_id,
+          e.emp_code,
+          e.name AS employee_name,
+          e.ward_id AS from_kothi_id,
+          w.ward_name AS from_kothi_name,
+          s.sector_id AS from_sector_id,
+          s.sector_name AS from_sector_name,
+          z.zone_id AS from_zone_id,
+          z.zone_name AS from_zone_name,
+          c.city_id AS from_city_id,
+          c.city_name AS from_city_name
+        FROM supervisor_ward sw
+        JOIN employee e ON e.ward_id = sw.ward_id
+        LEFT JOIN wards w ON w.ward_id = e.ward_id
+        LEFT JOIN sectors s ON s.sector_id = w.sector_id
+        LEFT JOIN zones z ON z.zone_id = w.zone_id
+        LEFT JOIN cities c ON c.city_id = z.city_id
+        WHERE sw.supervisor_id = $1`,
+        [supervisorId]
+      );
+      sourceEmployees = supervisorEmployees.rows;
+    }
+
+    if (
+      mode === "supervisor_selection" &&
+      (supervisorTransferMode === "with_supervisor" ||
+        supervisorTransferMode === "supervisor_only") &&
+      parseInteger(destinationWardId) !== null
+    ) {
+      // For supervisor movement, shift assignment from existing wards to destination ward.
+      // Keep only one explicit destination assignment to make "one place to another" predictable.
+      await client.query("BEGIN");
+      transactionStarted = true;
+
+      await client.query(
+        `DELETE FROM supervisor_ward
+         WHERE supervisor_id = $1`,
+        [supervisorId]
+      );
+      await client.query(
+        `INSERT INTO supervisor_ward (supervisor_id, ward_id)
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
+        [supervisorId, destinationWardId]
+      );
+      // Keep legacy and RBAC mappings aligned so mobile app scope resolves to new location only.
+      await client.query(`DELETE FROM supervisor_kothi WHERE supervisor_id = $1`, [
+        supervisorId,
+      ]);
+      await client.query(
+        `INSERT INTO supervisor_kothi (supervisor_id, ward_id)
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
+        [supervisorId, destinationWardId]
+      );
+      await syncUserKothiAccess(
+        supervisorId,
+        [destinationWardId],
+        actorUserId,
+        client
+      );
+      await syncUserZoneAccess(
+        supervisorId,
+        destination.zone_id ? [destination.zone_id] : [],
+        actorUserId,
+        client
+      );
+      await syncUserCityAccess(
+        supervisorId,
+        destination.city_id ? [destination.city_id] : [],
+        actorUserId,
+        client
+      );
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS supervisor_transfer_history (
+          transfer_id BIGSERIAL PRIMARY KEY,
+          supervisor_id INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
+          supervisor_emp_code VARCHAR(120),
+          supervisor_name VARCHAR(255),
+          from_city_id INTEGER REFERENCES cities(city_id) ON DELETE SET NULL,
+          from_city_name VARCHAR(255),
+          from_zone_id INTEGER REFERENCES zones(zone_id) ON DELETE SET NULL,
+          from_zone_name VARCHAR(255),
+          from_sector_id INTEGER REFERENCES sectors(sector_id) ON DELETE SET NULL,
+          from_sector_name VARCHAR(255),
+          from_kothi_id INTEGER REFERENCES wards(ward_id) ON DELETE SET NULL,
+          from_kothi_name VARCHAR(255),
+          to_city_id INTEGER REFERENCES cities(city_id) ON DELETE SET NULL,
+          to_city_name VARCHAR(255),
+          to_zone_id INTEGER REFERENCES zones(zone_id) ON DELETE SET NULL,
+          to_zone_name VARCHAR(255),
+          to_sector_id INTEGER REFERENCES sectors(sector_id) ON DELETE SET NULL,
+          to_sector_name VARCHAR(255),
+          to_kothi_id INTEGER REFERENCES wards(ward_id) ON DELETE SET NULL,
+          to_kothi_name VARCHAR(255),
+          transfer_mode VARCHAR(40) NOT NULL,
+          transfer_batch_id UUID NOT NULL,
+          transfer_key_name VARCHAR(120) NOT NULL,
+          transferred_by_user_id INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
+          transferred_by_name VARCHAR(255),
+          transferred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      const fromLocation =
+        supervisorAssignments.length === 1
+          ? supervisorAssignments[0]
+          : null;
+      await client.query(
+        `INSERT INTO supervisor_transfer_history (
+          supervisor_id, supervisor_emp_code, supervisor_name,
+          from_city_id, from_city_name, from_zone_id, from_zone_name, from_sector_id, from_sector_name, from_kothi_id, from_kothi_name,
+          to_city_id, to_city_name, to_zone_id, to_zone_name, to_sector_id, to_sector_name, to_kothi_id, to_kothi_name,
+          transfer_mode, transfer_batch_id, transfer_key_name, transferred_by_user_id, transferred_by_name
+        ) VALUES (
+          $1, $2, $3,
+          $4, $5, $6, $7, $8, $9, $10, $11,
+          $12, $13, $14, $15, $16, $17, $18, $19,
+          $20, $21::uuid, $22, $23, $24
+        )`,
+        [
+          supervisorId,
+          supervisorProfile?.emp_code || null,
+          supervisorProfile?.name || null,
+          fromLocation?.city_id || null,
+          fromLocation?.city_name ||
+            (supervisorAssignments.length > 1 ? "Multiple Assignments" : null),
+          fromLocation?.zone_id || null,
+          fromLocation?.zone_name || null,
+          fromLocation?.sector_id || null,
+          fromLocation?.sector_name || null,
+          fromLocation?.ward_id || null,
+          fromLocation?.ward_name || null,
+          destination.city_id,
+          destination.city_name,
+          destination.zone_id,
+          destination.zone_name,
+          destination.sector_id || null,
+          destination.sector_name || null,
+          destination.ward_id,
+          destination.ward_name,
+          supervisorTransferMode,
+          transferBatchId,
+          verifiedKey.key_name,
+          actorUserId,
+          actorName,
+        ]
+      );
+
+      if (supervisorTransferMode === "supervisor_only") {
+        await client.query("COMMIT");
+        return res.json({
+          message: "Supervisor transferred successfully",
+          transferredCount: 0,
+          supervisorTransferred: true,
+          transferMode: "supervisor_only",
+          transferKeyName: verifiedKey.key_name,
+        });
+      }
+    }
+
+    if (!sourceEmployees.length) {
+      if (transactionStarted) {
+        await client.query("COMMIT");
+      }
+      if (
+        mode === "supervisor_selection" &&
+        supervisorTransferMode === "with_supervisor"
+      ) {
+        return res.status(200).json({
+          message:
+            "Supervisor transferred successfully. No employees found under this supervisor.",
+          transferredCount: 0,
+          transferMode: "with_supervisor",
+          supervisorTransferred: true,
+          transferKeyName: verifiedKey.key_name,
+        });
+      }
+      return res.status(404).json({ error: "No employees found for transfer" });
+    }
+
+    const affectedEmployees = sourceEmployees.filter(
+      (row) => parseInteger(row.from_kothi_id) !== destinationWardId
+    );
+
+    if (!affectedEmployees.length) {
+      if (
+        transactionStarted &&
+        mode === "supervisor_selection" &&
+        supervisorTransferMode === "with_supervisor"
+      ) {
+        await client.query("COMMIT");
+      }
+      return res.status(200).json({
+        message: "No employee required transfer. Already in selected kothi.",
+        transferredCount: 0,
+      });
+    }
+
+    const transferEmpIds = affectedEmployees
+      .map((row) => parseInteger(row.emp_id))
+      .filter((id) => id !== null);
+
+    if (!transactionStarted) {
+      await client.query("BEGIN");
+      transactionStarted = true;
+    }
+
+    await client.query(
+      `UPDATE employee
+       SET ward_id = $1
+       WHERE emp_id = ANY($2::int[])`,
+      [destinationWardId, transferEmpIds]
+    );
+
+    for (const emp of affectedEmployees) {
+      await client.query(
+        `INSERT INTO employee_transfer_history (
+          emp_id, emp_code, employee_name,
+          from_city_id, from_city_name, from_zone_id, from_zone_name, from_sector_id, from_sector_name, from_kothi_id, from_kothi_name,
+          to_city_id, to_city_name, to_zone_id, to_zone_name, to_sector_id, to_sector_name, to_kothi_id, to_kothi_name,
+          transfer_mode, transfer_batch_id, transfer_key_name, transferred_by_user_id, transferred_by_name
+        ) VALUES (
+          $1, $2, $3,
+          $4, $5, $6, $7, $8, $9, $10, $11,
+          $12, $13, $14, $15, $16, $17, $18, $19,
+          $20, $21::uuid, $22, $23, $24
+        )`,
+        [
+          emp.emp_id,
+          emp.emp_code || null,
+          emp.employee_name || null,
+          emp.from_city_id || null,
+          emp.from_city_name || null,
+          emp.from_zone_id || null,
+          emp.from_zone_name || null,
+          emp.from_sector_id || null,
+          emp.from_sector_name || null,
+          emp.from_kothi_id || null,
+          emp.from_kothi_name || null,
+          destination.city_id,
+          destination.city_name,
+          destination.zone_id,
+          destination.zone_name,
+          destination.sector_id || null,
+          destination.sector_name || null,
+          destination.ward_id,
+          destination.ward_name,
+          mode === "supervisor_selection" && supervisorTransferMode === "with_supervisor"
+            ? "supervisor_selection_with_supervisor"
+            : mode,
+          transferBatchId,
+          verifiedKey.key_name,
+          actorUserId,
+          actorName,
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    res.json({
+      message:
+        mode === "supervisor_selection" && supervisorTransferMode === "with_supervisor"
+          ? "Employees and supervisor transferred successfully"
+          : "Employees transferred successfully",
+      transferredCount: affectedEmployees.length,
+      transferBatchId,
+      transferMode:
+        mode === "supervisor_selection" ? supervisorTransferMode : mode,
+      supervisorTransferred:
+        mode === "supervisor_selection" &&
+        (supervisorTransferMode === "with_supervisor" ||
+          supervisorTransferMode === "supervisor_only"),
+      transferKeyName: verifiedKey.key_name,
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+    console.error("Employee transfer error:", error);
+    res.status(500).json({ error: "Unable to complete employee transfer" });
+  } finally {
+    client.release();
+  }
+});
 
 // ===== DASHBOARD ANALYTICS =====
 
@@ -126,7 +828,7 @@ router.get("/analytics/ward-trends", async (req, res) => {
         u.name as supervisor_name
       FROM wards w
       LEFT JOIN zones z ON w.zone_id = z.zone_id
-      LEFT JOIN employee e ON w.ward_id = e.ward_id
+      LEFT JOIN employee e ON w.ward_id = e.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       LEFT JOIN attendance a ON e.emp_id = a.emp_id
         AND a.created_at >= CURRENT_DATE - INTERVAL '30 days'
       LEFT JOIN supervisor_ward aw ON w.ward_id = aw.ward_id
@@ -165,7 +867,7 @@ router.get("/supervisors", async (req, res) => {
       FROM users u
       LEFT JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
       LEFT JOIN wards w ON sw.ward_id = w.ward_id
-      LEFT JOIN employee e ON w.ward_id = e.ward_id
+      LEFT JOIN employee e ON w.ward_id = e.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       WHERE u.role = 'supervisor'
       GROUP BY u.user_id, u.name, u.email, u.emp_code, u.phone, u.created_at
       ORDER BY u.name
@@ -202,7 +904,7 @@ router.get("/supervisors/:id", async (req, res) => {
       FROM supervisor_ward aw
       JOIN wards w ON aw.ward_id = w.ward_id
       LEFT JOIN zones z ON w.zone_id = z.zone_id
-      LEFT JOIN employee e ON w.ward_id = e.ward_id
+      LEFT JOIN employee e ON w.ward_id = e.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       WHERE aw.supervisor_id = $1
       GROUP BY w.ward_id, w.ward_name, z.zone_name
     `, [id]);
@@ -213,7 +915,7 @@ router.get("/supervisors/:id", async (req, res) => {
         COUNT(DISTINCT a.emp_id) as employees_marked,
         COUNT(DISTINCT CASE WHEN a.punch_in_time IS NOT NULL THEN a.emp_id END) as present_count
       FROM attendance a
-      JOIN employee e ON a.emp_id = e.emp_id
+      JOIN employee e ON a.emp_id = e.emp_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       JOIN supervisor_ward aw ON e.ward_id = aw.ward_id
       WHERE aw.supervisor_id = $1 
         AND a.created_at >= CURRENT_DATE - INTERVAL '7 days'
@@ -279,7 +981,7 @@ router.get("/employees", async (req, res) => {
     const { page = 1, limit = 50, search = '', ward_id = '', status = '' } = req.query;
     const offset = (page - 1) * limit;
 
-    let whereClause = 'WHERE 1=1';
+    let whereClause = 'WHERE (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)';
     let params = [];
     let paramCount = 0;
 
@@ -463,7 +1165,7 @@ router.get("/wards", async (req, res) => {
       FROM wards w
       LEFT JOIN zones z ON w.zone_id = z.zone_id
       LEFT JOIN cities c ON z.city_id = c.city_id
-      LEFT JOIN employee e ON w.ward_id = e.ward_id
+      LEFT JOIN employee e ON w.ward_id = e.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       LEFT JOIN supervisor_ward aw ON w.ward_id = aw.ward_id
       LEFT JOIN users u ON aw.supervisor_id = u.user_id
       GROUP BY w.ward_id, w.ward_name, z.zone_name, c.city_name, u.name
