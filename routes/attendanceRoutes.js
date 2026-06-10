@@ -320,9 +320,6 @@ router.get("/short-report", async (req, res) => {
 
   LEFT JOIN public.employee e
     ON e.ward_id = w.ward_id
-    AND (
-      e.face_embedding IS NOT NULL OR e.face_id IS NOT NULL
-    )
 
   LEFT JOIN public.designation des
     ON e.designation_id = des.designation_id

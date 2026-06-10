@@ -167,7 +167,7 @@ const { validateGeofencing } = require("../../utils/geofencing");
 
 const safeDebugLog = (line) => {
   try {
-    fs.appendFile("debug-face.log", `${line}\n`, () => {});
+    fs.appendFile("debug-face.log", `${line}\n`, () => { });
   } catch (_) {
     // Never block attendance flow for debug logging failures.
   }
@@ -236,6 +236,9 @@ const ALLOWED_LEAVE_TYPES = new Set([
   "WEEKLY_OFF",
   "CASUAL",
   "MEDICAL",
+  "NIGHT_SHIFT",
+  "AFTERNOON_SHIFT",
+
 ]);
 
 const normalizeLeaveInput = (value) =>
@@ -1310,14 +1313,14 @@ async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) 
           if (foundKey) {
             const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: foundKey }));
             const buffer = await streamToBuffer(obj.Body);
-            
+
             // Backfill the database so next time is a direct hit
             console.log(`[Self-Healing] Correcting stale face_embedding for emp_id ${employeeId}: ${foundKey}`);
-            pool.query("UPDATE employee SET face_embedding = $1 WHERE emp_id = $2", [foundKey, employeeId]).catch(()=>{});
-            
+            pool.query("UPDATE employee SET face_embedding = $1 WHERE emp_id = $2", [foundKey, employeeId]).catch(() => { });
+
             return buffer;
           }
-        } catch (_err) {}
+        } catch (_err) { }
       }
     }
   }
@@ -1697,7 +1700,7 @@ router.put("/", upload.single("image"), async (req, res) => {
 router.get("/location-viewer", async (req, res) => {
   const { lat, lng } = req.query;
   const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
-  
+
   const html = `
     <!DOCTYPE html>
     <html lang="en">

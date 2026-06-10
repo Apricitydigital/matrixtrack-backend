@@ -54,7 +54,7 @@ console.log(`[HTTP] trust proxy = ${JSON.stringify(trustProxyValue)}`);
 
 // Middleware
 app.use((req, res, next) => {
-  console.log(`[HTTP] ${req.method} ${req.url}`); 
+  console.log(`[HTTP] ${req.method} ${req.url}`);
   next();
 });
 app.use(express.json({ limit: "15mb" }));
@@ -82,6 +82,9 @@ const defaultOrigins = [
   "https://api.matrixtrack.in",
   "https://uat.matrixtrack.in",
   "https://matrixtrack-uat.onrender.com",
+  "http://192.168.1.39:3000",
+  "http://192.168.1.39:8081",
+  "http://192.168.1.39:19000",
 ];
 
 const parseOrigins = (value) =>
@@ -213,8 +216,8 @@ if (isPrimaryCronInstance) {
           return;
         }
 
-        const recipients = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999","918349733213"];
-        
+        const recipients = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999", "918349733213"];
+
         for (const mobile of recipients) {
           try {
             const { reportData } = await sendDailyWhatsAppReportFinal({

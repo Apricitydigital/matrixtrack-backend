@@ -13,9 +13,8 @@ const fs = require("fs");
 
 const logError = (label, error) => {
   try {
-    const line = `[${new Date().toISOString()}] ${label}: ${
-      error?.stack || error?.message || error
-    }\n`;
+    const line = `[${new Date().toISOString()}] ${label}: ${error?.stack || error?.message || error
+      }\n`;
     fs.appendFileSync("supervisor_errors.log", line);
   } catch (_) {
     // ignore logging failures
@@ -148,8 +147,8 @@ const resolveKothiScope = (req) => {
   }
   const ids = Array.isArray(scope.ids)
     ? scope.ids
-        .map((wardId) => Number(wardId))
-        .filter((wardId) => Number.isFinite(wardId))
+      .map((wardId) => Number(wardId))
+      .filter((wardId) => Number.isFinite(wardId))
     : [];
   return ids.length > 0 ? ids : [];
 };
@@ -543,6 +542,7 @@ const fetchSupervisorEmployees = async (
       END AS attendance_status,
       COALESCE(summary.days_present, 0) AS days_present,
       COALESCE(summary.days_marked, 0) AS days_marked,
+      summary.leave_type,
       summary.has_punch_in,
       summary.has_mid_shift_punch_in,
       summary.has_punch_start,
@@ -756,8 +756,8 @@ const fetchZoneSummary = async (
     inProgress: Number(row.in_progress) || 0,
     notMarked: Math.max(
       (Number(row.total_employees) || 0) -
-        (Number(row.present) || 0) -
-        (Number(row.on_leave) || 0),
+      (Number(row.present) || 0) -
+      (Number(row.on_leave) || 0),
       0
     ),
   }));
@@ -802,20 +802,20 @@ router.get("/summary", async (req, res) => {
   const allowedKothiIds = resolveKothiScope(req);
   const requestedZoneIds = parseIdList(
     req.query.zoneIds ||
-      req.query.zone_ids ||
-      req.query.zones ||
-      req.query.zoneId ||
-      req.query.zone_id
+    req.query.zone_ids ||
+    req.query.zones ||
+    req.query.zoneId ||
+    req.query.zone_id
   );
   const requestedKothiIds = parseIdList(
     req.query.kothiIds ||
-      req.query.kothi_ids ||
-      req.query.wardIds ||
-      req.query.ward_ids ||
-      req.query.kothiId ||
-      req.query.kothi_id ||
-      req.query.wardId ||
-      req.query.ward_id
+    req.query.kothi_ids ||
+    req.query.wardIds ||
+    req.query.ward_ids ||
+    req.query.kothiId ||
+    req.query.kothi_id ||
+    req.query.wardId ||
+    req.query.ward_id
   );
 
   // Use requested filters if provided, otherwise fall back to full allowed scope
@@ -911,6 +911,7 @@ router.get("/", async (req, res) => {
 
 // Return allowed kothi/ward list for the supervisor (used to populate filters)
 router.get("/kothi-list", async (req, res) => {
+  console.log("KOTHI LIST API HIT");
   const requestingUser = req.user;
   const isAdmin = requestingUser?.role === "admin";
   const effectiveUserId = isAdmin ? null : requestingUser?.user_id;
@@ -936,6 +937,11 @@ router.get("/kothi-list", async (req, res) => {
 
   const allowedZoneIds = resolveZoneScope(req);
   const allowedKothiIds = resolveKothiScope(req);
+  console.log("========== KOTHI LIST DEBUG ==========");
+  console.log("Logged User:", req.user);
+  console.log("Allowed Zone IDs:", allowedZoneIds);
+  console.log("Allowed Kothi IDs:", allowedKothiIds);
+  console.log("======================================");
   const zoneFilter =
     allowedZoneIds.length > 0 ? "AND z.zone_id = ANY($2::int[])" : "";
   const kothiFilter =
@@ -1149,20 +1155,20 @@ router.post("/summary", async (req, res) => {
   const allowedKothiIds = resolveKothiScope(req);
   const requestedZoneIds = parseIdList(
     req.body?.zoneIds ||
-      req.body?.zone_ids ||
-      req.body?.zones ||
-      req.body?.zoneId ||
-      req.body?.zone_id
+    req.body?.zone_ids ||
+    req.body?.zones ||
+    req.body?.zoneId ||
+    req.body?.zone_id
   );
   const requestedKothiIds = parseIdList(
     req.body?.kothiIds ||
-      req.body?.kothi_ids ||
-      req.body?.wardIds ||
-      req.body?.ward_ids ||
-      req.body?.kothiId ||
-      req.body?.kothi_id ||
-      req.body?.wardId ||
-      req.body?.ward_id
+    req.body?.kothi_ids ||
+    req.body?.wardIds ||
+    req.body?.ward_ids ||
+    req.body?.kothiId ||
+    req.body?.kothi_id ||
+    req.body?.wardId ||
+    req.body?.ward_id
   );
 
   const zoneIds =
@@ -1238,20 +1244,20 @@ router.post("/", async (req, res) => {
 
   const requestedZoneIds = parseIdList(
     req.body?.zoneIds ||
-      req.body?.zone_ids ||
-      req.body?.zones ||
-      req.body?.zoneId ||
-      req.body?.zone_id
+    req.body?.zone_ids ||
+    req.body?.zones ||
+    req.body?.zoneId ||
+    req.body?.zone_id
   );
   const requestedKothiIds = parseIdList(
     req.body?.kothiIds ||
-      req.body?.kothi_ids ||
-      req.body?.wardIds ||
-      req.body?.ward_ids ||
-      req.body?.kothiId ||
-      req.body?.kothi_id ||
-      req.body?.wardId ||
-      req.body?.ward_id
+    req.body?.kothi_ids ||
+    req.body?.wardIds ||
+    req.body?.ward_ids ||
+    req.body?.kothiId ||
+    req.body?.kothi_id ||
+    req.body?.wardId ||
+    req.body?.ward_id
   );
 
   const zoneIds =

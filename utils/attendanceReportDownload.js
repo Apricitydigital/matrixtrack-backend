@@ -44,7 +44,7 @@ const buildExcelDocument = async (rows, headers, summaryRowData = null) => {
             }
           }
         }
-        
+
         rowData[header.key] = rawValue;
       });
       const addedRow = sheet.addRow(rowData);
@@ -779,13 +779,33 @@ const createAttendanceDownloadHandler =
 
         if (requestedGrouping === "detail") {
           // Single unified query: start from employee and left-join attendance for the target date.
+          const startDate =
+            payload.start_date ||
+            payload.startDate ||
+            payload.date_from;
+
+          const endDate =
+            payload.end_date ||
+            payload.endDate ||
+            payload.date_to;
+
           const targetDate =
             payload.date ||
-            payload.start_date ||
-            payload.date_from ||
-            new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+            new Date().toLocaleDateString("en-CA", {
+              timeZone: "Asia/Kolkata",
+            });
 
-          const detailParams = [targetDate];
+          let detailParams = [];
+          let attendanceDateCondition = "";
+          if (startDate && endDate) {
+            detailParams = [startDate, endDate];
+            attendanceDateCondition =
+              "a.date BETWEEN $1::date AND $2::date";
+          } else {
+            detailParams = [targetDate];
+            attendanceDateCondition =
+              "a.date = $1::date";
+          }
           const filters = [];
           const hasPunchInFlag = parseBooleanFlag(payload.has_punch_in);
           const hasPunchOutFlag = parseBooleanFlag(payload.has_punch_out);
@@ -866,14 +886,13 @@ const createAttendanceDownloadHandler =
 
           const unifiedQuery = `
             SELECT
-              ROW_NUMBER() OVER (ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC) AS sr_no,
-              a.attendance_id,
+ROW_NUMBER() OVER (ORDER BY a.date DESC, a.attendance_id DESC, e.name ASC) AS sr_no,
+a.attendance_id,
               e.emp_id AS emp_id,
               e.name AS employee_name,
               e.emp_code,
               e.phone AS contact_no,
-              TO_CHAR($1::date, 'DD-MM-YYYY') AS attendance_date,
-              TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in_time,
+TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,          TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in_time,
               TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in_time,
               TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_out_time,
               a.punch_in_image,
@@ -916,41 +935,18 @@ const createAttendanceDownloadHandler =
             LEFT JOIN department dept ON des.department_id = dept.department_id
             -- Removed direct supervisor join to prevent row duplication.
             -- Using correlate subquery instead for supervisor_name.
-            LEFT JOIN LATERAL (
-              SELECT 
-                att.attendance_id, 
-                att.punch_in_time, 
-                att.mid_shift_punch_in_time,
-                att.punch_out_time, 
-                att.punch_in_image,
-                att.mid_shift_punch_in_image,
-                att.punch_out_image,
-                att.duration, 
-                att.in_address,
-                att.latitude_in,
-                att.longitude_in,
-                att.out_address,
-                att.latitude_out,
-                att.longitude_out,
-                att.mid_in_address,
-                att.latitude_mid_in,
-                att.longitude_mid_in,
-                att.punched_in_by,
-                att.mid_shift_punched_in_by,
-                att.punched_out_by
-              FROM attendance att
-              WHERE att.emp_id = e.emp_id 
-                AND (att.date = $1::date OR att.date = $1)
-              ORDER BY att.attendance_id DESC
-              LIMIT 1
-            ) a ON TRUE
+          LEFT JOIN attendance a
+  ON a.emp_id = e.emp_id
+ AND ${attendanceDateCondition}
             LEFT JOIN users u ON a.punched_in_by = u.user_id
             LEFT JOIN users u2 ON a.mid_shift_punched_in_by = u2.user_id
             LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
             ${whereCombined}
             ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC;
           `;
-
+          console.log("detailParams:", detailParams);
+          console.log("attendanceDateCondition:", attendanceDateCondition);
+          console.log("QUERY:", unifiedQuery);
           const unifiedResult = await pool.query(unifiedQuery, detailParams);
           allRows = unifiedResult.rows;
         } else {
@@ -1030,7 +1026,7 @@ const createAttendanceDownloadHandler =
         if (allRows && allRows.length) {
           allRows.forEach((row, idx) => {
             row.sr_no = idx + 1;
-            if (idx < 5) console.log(`DEBUG: Row ${idx+1} punch_in_image:`, row.punch_in_image);
+            if (idx < 5) console.log(`DEBUG: Row ${idx + 1} punch_in_image:`, row.punch_in_image);
           });
         }
 
@@ -1054,7 +1050,7 @@ const createAttendanceDownloadHandler =
         if (requestedGrouping === "detail" && allRows.length > 0) {
           const totalRecords = allRows.length;
           const presentCount = allRows.filter(r => r.punch_in_time && r.punch_in_time !== '-').length;
-          
+
           summaryRowData = {};
           headers.forEach(h => {
             if (h.key === "sr_no") summaryRowData[h.key] = "TOTAL";
