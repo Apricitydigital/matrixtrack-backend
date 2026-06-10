@@ -4,6 +4,7 @@ const pool = require("../config/db");
 const authenticate = require("../middleware/authMiddleware");
 const {
   authorize,
+  fetchUserPermissions,
   invalidatePermissionCache,
 } = require("../middleware/permissionMiddleware");
 const { syncUserCityAccess } = require("../utils/userCityAccess");
@@ -28,7 +29,34 @@ const assertAdminOrPermission = async (req, res, next) => {
   if (req.user?.role === "admin") {
     return next();
   }
-  return authorize("permissions", "manage")(req, res, next);
+
+  try {
+    const userId =
+      req.user?.user_id ?? req.user?.id ?? req.user?.userId ?? null;
+
+    if (!userId) {
+      return res
+        .status(401)
+        .json({ error: "Unauthorized: user context missing" });
+    }
+
+    const permissionPayload = await fetchUserPermissions(userId);
+    const canManagePermissions =
+      permissionPayload.set.has("permissions:manage") ||
+      permissionPayload.set.has("settings:write");
+
+    if (!canManagePermissions) {
+      return res.status(403).json({
+        error: "Forbidden: missing permission",
+        permission: "permissions:manage or settings:write",
+      });
+    }
+
+    return next();
+  } catch (error) {
+    console.error("RBAC permission check failed:", error);
+    return res.status(500).json({ error: "Permission check failed" });
+  }
 };
 
 const fetchPermissions = async (req, res) => {
@@ -715,6 +743,54 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
   } catch (error) {
     console.error("Failed to update user:", error);
     res.status(500).json({ error: "Failed to update user" });
+  }
+});
+
+router.post("/users/:userId/reset-password", authenticate, assertAdminOrPermission, async (req, res) => {
+  const { userId } = req.params;
+  const { newPassword, confirmPassword } = req.body || {};
+
+  if (!newPassword || !confirmPassword) {
+    return res.status(400).json({ error: "New password and confirm password are required" });
+  }
+
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ error: "New password and confirm password do not match" });
+  }
+
+  if (String(newPassword).length < 6) {
+    return res.status(400).json({ error: "New password must be at least 6 characters long" });
+  }
+
+  if (String(req.user?.user_id) === String(userId)) {
+    return res.status(400).json({ error: "Use Settings to change your own password" });
+  }
+
+  try {
+    const targetResult = await pool.query(
+      "SELECT user_id, role FROM users WHERE user_id = $1 LIMIT 1",
+      [userId]
+    );
+
+    if (targetResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const targetUser = targetResult.rows[0];
+    if ((targetUser.role || "").toLowerCase() === "admin") {
+      return res.status(403).json({ error: "Admin passwords must be changed from their own Settings page" });
+    }
+
+    const hashedPassword = await bcrypt.hash(String(newPassword), 10);
+    await pool.query("UPDATE users SET password_hash = $2 WHERE user_id = $1", [
+      userId,
+      hashedPassword,
+    ]);
+
+    return res.json({ message: "Password reset successfully" });
+  } catch (error) {
+    console.error("Failed to reset user password:", error);
+    return res.status(500).json({ error: "Failed to reset password" });
   }
 });
 

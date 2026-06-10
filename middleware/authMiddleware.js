@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const JWT_SECRET = process.env.JWT_SECRET || "ankit";
 
 const authenticateToken = (req, res, next) => {
   // Accept token from cookie, Authorization header, fallback headers, or query param
@@ -16,7 +17,7 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ error: "Access denied, no token provided" });
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded; // Attach user data to request
     next();
   } catch (error) {

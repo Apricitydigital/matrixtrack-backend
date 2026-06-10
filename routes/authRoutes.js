@@ -13,6 +13,7 @@ const router = express.Router();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "45d";
 const JWT_COOKIE_MAX_AGE_MS =
   Number(process.env.JWT_COOKIE_MAX_AGE_MS) || 45 * 24 * 60 * 60 * 1000;
+const JWT_SECRET = process.env.JWT_SECRET || "ankit";
 
 const getUserAccessProfile = async (userId) => {
   const rolesQuery = `
@@ -287,7 +288,7 @@ router.post("/login", async (req, res) => {
     // ✅ Generate JWT Token
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
-      process.env.JWT_SECRET,
+      JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
 
@@ -355,7 +356,7 @@ router.post("/supervisor-login", async (req, res) => {
     // ✅ Generate JWT Token for supervisor
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
-      process.env.JWT_SECRET,
+      JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
 
@@ -470,6 +471,61 @@ router.post("/create-admin", async (req, res) => {
       return res.status(200).json({ message: "Record exists, skipping" });
     }
     res.status(500).json({ error: "Failed to create admin user" });
+  }
+});
+
+router.post("/change-password", authenticateToken, async (req, res) => {
+  const userId = req.user?.user_id;
+  const { currentPassword, newPassword, confirmPassword } = req.body || {};
+
+  if (!userId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (!currentPassword || !newPassword || !confirmPassword) {
+    return res
+      .status(400)
+      .json({ error: "Current password, new password, and confirm password are required" });
+  }
+
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ error: "New password and confirm password do not match" });
+  }
+
+  if (String(currentPassword) === String(newPassword)) {
+    return res.status(400).json({ error: "New password must be different from current password" });
+  }
+
+  if (String(newPassword).length < 6) {
+    return res.status(400).json({ error: "New password must be at least 6 characters long" });
+  }
+
+  try {
+    const userResult = await pool.query(
+      "SELECT user_id, password_hash FROM users WHERE user_id = $1 LIMIT 1",
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const user = userResult.rows[0];
+    const isMatch = await bcrypt.compare(String(currentPassword), user.password_hash || "");
+    if (!isMatch) {
+      return res.status(400).json({ error: "Current password is incorrect" });
+    }
+
+    const hashedPassword = await bcrypt.hash(String(newPassword), 10);
+    await pool.query("UPDATE users SET password_hash = $2 WHERE user_id = $1", [
+      userId,
+      hashedPassword,
+    ]);
+
+    return res.json({ message: "Password changed successfully" });
+  } catch (error) {
+    console.error("Error changing password:", error);
+    return res.status(500).json({ error: "Failed to change password" });
   }
 });
 
