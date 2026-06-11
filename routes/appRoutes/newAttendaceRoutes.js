@@ -2159,21 +2159,10 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             employeeName: employeeRecord.name,
             similarity,
             attendanceId: attendance.attendance_id,
-<<<<<<< HEAD
-            punchedAt:
-              punchType === PUNCH_TYPES.IN
-                ? formatPunchTimeForClient(updated.punch_in_time)
-                : formatPunchTimeForClient(updated.punch_out_time),
-            punchedAt: formatPunchTimeForClient(
-              resolvePunchRecordTime(updated, punchType)
-            ),
-          });
-=======
             punchedAt: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
           };
         })
       );
->>>>>>> 3707dc890351e4da0658adc94ac0e8e684a793af
 
       // Flatten allSettled → plain results array
       const rawResults = perFaceResults.map((settled, i) => {
