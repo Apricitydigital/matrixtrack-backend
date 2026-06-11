@@ -25,8 +25,8 @@ scratch/
 check_*.js
 run_query.js
 
-# local output files
-check_results.txt
-diagnostic_output.txt
-query_results.txt
-whatsapp_report_daily_final_last_run.txt
+
+#test files
+test_*.js
+supervisor_errors.log
+scratch/dry_run_group_punch.js

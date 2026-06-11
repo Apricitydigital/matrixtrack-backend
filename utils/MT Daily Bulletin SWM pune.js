@@ -4,7 +4,7 @@ const axios = require("axios");
 const BASE_URL = (process.env.MSG91_WHATSAPP_BASE_URL || "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk").replace(/\/+$/, "");
 const AUTH_KEY = process.env.MSG91_WHATSAPP_AUTH_KEY || process.env.MSG91_AUTH_KEY;
 const TEMPLATE_NAMESPACE = "5c8f516b_8ec5_4384_bb73_3bfd7a369e84";
-const TEMPLATE_NAME = "daily_bulletin_pmc_swm_new";
+const TEMPLATE_NAME = "pune_swm_daily_bulletin_report_hms";
 const TEMPLATE_LANGUAGE = "en";
 const INTEGRATED_NUMBER = "919111001035";
 
@@ -25,15 +25,10 @@ const formatNum = (num) => {
 const getReportDates = (overrideDate) => {
   let targetDateStr = overrideDate;
   if (!targetDateStr) {
-    const nowUtc = new Date();
-    const istNow = new Date(nowUtc.toLocaleString("en-US", { timeZone: REPORT_TIMEZONE }));
-    const yesterday = new Date(istNow);
-    yesterday.setDate(yesterday.getDate() - 1);
-    
-    const yyyy = yesterday.getFullYear();
-    const mm = String(yesterday.getMonth() + 1).padStart(2, "0");
-    const dd = String(yesterday.getDate()).padStart(2, "0");
-    targetDateStr = `${yyyy}-${mm}-${dd}`;
+    const now = new Date();
+    const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+    istTime.setDate(istTime.getDate() - 1); // Yesterday
+    targetDateStr = istTime.toISOString().split("T")[0];
   }
   const reportDate = new Date(`${targetDateStr}T00:00:00+05:30`);
   const displayDate = reportDate.toLocaleDateString("en-IN", {
@@ -169,41 +164,27 @@ const generateDailyBulletinData = async (overrideDate) => {
   });
 
   const detailedZoneBlocks = zonesData.map((zone) => {
-    return `🔹 ${zone.zoneName}\n  • Registered: ${formatNum(zone.registered)}\n  • Present: ${formatNum(zone.present)}\n  • Leave: ${formatNum(zone.leave)}\n  • Absent: ${formatNum(zone.absent)}`;
+    return `🔹 ${zone.zoneName}\n• Registered: ${formatNum(zone.registered)}\n• Present: ${formatNum(zone.present)}\n• Leave: ${formatNum(zone.leave)}\n• Absent: ${formatNum(zone.absent)}`;
   });
 
-  const strongZones = zonesData.filter((z) => z.presentRate >= 65).map((z) => z.zoneName);
   const lowestZone = zonesData.reduce((prev, curr) => (prev.presentRate < curr.presentRate ? prev : curr), zonesData[0]);
-
-  let keyObservation = "";
-  if (strongZones.length > 0) {
-    const formattedStrong = strongZones.length === 1 
-      ? strongZones[0] 
-      : `${strongZones.slice(0, -1).join(", ")} and ${strongZones[strongZones.length - 1]}`;
-    keyObservation = `${formattedStrong} delivered strong attendance performance above 65%, while ${lowestZone.zoneName} recorded the lowest turnout today and may require focused follow-up at ward level.`;
-  } else {
-    keyObservation = `All zones delivered attendance performance below 65%, with ${lowestZone.zoneName} recording the lowest turnout today and requiring focused follow-up at ward level.`;
-  }
 
   const bottomZones = [...zonesData].sort((a, b) => a.presentRate - b.presentRate).slice(0, 2);
   const tomorrowFocusZonesStr = bottomZones.length >= 2 
     ? `${bottomZones[0].zoneName} and ${bottomZones[1].zoneName}` 
     : lowestZone.zoneName;
 
-  const secondLowestZone = bottomZones[1] || lowestZone;
-  const manualPunchZonesStr = `${secondLowestZone.zoneName} and ${lowestZone.zoneName}`;
-
-  // Pristine text preview for CLI / Logs
-  const rawPreviewText = `🌆 *PMC SWM Pune — Daily Bulletin* 
+  // Pristine text preview for CLI / Logs (Matches the new template)
+  const rawPreviewText = `🌆 PMC SWM Pune — Daily Bulletin
 📅 ${displayDate}
 Status: ${statusText}
 ${statusDesc}
 
 City-wide Snapshot 👥
-  • Total Registered Workers: ${formatNum(cityRegistered)}
-  • Present Today: ${formatNum(cityPresent)}
-  • On Leave: ${formatNum(cityLeave)}
-  • Absent: ${formatNum(cityAbsent)}
+• Total Registered Workers: ${formatNum(cityRegistered)}
+• Present Today: ${formatNum(cityPresent)}
+• On Leave: ${formatNum(cityLeave)}
+• Absent: ${formatNum(cityAbsent)}
 
 Zone-wise Attendance Overview 📊
 ${overviewLines.join("\n")}
@@ -211,15 +192,8 @@ ${overviewLines.join("\n")}
 Detailed Zone Summary 🏙️
 ${detailedZoneBlocks.join("\n\n")}
 
-Key Observation 🔍
-${keyObservation}
-
 Tomorrow’s Focus 🎯
 ✅ Improve attendance in high-absence wards, especially in ${tomorrowFocusZonesStr}.
-✅ Review manual punch-out cases in ${manualPunchZonesStr}.
-✅ Ensure timely attendance marking and shift completion across all wards.
-✅ Strengthen supervisor-level monitoring for absentee workers.
-
 —
 Matrix Track Daily Bulletin | Human Matrix | PMC SWM Pune
 Powered by Apricity Digital Labs Pvt Ltd`;
@@ -234,9 +208,7 @@ Powered by Apricity Digital Labs Pvt Ltd`;
     cityAbsent: formatNum(cityAbsent),
     sortedZones,
     zonesData,
-    keyObservation,
     tomorrowFocusZonesStr,
-    manualPunchZonesStr,
     rawPreviewText,
     overviewLines,
   };
@@ -330,9 +302,7 @@ const sendDailyBulletinWhatsAppNew = async ({ phoneNumber, date }) => {
     body_36: { type: "text", value: String(formatNum(z4.leave)).trim() },
     body_37: { type: "text", value: String(formatNum(z4.absent)).trim() },
     
-    body_38: { type: "text", value: String(data.keyObservation).trim() },
-    body_39: { type: "text", value: String(data.tomorrowFocusZonesStr).trim() },
-    body_40: { type: "text", value: String(data.manualPunchZonesStr).trim() },
+    body_38: { type: "text", value: String(data.tomorrowFocusZonesStr).trim() },
   };
 
   const payload = {

@@ -202,7 +202,7 @@ router.get(
         JOIN wards w ON sw.ward_id = w.ward_id
         JOIN zones z ON w.zone_id = z.zone_id
         JOIN cities c ON z.city_id = c.city_id
-        LEFT JOIN employee e ON e.ward_id = w.ward_id
+        LEFT JOIN employee e ON e.ward_id = w.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       `;
 
       const conditions = ["u.role = 'supervisor'"];  // ← ADDED
