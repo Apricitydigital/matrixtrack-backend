@@ -762,6 +762,174 @@ const fetchZoneSummary = async (
     ),
   }));
 };
+const fetchAttendanceTrend = async (
+  userId,
+  cityId,
+  startDate,
+  endDate,
+  options = {}
+) => {
+  const { zoneIds = [], kothiIds = [] } = options;
+
+  const hasZoneFilter =
+    Array.isArray(zoneIds) &&
+    zoneIds.length > 0;
+
+  const hasKothiFilter =
+    Array.isArray(kothiIds) &&
+    kothiIds.length > 0;
+  const query = `
+    WITH employee_city AS (
+      SELECT DISTINCT
+        e.emp_id,
+        c.city_id
+      FROM employee e
+      JOIN wards w ON e.ward_id = w.ward_id
+      JOIN zones z ON w.zone_id = z.zone_id
+      JOIN cities c ON z.city_id = c.city_id
+      LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
+      WHERE (
+        $1::int IS NULL
+        OR sw.supervisor_id = $1::int
+      OR w.ward_id IN (
+  SELECT ward_id
+  FROM user_kothi_access
+  WHERE user_id = $1
+)
+OR w.ward_id IN (
+  SELECT ward_id
+  FROM supervisor_kothi
+  WHERE supervisor_id = $1
+)
+OR w.zone_id IN (
+  SELECT zone_id
+  FROM user_zone_access
+  WHERE user_id = $1
+)
+      )
+  AND ($4::int IS NULL OR c.city_id = $4::int)
+${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
+${hasKothiFilter ? `AND w.ward_id = ANY($${hasZoneFilter ? 6 : 5}::int[])` : ""}
+    )
+
+SELECT
+  a.date::date AS attendance_date,
+
+  COUNT(*) AS raw_records,
+
+  COUNT(
+    DISTINCT CASE
+      WHEN (
+        a.punch_in_time IS NOT NULL
+        OR a.mid_shift_punch_in_time IS NOT NULL
+      )
+      THEN a.emp_id
+    END
+  ) AS present,
+
+  COUNT(
+  DISTINCT CASE
+    WHEN (
+      a.leave_type IS NOT NULL
+      AND a.punch_in_time IS NULL
+      AND a.mid_shift_punch_in_time IS NULL
+    )
+    THEN a.emp_id
+  END
+) AS on_leave,
+
+(SELECT COUNT(*) FROM employee_city) AS total_employees
+    FROM attendance a
+    JOIN employee_city ec
+      ON ec.emp_id = a.emp_id
+
+    WHERE a.date::date
+      BETWEEN $2::date AND $3::date
+
+    GROUP BY a.date::date
+    ORDER BY a.date::date;
+  `;
+const params = [
+  userId,
+  startDate,
+  endDate,
+  cityId,
+];
+
+if (hasZoneFilter) {
+  params.push(zoneIds);
+}
+
+if (hasKothiFilter) {
+  params.push(kothiIds);
+}
+
+const result = await pool.query(
+  query,
+  params
+);
+  console.log("RAW TREND ROWS =", result.rows);
+  const empCheck = await pool.query(`
+  WITH employee_city AS (
+    SELECT DISTINCT
+      e.emp_id
+    FROM employee e
+    JOIN wards w ON e.ward_id = w.ward_id
+    JOIN zones z ON w.zone_id = z.zone_id
+    JOIN cities c ON z.city_id = c.city_id
+    LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
+    WHERE (
+      $1::int IS NULL
+      OR sw.supervisor_id = $1::int
+      OR w.ward_id IN (
+        SELECT ward_id
+        FROM user_kothi_access
+        WHERE user_id = $1
+      )
+      OR w.ward_id IN (
+        SELECT ward_id
+        FROM supervisor_kothi
+        WHERE supervisor_id = $1
+      )
+        OR w.zone_id IN (
+  SELECT zone_id
+  FROM user_zone_access
+  WHERE user_id = $1
+)
+     
+    )
+    AND ($2::int IS NULL OR c.city_id = $2::int)
+  )
+  SELECT COUNT(*) total
+  FROM employee_city
+`, [userId, cityId]);
+
+  console.log("EMPLOYEE_CITY COUNT =", empCheck.rows[0]);
+
+  return result.rows.map((row) => {
+    console.log("ROW =", row);
+
+    const present = Number(row.present) || 0;
+    const leave = Number(row.on_leave) || 0;
+    const totalEmployees = Number(row.total_employees) || 0;
+
+    console.log("TREND DEBUG =>", {
+      date: row.attendance_date,
+      rawRecords: row.raw_records,
+      totalEmployees,
+      present,
+      leave,
+      absent: totalEmployees - present - leave,
+    });
+
+    return {
+      date: row.attendance_date,
+      present,
+      leave,
+      absent: Math.max(totalEmployees - present - leave, 0),
+    };
+  });
+};
 
 router.use(
   authenticate,
@@ -1118,6 +1286,49 @@ router.post("/zone-summary", async (req, res) => {
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
+router.post("/attendance-trend", async (req, res) => {
+  try {
+    console.log("ATTENDANCE TREND BODY =", req.body);
+
+    const {
+      user_id,
+      city_id,
+      startDate,
+      endDate,
+    } = req.body;
+
+ const allowedZoneIds =
+  resolveZoneScope(req);
+
+const allowedKothiIds =
+  resolveKothiScope(req);
+
+const trend =
+  await fetchAttendanceTrend(
+    user_id,
+    city_id,
+    startDate,
+    endDate,
+    {
+      zoneIds: allowedZoneIds,
+      kothiIds: allowedKothiIds,
+    }
+  );
+
+    console.log("TREND RESULT =", trend);
+    res.json({
+      success: true,
+      data: trend,
+    });
+  } catch (error) {
+    console.error("ATTENDANCE TREND ERROR =", error);
+
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
 
 // Summary endpoint for web compatibility (POST with explicit user_id)
 router.post("/summary", async (req, res) => {
@@ -1290,7 +1501,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-module.exports = router;
+
 
 // ── Top Performing Supervisors ─────────────────────────────────────────────
 router.post("/top-supervisors", async (req, res) => {
@@ -1364,3 +1575,4 @@ router.post("/top-supervisors", async (req, res) => {
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
+module.exports = router;
