@@ -2019,7 +2019,6 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
                 Image: { Bytes: faceImageBuffer },
                 MaxFaces: 1,
                 FaceMatchThreshold: groupThreshold,
-                QualityFilter: "AUTO", // 💰 COST OPT: skip poor-quality images
               })),
               GROUP_FACE_SEARCH_TIMEOUT_MS,
               "Face search timed out"
@@ -2232,14 +2231,11 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     }
 
     // 2. Search for the face in the collection
-    // 💰 COST OPT: QualityFilter=AUTO rejects blurry/low-res images before AWS
-    // charges for them. Saves ~10-15% of calls from poor capture conditions.
     const searchParams = {
       CollectionId: collectionId,
       Image: { Bytes: normalizedCaptureBuffer },
       MaxFaces: 1,
       FaceMatchThreshold: matchThreshold,
-      QualityFilter: "AUTO", // 💰 COST OPT: skip low-quality images
     };
 
     const searchCommand = new SearchFacesByImageCommand(searchParams);
