@@ -155,6 +155,7 @@ const {
   DetectFacesCommand,
   GetObjectCommand,
   ListObjectsV2Command,
+  IndexFacesCommand,
 } = require("../../config/awsConfig");
 const authenticate = require("../../middleware/authMiddleware");
 const {
@@ -1437,6 +1438,32 @@ async function fallbackMatchByCompare(
             employee: candidate,
             similarity,
           };
+
+          // 💡 AUTO-HEAL: If this employee's face is not in the Rekognition collection,
+          // index it now in the background so future punches match instantly!
+          const collectionId = (process.env.REKOGNITION_COLLECTION || process.env.REKOGNITION_COLLECTION_ID || "employee").trim();
+          const bucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+          if (collectionId && bucket && sourceBuffer) {
+            rekognition.send(new IndexFacesCommand({
+              CollectionId: collectionId,
+              Image: { Bytes: sourceBuffer },
+              ExternalImageId: candidate.emp_id.toString(),
+              MaxFaces: 1,
+              QualityFilter: "NONE"
+            })).then((indexResp) => {
+              const newFaceId = indexResp.FaceRecords?.[0]?.Face?.FaceId;
+              const newConfidence = indexResp.FaceRecords?.[0]?.Face?.Confidence;
+              if (newFaceId) {
+                console.log(`[Auto-Heal-Index] Successfully indexed emp_id ${candidate.emp_id} -> FaceId ${newFaceId}`);
+                pool.query(
+                  "UPDATE employee SET face_id = $1, face_confidence = $2 WHERE emp_id = $3",
+                  [newFaceId, newConfidence, candidate.emp_id]
+                ).catch(() => {});
+              }
+            }).catch((err) => {
+              console.error(`[Auto-Heal-Index] Failed to index emp_id ${candidate.emp_id}:`, err.message);
+            });
+          }
         }
       }
     } catch (_err) {
