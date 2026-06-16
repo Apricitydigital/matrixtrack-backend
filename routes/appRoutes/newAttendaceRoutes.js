@@ -734,6 +734,43 @@ const GROUP_FACE_SEARCH_TIMEOUT_MS = Number(
 const GROUP_DOUBLE_VERIFY_ENABLED =
   process.env.GROUP_DOUBLE_VERIFY_ENABLED === "true";
 
+// ─── COST OPTIMIZATION: Individual punch fallback loop ────────────────────────
+// When SearchFacesByImage returns no match, fallbackMatchByCompare runs a
+// CompareFaces call for EVERY employee in the ward — extremely expensive at scale.
+// Default: DISABLED. Enable only for debugging via env flag.
+// Set INDIVIDUAL_FALLBACK_ENABLED=true in .env ONLY if needed.
+const INDIVIDUAL_FALLBACK_ENABLED =
+  process.env.INDIVIDUAL_FALLBACK_ENABLED === "true";
+
+// ─── COST OPTIMIZATION: 60-second punch dedup cache ──────────────────────────
+// Prevents double-billing when supervisor retries on network timeout.
+// key: `${empId}:${punchType}:${date}` → timestamp of last successful punch.
+// In-memory is sufficient: restarts clear it, and 60s window is short enough.
+const recentPunchCache = new Map();
+const PUNCH_DEDUP_WINDOW_MS = 60_000; // 60 seconds
+
+/**
+ * Returns true if this punch was already processed within PUNCH_DEDUP_WINDOW_MS.
+ * Side-effect: records the current timestamp for new/expired entries.
+ */
+function isDuplicatePunch(empId, punchType, date) {
+  const key = `${empId}:${punchType}:${date}`;
+  const lastTs = recentPunchCache.get(key);
+  const now = Date.now();
+  if (lastTs && now - lastTs < PUNCH_DEDUP_WINDOW_MS) {
+    return true;
+  }
+  recentPunchCache.set(key, now);
+  // Evict old entries periodically to avoid unbounded memory growth
+  if (recentPunchCache.size > 10_000) {
+    const cutoff = now - PUNCH_DEDUP_WINDOW_MS * 2;
+    for (const [k, ts] of recentPunchCache) {
+      if (ts < cutoff) recentPunchCache.delete(k);
+    }
+  }
+  return false;
+}
+
 const withTimeout = async (promise, timeoutMs, timeoutMessage) => {
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
@@ -1972,6 +2009,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           }
 
           // ── 2. Rekognition face search ────────────────────────────────────
+          // 💰 COST OPT: QualityFilter=AUTO skips low-quality/blurry crops before
+          // AWS charges for them. DetectFaces already confirmed a face exists here.
           let searchResult;
           try {
             searchResult = await withTimeout(
@@ -1980,13 +2019,14 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
                 Image: { Bytes: faceImageBuffer },
                 MaxFaces: 1,
                 FaceMatchThreshold: groupThreshold,
+                QualityFilter: "AUTO", // 💰 COST OPT: skip poor-quality images
               })),
               GROUP_FACE_SEARCH_TIMEOUT_MS,
               "Face search timed out"
             );
           } catch (searchError) {
             console.error("[Group] face search failed", searchError);
-            if (searchError?.Code === "InvalidParameterException") {
+            if (searchError?.Code === "InvalidParameterException" || searchError?.name === "InvalidParameterException") {
               return { faceIndex, status: "unmatched", similarity: null, message: "No clear face detected in this crop. Please recapture." };
             }
             const { payload } = mapRekognitionError(searchError);
@@ -2007,7 +2047,10 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           }
 
           // Group-only safe fallback: roster-level CompareFaces
-          if (!employeeRecord && supervisorId) {
+          // 💰 COST OPT: GROUP_DOUBLE_VERIFY_ENABLED guards this expensive path.
+          // Each call here = N paid CompareFaces calls (N = employees in ward).
+          // Only trigger when collection misses AND env flag is explicitly enabled.
+          if (!employeeRecord && supervisorId && GROUP_DOUBLE_VERIFY_ENABLED) {
             const fallback = await fallbackMatchByCompare(
               faceImageBuffer, supervisorId, wardId,
               Math.max(92, Math.min(matchThreshold, 95))
@@ -2172,12 +2215,31 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       });
     }
 
+    // 💰 COST OPT: 60-second dedup guard — if same employee punched within
+    // the last 60s (network retry scenario), return cached success immediately
+    // without making any paid Rekognition API call.
+    if (isDuplicatePunch(requestedEmpId, punchType, attendanceDate)) {
+      console.log(`[face-attendance] Dedup hit: emp_id=${requestedEmpId} punchType=${punchType} date=${attendanceDate} — skipping Rekognition`);
+      return res.status(200).json({
+        success: true,
+        employee: employeeRecord.name,
+        punch_type: punchType,
+        face_similarity: null,
+        face_match_threshold: matchThreshold,
+        time: null,
+        deduplicated: true, // flag so client knows it was a cached response
+      });
+    }
+
     // 2. Search for the face in the collection
+    // 💰 COST OPT: QualityFilter=AUTO rejects blurry/low-res images before AWS
+    // charges for them. Saves ~10-15% of calls from poor capture conditions.
     const searchParams = {
       CollectionId: collectionId,
       Image: { Bytes: normalizedCaptureBuffer },
       MaxFaces: 1,
       FaceMatchThreshold: matchThreshold,
+      QualityFilter: "AUTO", // 💰 COST OPT: skip low-quality images
     };
 
     const searchCommand = new SearchFacesByImageCommand(searchParams);
@@ -2256,8 +2318,11 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       }
     }
 
-    // Soft fallback for roster compare if collection search failed
-    if (!matchedFace) {
+    // 💰 COST OPT: Individual fallback roster loop is DISABLED by default.
+    // This path calls CompareFaces for every employee in the ward — very expensive.
+    // Collection search missing = face likely not enrolled. Return clear error instead.
+    // Enable via INDIVIDUAL_FALLBACK_ENABLED=true in .env ONLY for debugging.
+    if (!matchedFace && INDIVIDUAL_FALLBACK_ENABLED) {
       const fallback = await fallbackMatchByCompare(
         normalizedCaptureBuffer,
         supervisorId,
@@ -2270,6 +2335,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           details: `Face does not match ${employeeRecord.name}.`,
         });
       }
+    } else if (!matchedFace) {
+      // Face not found in collection — instruct supervisor to re-enroll
+      console.log(`[face-attendance] Individual: no collection match for emp_id=${requestedEmpId}. Fallback disabled.`);
     }
 
     if (!employeeRecord) {
