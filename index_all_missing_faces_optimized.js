@@ -1,4 +1,4 @@
- bhrequire("dotenv").config();
+ bhbharequire("dotenv").config();
 const { RekognitionClient, ListFacesCommand, IndexFacesCommand } = require("@aws-sdk/client-rekognition");
 const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
 const { Client } = require("pg");

@@ -1415,65 +1415,83 @@ async function fallbackMatchByCompare(
   const compareThreshold = Math.max(85, Math.min(threshold || 97, 95));
 
   const candidates = await fetchSupervisorFaceEmbeddings(supervisorId, wardId);
-  let best = null;
+  if (!candidates || candidates.length === 0) return null;
 
-  for (const candidate of candidates) {
-    const sourceBuffer = await loadFaceBuffer(
-      candidate.face_embedding,
-      candidate.emp_id,
-      candidate.emp_code
-    );
-    if (!sourceBuffer) continue;
+  // Run candidate image download and AWS CompareFaces in parallel
+  const results = await Promise.all(
+    candidates.map(async (candidate) => {
+      try {
+        const sourceBuffer = await loadFaceBuffer(
+          candidate.face_embedding,
+          candidate.emp_id,
+          candidate.emp_code
+        );
+        if (!sourceBuffer) return null;
 
-    try {
-      const resp = await rekognition.send(
-        new CompareFacesCommand({
-          SourceImage: { Bytes: sourceBuffer },
-          TargetImage: { Bytes: faceBuffer },
-          SimilarityThreshold: compareThreshold,
-        })
-      );
-      const similarity = resp?.FaceMatches?.[0]?.Similarity ?? 0;
-      if (similarity >= compareThreshold) {
-        if (!best || similarity > best.similarity) {
-          best = {
-            employee: candidate,
-            similarity,
-          };
-
-          // 💡 AUTO-HEAL: If this employee's face is not in the Rekognition collection,
-          // index it now in the background so future punches match instantly!
-          const collectionId = (process.env.REKOGNITION_COLLECTION || process.env.REKOGNITION_COLLECTION_ID || "employee").trim();
-          const bucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
-          if (collectionId && bucket && sourceBuffer) {
-            rekognition.send(new IndexFacesCommand({
-              CollectionId: collectionId,
-              Image: { Bytes: sourceBuffer },
-              ExternalImageId: candidate.emp_id.toString(),
-              MaxFaces: 1,
-              QualityFilter: "NONE"
-            })).then((indexResp) => {
-              const newFaceId = indexResp.FaceRecords?.[0]?.Face?.FaceId;
-              const newConfidence = indexResp.FaceRecords?.[0]?.Face?.Confidence;
-              if (newFaceId) {
-                console.log(`[Auto-Heal-Index] Successfully indexed emp_id ${candidate.emp_id} -> FaceId ${newFaceId}`);
-                pool.query(
-                  "UPDATE employee SET face_id = $1, face_confidence = $2 WHERE emp_id = $3",
-                  [newFaceId, newConfidence, candidate.emp_id]
-                ).catch(() => {});
-              }
-            }).catch((err) => {
-              console.error(`[Auto-Heal-Index] Failed to index emp_id ${candidate.emp_id}:`, err.message);
-            });
-          }
+        const resp = await rekognition.send(
+          new CompareFacesCommand({
+            SourceImage: { Bytes: sourceBuffer },
+            TargetImage: { Bytes: faceBuffer },
+            SimilarityThreshold: compareThreshold,
+          })
+        );
+        const similarity = resp?.FaceMatches?.[0]?.Similarity ?? 0;
+        if (similarity >= compareThreshold) {
+          return { candidate, similarity, sourceBuffer };
         }
+      } catch (err) {
+        // ignore individual candidate errors
       }
-    } catch (_err) {
-      // ignore individual compare errors
+      return null;
+    })
+  );
+
+  // Find the candidate with the highest similarity
+  let best = null;
+  for (const res of results) {
+    if (res && (!best || res.similarity > best.similarity)) {
+      best = {
+        employee: res.candidate,
+        similarity: res.similarity,
+        sourceBuffer: res.sourceBuffer,
+      };
     }
   }
 
-  return best;
+  if (best) {
+    // 💡 AUTO-HEAL: If this employee's face is not in the Rekognition collection,
+    // index it now in the background so future punches match instantly!
+    const collectionId = (process.env.REKOGNITION_COLLECTION || process.env.REKOGNITION_COLLECTION_ID || "employee").trim();
+    const bucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+    if (collectionId && bucket && best.sourceBuffer) {
+      rekognition.send(new IndexFacesCommand({
+        CollectionId: collectionId,
+        Image: { Bytes: best.sourceBuffer },
+        ExternalImageId: best.employee.emp_id.toString(),
+        MaxFaces: 1,
+        QualityFilter: "NONE"
+      })).then((indexResp) => {
+        const newFaceId = indexResp.FaceRecords?.[0]?.Face?.FaceId;
+        const newConfidence = indexResp.FaceRecords?.[0]?.Face?.Confidence;
+        if (newFaceId) {
+          console.log(`[Auto-Heal-Index] Successfully indexed emp_id ${best.employee.emp_id} -> FaceId ${newFaceId}`);
+          pool.query(
+            "UPDATE employee SET face_id = $1, face_confidence = $2 WHERE emp_id = $3",
+            [newFaceId, newConfidence, best.employee.emp_id]
+          ).catch(() => {});
+        }
+      }).catch((err) => {
+        console.error(`[Auto-Heal-Index] Failed to index emp_id ${best.employee.emp_id}:`, err.message);
+      });
+    }
+
+    return {
+      employee: best.employee,
+      similarity: best.similarity
+    };
+  }
+
+  return null;
 }
 
 async function resolveAttendanceEmployeeId(attendanceId) {
