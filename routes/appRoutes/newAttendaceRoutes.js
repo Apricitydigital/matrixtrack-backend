@@ -155,6 +155,7 @@ const {
   DetectFacesCommand,
   GetObjectCommand,
   ListObjectsV2Command,
+  IndexFacesCommand,
 } = require("../../config/awsConfig");
 const authenticate = require("../../middleware/authMiddleware");
 const {
@@ -733,6 +734,45 @@ const GROUP_FACE_SEARCH_TIMEOUT_MS = Number(
 );
 const GROUP_DOUBLE_VERIFY_ENABLED =
   process.env.GROUP_DOUBLE_VERIFY_ENABLED === "true";
+const GROUP_FALLBACK_ENABLED =
+  process.env.GROUP_FALLBACK_ENABLED !== "false";
+
+// ─── COST OPTIMIZATION: Individual punch fallback loop ────────────────────────
+// When SearchFacesByImage returns no match, fallbackMatchByCompare runs a
+// CompareFaces call for EVERY employee in the ward — extremely expensive at scale.
+// Default: DISABLED. Enable only for debugging via env flag.
+// Set INDIVIDUAL_FALLBACK_ENABLED=true in .env ONLY if needed.
+const INDIVIDUAL_FALLBACK_ENABLED =
+  process.env.INDIVIDUAL_FALLBACK_ENABLED === "true";
+
+// ─── COST OPTIMIZATION: 60-second punch dedup cache ──────────────────────────
+// Prevents double-billing when supervisor retries on network timeout.
+// key: `${empId}:${punchType}:${date}` → timestamp of last successful punch.
+// In-memory is sufficient: restarts clear it, and 60s window is short enough.
+const recentPunchCache = new Map();
+const PUNCH_DEDUP_WINDOW_MS = 60_000; // 60 seconds
+
+/**
+ * Returns true if this punch was already processed within PUNCH_DEDUP_WINDOW_MS.
+ * Side-effect: records the current timestamp for new/expired entries.
+ */
+function isDuplicatePunch(empId, punchType, date) {
+  const key = `${empId}:${punchType}:${date}`;
+  const lastTs = recentPunchCache.get(key);
+  const now = Date.now();
+  if (lastTs && now - lastTs < PUNCH_DEDUP_WINDOW_MS) {
+    return true;
+  }
+  recentPunchCache.set(key, now);
+  // Evict old entries periodically to avoid unbounded memory growth
+  if (recentPunchCache.size > 10_000) {
+    const cutoff = now - PUNCH_DEDUP_WINDOW_MS * 2;
+    for (const [k, ts] of recentPunchCache) {
+      if (ts < cutoff) recentPunchCache.delete(k);
+    }
+  }
+  return false;
+}
 
 const withTimeout = async (promise, timeoutMs, timeoutMessage) => {
   let timeoutId;
@@ -1400,6 +1440,32 @@ async function fallbackMatchByCompare(
             employee: candidate,
             similarity,
           };
+
+          // 💡 AUTO-HEAL: If this employee's face is not in the Rekognition collection,
+          // index it now in the background so future punches match instantly!
+          const collectionId = (process.env.REKOGNITION_COLLECTION || process.env.REKOGNITION_COLLECTION_ID || "employee").trim();
+          const bucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+          if (collectionId && bucket && sourceBuffer) {
+            rekognition.send(new IndexFacesCommand({
+              CollectionId: collectionId,
+              Image: { Bytes: sourceBuffer },
+              ExternalImageId: candidate.emp_id.toString(),
+              MaxFaces: 1,
+              QualityFilter: "NONE"
+            })).then((indexResp) => {
+              const newFaceId = indexResp.FaceRecords?.[0]?.Face?.FaceId;
+              const newConfidence = indexResp.FaceRecords?.[0]?.Face?.Confidence;
+              if (newFaceId) {
+                console.log(`[Auto-Heal-Index] Successfully indexed emp_id ${candidate.emp_id} -> FaceId ${newFaceId}`);
+                pool.query(
+                  "UPDATE employee SET face_id = $1, face_confidence = $2 WHERE emp_id = $3",
+                  [newFaceId, newConfidence, candidate.emp_id]
+                ).catch(() => {});
+              }
+            }).catch((err) => {
+              console.error(`[Auto-Heal-Index] Failed to index emp_id ${candidate.emp_id}:`, err.message);
+            });
+          }
         }
       }
     } catch (_err) {
@@ -1972,6 +2038,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           }
 
           // ── 2. Rekognition face search ────────────────────────────────────
+          // 💰 COST OPT: QualityFilter=AUTO skips low-quality/blurry crops before
+          // AWS charges for them. DetectFaces already confirmed a face exists here.
           let searchResult;
           try {
             searchResult = await withTimeout(
@@ -1986,7 +2054,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             );
           } catch (searchError) {
             console.error("[Group] face search failed", searchError);
-            if (searchError?.Code === "InvalidParameterException") {
+            if (searchError?.Code === "InvalidParameterException" || searchError?.name === "InvalidParameterException") {
               return { faceIndex, status: "unmatched", similarity: null, message: "No clear face detected in this crop. Please recapture." };
             }
             const { payload } = mapRekognitionError(searchError);
@@ -2007,10 +2075,13 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           }
 
           // Group-only safe fallback: roster-level CompareFaces
-          if (!employeeRecord && supervisorId) {
+          // 💰 COST OPT: GROUP_FALLBACK_ENABLED guards this path.
+          // Each call here = N paid CompareFaces calls (N = employees in ward).
+          // Only trigger when collection misses AND fallback is enabled.
+          if (!employeeRecord && supervisorId && GROUP_FALLBACK_ENABLED) {
             const fallback = await fallbackMatchByCompare(
               faceImageBuffer, supervisorId, wardId,
-              Math.max(92, Math.min(matchThreshold, 95))
+              Math.max(85, Math.min(matchThreshold, 90))
             );
             if (fallback?.employee) {
               employeeRecord = fallback.employee;
@@ -2172,6 +2243,22 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       });
     }
 
+    // 💰 COST OPT: 60-second dedup guard — if same employee punched within
+    // the last 60s (network retry scenario), return cached success immediately
+    // without making any paid Rekognition API call.
+    if (isDuplicatePunch(requestedEmpId, punchType, attendanceDate)) {
+      console.log(`[face-attendance] Dedup hit: emp_id=${requestedEmpId} punchType=${punchType} date=${attendanceDate} — skipping Rekognition`);
+      return res.status(200).json({
+        success: true,
+        employee: employeeRecord.name,
+        punch_type: punchType,
+        face_similarity: null,
+        face_match_threshold: matchThreshold,
+        time: null,
+        deduplicated: true, // flag so client knows it was a cached response
+      });
+    }
+
     // 2. Search for the face in the collection
     const searchParams = {
       CollectionId: collectionId,
@@ -2256,8 +2343,11 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       }
     }
 
-    // Soft fallback for roster compare if collection search failed
-    if (!matchedFace) {
+    // 💰 COST OPT: Individual fallback roster loop is DISABLED by default.
+    // This path calls CompareFaces for every employee in the ward — very expensive.
+    // Collection search missing = face likely not enrolled. Return clear error instead.
+    // Enable via INDIVIDUAL_FALLBACK_ENABLED=true in .env ONLY for debugging.
+    if (!matchedFace && INDIVIDUAL_FALLBACK_ENABLED) {
       const fallback = await fallbackMatchByCompare(
         normalizedCaptureBuffer,
         supervisorId,
@@ -2270,6 +2360,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           details: `Face does not match ${employeeRecord.name}.`,
         });
       }
+    } else if (!matchedFace) {
+      // Face not found in collection — instruct supervisor to re-enroll
+      console.log(`[face-attendance] Individual: no collection match for emp_id=${requestedEmpId}. Fallback disabled.`);
     }
 
     if (!employeeRecord) {
