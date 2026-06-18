@@ -242,7 +242,7 @@ router.post("/register", async (req, res) => {
           `INSERT INTO supervisor_ward (supervisor_id, ward_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
           [newUserId, wardIdNum]
         );
-        
+
         // Fetch city, zone, ward (sector), and kothi names for notifications
         const locationResult = await pool.query(
           `SELECT c.city_name, z.zone_name, s.sector_name, w.ward_name
@@ -269,7 +269,7 @@ router.post("/register", async (req, res) => {
       email: email.trim().toLowerCase(),
       phone: phone.trim()
     };
-    
+
     // Notifications are sent asynchronously to avoid blocking the registration response
     sendWelcomeWhatsApp(newUser, password, cityName, zoneName, wardName, kothiName);
     sendWelcomeSms(newUser, password, cityName, zoneName, wardName, kothiName);
@@ -393,11 +393,20 @@ router.post("/login", async (req, res) => {
     const user = await pool.query("SELECT * FROM users WHERE email = $1", [
       email,
     ]);
+    console.log("========== LOGIN DEBUG ==========");
+    console.log("Email Entered:", email);
+    console.log("Users Found:", user.rows.length);
 
+    if (user.rows.length > 0) {
+      console.log("DB Email:", user.rows[0].email);
+      console.log("Role:", user.rows[0].role);
+    }
     if (user.rows.length === 0)
       return res.status(400).json({ error: "Invalid credentials" });
 
     const isMatch = await bcrypt.compare(password, user.rows[0].password_hash);
+    console.log("Password Match:", isMatch);
+    console.log("===============================");
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
     // ✅ Generate JWT Token
@@ -464,6 +473,8 @@ router.post("/supervisor-login", async (req, res) => {
     }
 
     const isMatch = await bcrypt.compare(password, user.rows[0].password_hash);
+    console.log("Password Match:", isMatch);
+    console.log("===============================");
     if (!isMatch) {
       return res.status(401).json({
         success: false,

@@ -8,12 +8,11 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
   ssl: { rejectUnauthorized: false }, // Required for RDS connections
-  max: 10,                            // Max DB connections (prevents RDS exhaustion)
-  min: 2,                             // Keep a minimum of 2 connections alive
+  max: Number(process.env.DB_POOL_MAX || 60), // Max DB connections (prevents starvation)
+  min: 5,                             // Keep a minimum of 5 connections alive
   connectionTimeoutMillis: 15000,     // Wait max 15s for a free connection
   idleTimeoutMillis: 30000,           // Close idle connections after 30s
-  // IMPORTANT: Some dashboard queries can exceed 60s on RDS; allow more time without changing logic/data.
-  statement_timeout: 180000,          // Cancel any query running > 3 minutes
+  statement_timeout: 30000,           // Kill any query running > 30s
 });
 
 module.exports = pool;
