@@ -10,6 +10,7 @@ const { attachCityScope } = require("../middleware/cityScope");
 const { syncUserKothiAccess } = require("../utils/userKothiAccess");
 const { syncUserZoneAccess } = require("../utils/userZoneAccess");
 const { syncUserCityAccess } = require("../utils/userCityAccess");
+const { getSystemHealthSnapshot } = require("../utils/systemHealth");
 
 const router = express.Router();
 
@@ -28,6 +29,20 @@ const requireAdmin = (req, res, next) => {
 router.use(authenticateUser);
 router.use(attachCityScope);
 router.use(requireAdmin);
+
+// ===== SYSTEM HEALTH =====
+router.get("/system-health", async (req, res) => {
+  try {
+    const snapshot = await getSystemHealthSnapshot();
+    res.json(snapshot);
+  } catch (error) {
+    console.error("System health fetch error:", error);
+    res.status(500).json({
+      error: "Unable to load system health snapshot",
+      details: error.message,
+    });
+  }
+});
 
 const parseInteger = (value) => {
   const parsed = Number(value);
