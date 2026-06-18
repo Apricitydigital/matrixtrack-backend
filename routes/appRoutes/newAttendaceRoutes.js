@@ -734,6 +734,8 @@ const GROUP_FACE_SEARCH_TIMEOUT_MS = Number(
 );
 const GROUP_DOUBLE_VERIFY_ENABLED =
   process.env.GROUP_DOUBLE_VERIFY_ENABLED === "true";
+const GROUP_FALLBACK_ENABLED =
+  process.env.GROUP_FALLBACK_ENABLED !== "false";
 
 // ─── COST OPTIMIZATION: Individual punch fallback loop ────────────────────────
 // When SearchFacesByImage returns no match, fallbackMatchByCompare runs a
@@ -2073,13 +2075,13 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           }
 
           // Group-only safe fallback: roster-level CompareFaces
-          // 💰 COST OPT: GROUP_DOUBLE_VERIFY_ENABLED guards this expensive path.
+          // 💰 COST OPT: GROUP_FALLBACK_ENABLED guards this path.
           // Each call here = N paid CompareFaces calls (N = employees in ward).
-          // Only trigger when collection misses AND env flag is explicitly enabled.
-          if (!employeeRecord && supervisorId && GROUP_DOUBLE_VERIFY_ENABLED) {
+          // Only trigger when collection misses AND fallback is enabled.
+          if (!employeeRecord && supervisorId && GROUP_FALLBACK_ENABLED) {
             const fallback = await fallbackMatchByCompare(
               faceImageBuffer, supervisorId, wardId,
-              Math.max(92, Math.min(matchThreshold, 95))
+              Math.max(85, Math.min(matchThreshold, 90))
             );
             if (fallback?.employee) {
               employeeRecord = fallback.employee;
