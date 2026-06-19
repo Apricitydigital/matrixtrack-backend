@@ -793,6 +793,48 @@ const withTimeout = async (promise, timeoutMs, timeoutMessage) => {
   }
 };
 
+const mapLimit = async (items, limit, fn) => {
+  const results = new Array(items.length);
+  let currentIndex = 0;
+  const workers = [];
+
+  const worker = async () => {
+    while (currentIndex < items.length) {
+      const index = currentIndex++;
+      try {
+        const value = await fn(items[index], index);
+        results[index] = { status: "fulfilled", value };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  };
+
+  const actualLimit = Math.min(limit, items.length);
+  for (let i = 0; i < actualLimit; i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
+};
+
+const parseRekognitionError = (error) => {
+  const name = error?.name || error?.code || "UnknownError";
+  const message = error?.message || "";
+  const requestId = error?.$metadata?.requestId;
+
+  const isNoFace = name === "InvalidParameterException" && (message.includes("There are no faces in the image") || message.includes("no faces"));
+  const isThrottled = name === "ProvisionedThroughputExceededException" || name === "RequestLimitExceeded" || message.includes("Rate exceeded");
+  const isTimeout = name === "TIMEOUT" || message.includes("timed out");
+
+  let reason = "unknown";
+  if (isNoFace) reason = "no_face";
+  else if (isThrottled) reason = "rekognition_throttled";
+  else if (isTimeout) reason = "timeout";
+
+  return { isExpected: isNoFace || isThrottled || isTimeout, reason, name, message, requestId };
+};
+
 // Utility functions
 const pad2 = (value) => String(value).padStart(2, "0");
 
@@ -2033,8 +2075,10 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       // ─────────────────────────────────────────────────────────────────────────
       const groupThreshold = Math.max(88, Math.min(matchThreshold, 92));
 
-      const perFaceResults = await Promise.allSettled(
-        faceDetails.map(async (faceDetail, index) => {
+      const perFaceResults = await mapLimit(
+        faceDetails,
+        2,
+        async (faceDetail, index) => {
           const faceIndex = index + 1;
 
           // ── 1. Crop face ──────────────────────────────────────────────────
@@ -2054,15 +2098,28 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             return { faceIndex, status: "error", message: "Unable to process the detected face region." };
           }
 
-          if (!faceImageBuffer || faceImageBuffer.length < 500) {
-            return { faceIndex, status: "skipped", similarity: null, message: "Face crop too small/invalid. Please recapture." };
-          }
-
           // ── 2. Rekognition face search ────────────────────────────────────
           // 💰 COST OPT: QualityFilter=AUTO skips low-quality/blurry crops before
           // AWS charges for them. DetectFaces already confirmed a face exists here.
           let searchResult;
           try {
+            // Validate image buffer immediately before SearchFacesByImage call
+            const maxImageSizeBytes = 5 * 1024 * 1024;
+            const allowedMimetypes = ["image/jpeg", "image/jpg", "image/png"];
+            const mimeTypeOk = req.file?.mimetype ? allowedMimetypes.includes(req.file.mimetype.toLowerCase()) : true;
+            const isBufferValid = faceImageBuffer && faceImageBuffer.length > 0 && faceImageBuffer.length <= maxImageSizeBytes;
+
+            if (!isBufferValid || !mimeTypeOk) {
+              return {
+                faceIndex,
+                status: "skipped",
+                similarity: null,
+                matched: false,
+                reason: "invalid_image",
+                message: "Face crop too small/invalid. Please recapture."
+              };
+            }
+
             searchResult = await withTimeout(
               rekognition.send(new SearchFacesByImageCommand({
                 CollectionId: collectionId,
@@ -2074,7 +2131,45 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
               "Face search timed out"
             );
           } catch (searchError) {
-            console.error("[Group] face search failed", searchError);
+            const parsed = parseRekognitionError(searchError);
+            if (parsed.isExpected) {
+              console.warn(
+                `[GroupPunch - Face ${faceIndex}] Expected Rekognition error: ` +
+                `type=${parsed.reason} msg=${parsed.message} reqId=${parsed.requestId || "n/a"}`
+              );
+              if (parsed.reason === "no_face") {
+                return {
+                  faceIndex,
+                  status: "unmatched",
+                  similarity: null,
+                  matched: false,
+                  reason: "no_face",
+                  message: "No clear face detected in this crop. Please recapture."
+                };
+              }
+              if (parsed.reason === "rekognition_throttled") {
+                return {
+                  faceIndex,
+                  status: "error",
+                  similarity: null,
+                  matched: false,
+                  reason: "rekognition_throttled",
+                  message: "AWS Rekognition service throttled. Please retry."
+                };
+              }
+              if (parsed.reason === "timeout") {
+                return {
+                  faceIndex,
+                  status: "error",
+                  similarity: null,
+                  matched: false,
+                  reason: "timeout",
+                  message: "Face search timed out. Please retry."
+                };
+              }
+            }
+
+            console.error("[Group] face search failed unexpectedly:", searchError);
             if (searchError?.Code === "InvalidParameterException" || searchError?.name === "InvalidParameterException") {
               return { faceIndex, status: "unmatched", similarity: null, message: "No clear face detected in this crop. Please recapture." };
             }
@@ -2210,7 +2305,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             attendanceId: attendance.attendance_id,
             punchedAt: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
           };
-        })
+        }
       );
 
       // Flatten allSettled → plain results array
@@ -2281,15 +2376,52 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     }
 
     // 2. Search for the face in the collection
-    const searchParams = {
-      CollectionId: collectionId,
-      Image: { Bytes: normalizedCaptureBuffer },
-      MaxFaces: 1,
-      FaceMatchThreshold: matchThreshold,
-    };
+    // Validate image buffer immediately before SearchFacesByImage call
+    const maxImageSizeBytes = 5 * 1024 * 1024;
+    const allowedMimetypes = ["image/jpeg", "image/jpg", "image/png"];
+    const mimeTypeOk = req.file?.mimetype ? allowedMimetypes.includes(req.file.mimetype.toLowerCase()) : true;
+    const isBufferValid = normalizedCaptureBuffer && normalizedCaptureBuffer.length > 0 && normalizedCaptureBuffer.length <= maxImageSizeBytes;
 
-    const searchCommand = new SearchFacesByImageCommand(searchParams);
-    const searchResult = await rekognition.send(searchCommand);
+    if (!isBufferValid || !mimeTypeOk) {
+      return res.status(400).json({
+        success: false,
+        matched: false,
+        reason: "invalid_image",
+        error: "Invalid face image buffer"
+      });
+    }
+
+    let searchResult;
+    try {
+      searchResult = await withTimeout(
+        rekognition.send(new SearchFacesByImageCommand({
+          CollectionId: collectionId,
+          Image: { Bytes: normalizedCaptureBuffer },
+          MaxFaces: 1,
+          FaceMatchThreshold: matchThreshold,
+        })),
+        GROUP_FACE_SEARCH_TIMEOUT_MS,
+        "Face search timed out"
+      );
+    } catch (searchError) {
+      const parsed = parseRekognitionError(searchError);
+      if (parsed.isExpected) {
+        console.warn(
+          `[IndividualPunch] Expected Rekognition error: ` +
+          `type=${parsed.reason} msg=${parsed.message} reqId=${parsed.requestId || "n/a"}`
+        );
+        return res.status(400).json({
+          success: false,
+          matched: false,
+          reason: parsed.reason,
+          error: parsed.reason === "no_face" ? "No faces in the image" : "Face search failed",
+          details: parsed.message
+        });
+      } else {
+        console.error(`[IndividualPunch] Face search failed unexpectedly:`, searchError);
+        throw searchError; // Let it hit the main route catch block
+      }
+    }
 
     const matchedFaceResult = searchResult.FaceMatches?.[0];
     const matchedFace = matchedFaceResult?.Face ?? null;
@@ -2581,14 +2713,55 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
     }
 
     const requestedEmpId = normalizeId(rawEmpId ?? rawEmployeeId);
-    const searchResult = await rekognition.send(
-      new SearchFacesByImageCommand({
-        CollectionId: collectionId,
-        Image: { Bytes: req.file.buffer },
-        MaxFaces: 1,
-        FaceMatchThreshold: matchThreshold,
-      })
-    );
+    
+    // Validate image buffer immediately before SearchFacesByImage call
+    const maxImageSizeBytes = 5 * 1024 * 1024;
+    const allowedMimetypes = ["image/jpeg", "image/jpg", "image/png"];
+    const mimeTypeOk = req.file?.mimetype ? allowedMimetypes.includes(req.file.mimetype.toLowerCase()) : true;
+    const isBufferValid = req.file?.buffer && req.file.buffer.length > 0 && req.file.buffer.length <= maxImageSizeBytes;
+
+    if (!isBufferValid || !mimeTypeOk) {
+      return res.status(400).json({
+        success: false,
+        matched: false,
+        reason: "invalid_image",
+        error: "Invalid face image buffer"
+      });
+    }
+
+    let searchResult;
+    try {
+      searchResult = await withTimeout(
+        rekognition.send(
+          new SearchFacesByImageCommand({
+            CollectionId: collectionId,
+            Image: { Bytes: req.file.buffer },
+            MaxFaces: 1,
+            FaceMatchThreshold: matchThreshold,
+          })
+        ),
+        GROUP_FACE_SEARCH_TIMEOUT_MS,
+        "Face search timed out"
+      );
+    } catch (searchError) {
+      const parsed = parseRekognitionError(searchError);
+      if (parsed.isExpected) {
+        console.warn(
+          `[FaceLiveness] Expected Rekognition error: ` +
+          `type=${parsed.reason} msg=${parsed.message} reqId=${parsed.requestId || "n/a"}`
+        );
+        return res.status(400).json({
+          success: false,
+          matched: false,
+          reason: parsed.reason,
+          error: parsed.reason === "no_face" ? "No faces in the image" : "Face search failed",
+          details: parsed.message
+        });
+      } else {
+        console.error(`[FaceLiveness] Face search failed unexpectedly:`, searchError);
+        throw searchError;
+      }
+    }
 
     if (!searchResult.FaceMatches?.length) {
       return res.status(401).json({
