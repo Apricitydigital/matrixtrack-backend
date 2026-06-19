@@ -18,6 +18,7 @@ const upload = multer({
       cb(null, `faces/${identifier}/${Date.now()}_${file.originalname}`);
     },
   }),
+  limits: { fileSize: 15 * 1024 * 1024 } // 15MB limit
 });
 
 module.exports = upload;

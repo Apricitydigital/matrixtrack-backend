@@ -53,48 +53,75 @@ async function findNewest(empId, empCode) {
 }
 
 (async () => {
-  let offset = 0;
-  let checked = 0,
-    healed = 0,
-    missing = 0;
-
-  while (true) {
-    const baseQuery = `
-      SELECT e.emp_id, e.emp_code, e.face_embedding
-        FROM employee e
-        ${SUPERVISOR ? "JOIN supervisor_ward sw ON sw.ward_id = e.ward_id" : ""}
-       WHERE e.face_embedding IS NOT NULL
-       ${SUPERVISOR ? "AND sw.supervisor_id = $1" : ""}
-       ORDER BY e.emp_id
-       LIMIT $${SUPERVISOR ? 2 : 1} OFFSET $${SUPERVISOR ? 3 : 2}
-    `;
-    const params = SUPERVISOR
-      ? [SUPERVISOR, BATCH_SIZE, offset]
-      : [BATCH_SIZE, offset];
-    const { rows } = await pool.query(baseQuery, params);
-    if (!rows.length) break;
-
-    for (const row of rows) {
-      checked++;
-      const key = parseFaceKey(row.face_embedding);
-      if (key && (await headKey(key))) continue;
-      const rep = await findNewest(row.emp_id, row.emp_code);
-      if (!rep) {
-        missing++;
-        continue;
-      }
-      await pool.query("UPDATE employee SET face_embedding=$1 WHERE emp_id=$2", [
-        rep,
-        row.emp_id,
-      ]);
-      healed++;
+  const AUTO_HEAL_LOCK_ID = 812349;
+  let client;
+  try {
+    client = await pool.connect();
+    const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [AUTO_HEAL_LOCK_ID]);
+    if (!rows[0]?.locked) {
+      console.log("[AutoHeal] Another instance is already running. Exiting.");
+      client.release();
+      process.exit(0);
     }
-
-    offset += BATCH_SIZE;
-    console.log(`Progress: checked ${checked}, healed ${healed}, missing ${missing}`);
+  } catch (err) {
+    console.error("[AutoHeal] Failed to check advisory lock:", err.message);
+    if (client) client.release();
+    process.exit(1);
   }
 
-  console.log({ checked, healed, missing });
-  await pool.end();
-  process.exit(0);
+  try {
+    let offset = 0;
+    let checked = 0,
+      healed = 0,
+      missing = 0;
+
+    while (true) {
+      const baseQuery = `
+        SELECT e.emp_id, e.emp_code, e.face_embedding
+          FROM employee e
+          ${SUPERVISOR ? "JOIN supervisor_ward sw ON sw.ward_id = e.ward_id" : ""}
+         WHERE e.face_embedding IS NOT NULL
+         ${SUPERVISOR ? "AND sw.supervisor_id = $1" : ""}
+         ORDER BY e.emp_id
+         LIMIT $${SUPERVISOR ? 2 : 1} OFFSET $${SUPERVISOR ? 3 : 2}
+      `;
+      const params = SUPERVISOR
+        ? [SUPERVISOR, BATCH_SIZE, offset]
+        : [BATCH_SIZE, offset];
+      const { rows } = await pool.query(baseQuery, params);
+      if (!rows.length) break;
+
+      for (const row of rows) {
+        checked++;
+        const key = parseFaceKey(row.face_embedding);
+        if (key && (await headKey(key))) continue;
+        const rep = await findNewest(row.emp_id, row.emp_code);
+        if (!rep) {
+          missing++;
+          continue;
+        }
+        await pool.query("UPDATE employee SET face_embedding=$1 WHERE emp_id=$2", [
+          rep,
+          row.emp_id,
+        ]);
+        healed++;
+      }
+
+      offset += BATCH_SIZE;
+      console.log(`Progress: checked ${checked}, healed ${healed}, missing ${missing}`);
+    }
+
+    console.log({ checked, healed, missing });
+  } catch (runErr) {
+    console.error("[AutoHeal] Execution error:", runErr.message);
+  } finally {
+    try {
+      await client.query("SELECT pg_advisory_unlock($1)", [AUTO_HEAL_LOCK_ID]);
+    } catch (unlockErr) {
+      console.error("[AutoHeal] Unlock error:", unlockErr.message);
+    }
+    client.release();
+    await pool.end();
+    process.exit(0);
+  }
 })();

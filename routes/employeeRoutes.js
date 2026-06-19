@@ -18,6 +18,7 @@ const uploadAadhar = multer({
       cb(null, `aadhar/${req.params.id}_${Date.now()}${ext}`);
     },
   }),
+  limits: { fileSize: 15 * 1024 * 1024 } // 15MB limit
 });
 const { buildPublicFaceUrl } = require("../utils/faceImage");
 const { isBackblazeUrl } = require("../utils/backblaze");

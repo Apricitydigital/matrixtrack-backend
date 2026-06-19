@@ -102,28 +102,16 @@ const AUTO_HEAL_CRON_ENABLED = process.env.AUTO_HEAL_CRON_ENABLED !== "false";
 if (AUTO_HEAL_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     "10 3 * * *", // 03:10 IST daily
-    async () => {
-      const client = await pool.connect();
-      try {
-        const AUTO_HEAL_LOCK_ID = 812349;
-        const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [AUTO_HEAL_LOCK_ID]);
-        if (!rows[0]?.locked) return;
-
-        console.log("[AutoHealCron] Starting face healing process...");
-        const scriptPath = path.join(__dirname, "auto_heal_faces.js");
-        const child = spawn(process.execPath, [scriptPath], {
-          stdio: "inherit",
-          env: process.env,
-        });
-        child.on("exit", async (code) => {
-          console.log(`[AutoHealCron] auto_heal_faces.js exited with code ${code}`);
-          await client.query("SELECT pg_advisory_unlock($1)", [AUTO_HEAL_LOCK_ID]);
-        });
-      } catch (err) {
-        console.error("[AutoHealCron] Error:", err.message);
-      } finally {
-        client.release();
-      }
+    () => {
+      console.log("[AutoHealCron] Spawning face healing process...");
+      const scriptPath = path.join(__dirname, "auto_heal_faces.js");
+      const child = spawn(process.execPath, [scriptPath], {
+        stdio: "inherit",
+        env: process.env,
+      });
+      child.on("exit", (code) => {
+        console.log(`[AutoHealCron] auto_heal_faces.js exited with code ${code}`);
+      });
     },
     { timezone: "Asia/Kolkata" }
   );
@@ -235,7 +223,11 @@ if (isPrimaryCronInstance) {
         console.error('[WhatsApp Daily Final Cron] Cron error:', err.message);
       } finally {
         if (lockAcquired) {
-          await client.query("SELECT pg_advisory_unlock($1)", [FINAL_DAILY_LOCK_ID]);
+          try {
+            await client.query("SELECT pg_advisory_unlock($1)", [FINAL_DAILY_LOCK_ID]);
+          } catch (unlockErr) {
+            console.error('[WhatsApp Daily Final Cron] Unlock error:', unlockErr.message);
+          }
         }
         client.release();
       }
@@ -297,7 +289,11 @@ if (isPrimaryCronInstance) {
       console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Cron error:`, err.message);
     } finally {
       if (lockAcquired) {
-        await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+        try {
+          await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+        } catch (unlockErr) {
+          console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Unlock error:`, unlockErr.message);
+        }
       }
       client.release();
     }
@@ -359,7 +355,11 @@ if (isPrimaryCronInstance) {
         console.error('[WhatsApp Weekly Cron] Cron error:', err.message);
       } finally {
         if (lockAcquired) {
-          await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+          try {
+            await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+          } catch (unlockErr) {
+            console.error('[WhatsApp Weekly Cron] Unlock error:', unlockErr.message);
+          }
         }
         client.release();
       }
