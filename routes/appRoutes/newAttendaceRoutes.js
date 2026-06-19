@@ -294,7 +294,10 @@ const formatPunchTimeForClient = (value) => {
 
 // Set up Multer for file uploads
 const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 15 * 1024 * 1024 } // 15MB limit to prevent memory exhaustion while allowing high-res photos
+});
 
 // Utility helpers
 const resolveCollectionId = () => {
