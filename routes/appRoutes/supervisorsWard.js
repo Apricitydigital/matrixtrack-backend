@@ -250,6 +250,8 @@ const mapRowsToWards = (rows) => {
       department: row.department_name,
       supervisor_name: row.supervisor_name,
       attendance_status: row.attendance_status,
+      leave_type: row.leave_type,
+      leaveType: row.leave_type,
       days_present: Number(row.days_present ?? 0),
       days_marked: Number(row.days_marked ?? 0),
       face_embedding: row.face_embedding,
@@ -499,6 +501,7 @@ const fetchSupervisorEmployees = async (
         MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_start,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+        STRING_AGG(DISTINCT a.leave_type, ', ') AS leave_type,
         COUNT(DISTINCT a.date::date) FILTER (WHERE (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)) AS days_present,
         COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
@@ -531,6 +534,7 @@ const fetchSupervisorEmployees = async (
         WHEN COALESCE(summary.has_punch_out, 0) = 1 THEN 'Marked'
         ELSE 'In Progress'
       END AS attendance_status,
+      summary.leave_type AS leave_type,
       COALESCE(summary.days_present, 0) AS days_present,
       COALESCE(summary.days_marked, 0) AS days_marked,
       summary.has_punch_in,
