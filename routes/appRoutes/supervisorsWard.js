@@ -309,6 +309,16 @@ const EMPTY_SUMMARY = {
   attendanceRate: 0,
 };
 
+const calculatePercentageChange = (today, yesterday) => {
+  if (yesterday === 0) {
+    if (today === 0) return 0;
+    return 100;
+  }
+
+  return Number(
+    ((((today - yesterday) / yesterday) * 100)).toFixed(1)
+  );
+};
 const fetchSupervisorSummary = async (
   userId,
   cityId,
@@ -352,7 +362,10 @@ const fetchSupervisorSummary = async (
 
   const startParam = params.length + 1;
   const endParam = params.length + 2;
+  const yesterday = new Date(startDate);
+  yesterday.setDate(yesterday.getDate() - 1);
 
+  const yesterdayDate = yesterday.toISOString().split("T")[0];
   const whereClause =
     baseFilters.length > 0 ? `WHERE ${baseFilters.join(" AND ")}` : "";
 
@@ -396,9 +409,30 @@ const fetchSupervisorSummary = async (
     FROM attendance_status;
   `;
 
-  params.push(startDate, endDate);
-  const result = await pool.query(summaryQuery, params);
+  // paramsYesterday.push(yesterdayDate, yesterdayDate);
+
+  // Today's parameters
+  const todayParams = [...params, startDate, endDate];
+
+  // Yesterday's parameters
+  const yesterdayParams = [...params, yesterdayDate, yesterdayDate];
+
+  // Run both queries together
+  const [result, yesterdayResult] = await Promise.all([
+    pool.query(summaryQuery, todayParams),
+    pool.query(summaryQuery, yesterdayParams),
+  ]);
   const row = result.rows[0] || {};
+  const y = yesterdayResult.rows[0] || {};
+
+  const yesterdaySummary = {
+    totalEmployees: Number(y.total_employees) || 0,
+    present: Number(y.present) || 0,
+    onLeave: Number(y.on_leave) || 0,
+    fullyMarked: Number(y.fully_marked) || 0,
+    midShiftPunchIn: Number(y.mid_shift_punch_in) || 0,
+    notMarked: Number(y.not_marked) || 0,
+  };
   const totalEmployees = Number(row.total_employees) || 0;
   const present = Number(row.present) || 0;
   const onLeave = Number(row.on_leave) || 0;
@@ -410,7 +444,43 @@ const fetchSupervisorSummary = async (
     totalEmployees > 0
       ? Number((((present + onLeave) / totalEmployees) * 100).toFixed(1))
       : 0;
+  console.log("TODAY SUMMARY =", {
+    totalEmployees,
+    present,
+    onLeave,
+    fullyMarked,
+    midShiftPunchIn,
+    notMarked,
+  });
 
+  console.log("YESTERDAY SUMMARY =", yesterdaySummary);
+
+  console.log("CHANGE =", {
+    totalEmployees: calculatePercentageChange(
+      totalEmployees,
+      yesterdaySummary.totalEmployees
+    ),
+    present: calculatePercentageChange(
+      present,
+      yesterdaySummary.present
+    ),
+    onLeave: calculatePercentageChange(
+      onLeave,
+      yesterdaySummary.onLeave
+    ),
+    absent: calculatePercentageChange(
+      notMarked,
+      yesterdaySummary.notMarked
+    ),
+    fullyMarked: calculatePercentageChange(
+      fullyMarked,
+      yesterdaySummary.fullyMarked
+    ),
+    midShiftPunchIn: calculatePercentageChange(
+      midShiftPunchIn,
+      yesterdaySummary.midShiftPunchIn
+    ),
+  });
   return {
     totalEmployees,
     present,
@@ -421,6 +491,38 @@ const fetchSupervisorSummary = async (
     onLeave,
     notMarked,
     attendanceRate,
+
+    change: {
+      totalEmployees: calculatePercentageChange(
+        totalEmployees,
+        yesterdaySummary.totalEmployees
+      ),
+
+      present: calculatePercentageChange(
+        present,
+        yesterdaySummary.present
+      ),
+
+      onLeave: calculatePercentageChange(
+        onLeave,
+        yesterdaySummary.onLeave
+      ),
+
+      absent: calculatePercentageChange(
+        notMarked,
+        yesterdaySummary.notMarked
+      ),
+
+      fullyMarked: calculatePercentageChange(
+        fullyMarked,
+        yesterdaySummary.fullyMarked
+      ),
+
+      midShiftPunchIn: calculatePercentageChange(
+        midShiftPunchIn,
+        yesterdaySummary.midShiftPunchIn
+      ),
+    },
   };
 };
 
@@ -849,25 +951,25 @@ SELECT
     GROUP BY a.date::date
     ORDER BY a.date::date;
   `;
-const params = [
-  userId,
-  startDate,
-  endDate,
-  cityId,
-];
+  const params = [
+    userId,
+    startDate,
+    endDate,
+    cityId,
+  ];
 
-if (hasZoneFilter) {
-  params.push(zoneIds);
-}
+  if (hasZoneFilter) {
+    params.push(zoneIds);
+  }
 
-if (hasKothiFilter) {
-  params.push(kothiIds);
-}
+  if (hasKothiFilter) {
+    params.push(kothiIds);
+  }
 
-const result = await pool.query(
-  query,
-  params
-);
+  const result = await pool.query(
+    query,
+    params
+  );
   console.log("RAW TREND ROWS =", result.rows);
   const empCheck = await pool.query(`
   WITH employee_city AS (
@@ -1297,23 +1399,23 @@ router.post("/attendance-trend", async (req, res) => {
       endDate,
     } = req.body;
 
- const allowedZoneIds =
-  resolveZoneScope(req);
+    const allowedZoneIds =
+      resolveZoneScope(req);
 
-const allowedKothiIds =
-  resolveKothiScope(req);
+    const allowedKothiIds =
+      resolveKothiScope(req);
 
-const trend =
-  await fetchAttendanceTrend(
-    user_id,
-    city_id,
-    startDate,
-    endDate,
-    {
-      zoneIds: allowedZoneIds,
-      kothiIds: allowedKothiIds,
-    }
-  );
+    const trend =
+      await fetchAttendanceTrend(
+        user_id,
+        city_id,
+        startDate,
+        endDate,
+        {
+          zoneIds: allowedZoneIds,
+          kothiIds: allowedKothiIds,
+        }
+      );
 
     console.log("TREND RESULT =", trend);
     res.json({
