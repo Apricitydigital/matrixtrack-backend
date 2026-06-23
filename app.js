@@ -23,9 +23,34 @@ process.on("uncaughtException", (error) => {
 
 // const DEFAULT_TEST_NUMBERS = ["918827232995", "919131042937", "918982622996", "919111899909"];
 const NEW_REPORT_WEEKLY_RECIPIENTS = ["918827232995"];
+const CRON_RUNS_TABLE = "whatsapp_cron_runs";
 
 const todayKey = () =>
   new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+const ensureCronRunsTable = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${CRON_RUNS_TABLE} (
+      job_name TEXT NOT NULL,
+      run_key TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (job_name, run_key)
+    )
+  `);
+};
+
+const markCronRunStarted = async (client, jobName, runKey) => {
+  const { rowCount } = await client.query(
+    `
+      INSERT INTO ${CRON_RUNS_TABLE} (job_name, run_key)
+      VALUES ($1, $2)
+      ON CONFLICT (job_name, run_key) DO NOTHING
+    `,
+    [jobName, runKey]
+  );
+
+  return rowCount === 1;
+};
 
 
 // Import Routes
@@ -80,28 +105,16 @@ const AUTO_HEAL_CRON_ENABLED = process.env.AUTO_HEAL_CRON_ENABLED !== "false";
 if (AUTO_HEAL_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     "10 3 * * *", // 03:10 IST daily
-    async () => {
-      const client = await pool.connect();
-      try {
-        const AUTO_HEAL_LOCK_ID = 812349;
-        const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [AUTO_HEAL_LOCK_ID]);
-        if (!rows[0]?.locked) return;
-
-        console.log("[AutoHealCron] Starting face healing process...");
-        const scriptPath = path.join(__dirname, "auto_heal_faces.js");
-        const child = spawn(process.execPath, [scriptPath], {
-          stdio: "inherit",
-          env: process.env,
-        });
-        child.on("exit", async (code) => {
-          console.log(`[AutoHealCron] auto_heal_faces.js exited with code ${code}`);
-          await client.query("SELECT pg_advisory_unlock($1)", [AUTO_HEAL_LOCK_ID]);
-        });
-      } catch (err) {
-        console.error("[AutoHealCron] Error:", err.message);
-      } finally {
-        client.release();
-      }
+    () => {
+      console.log("[AutoHealCron] Spawning face healing process...");
+      const scriptPath = path.join(__dirname, "auto_heal_faces.js");
+      const child = spawn(process.execPath, [scriptPath], {
+        stdio: "inherit",
+        env: process.env,
+      });
+      child.on("exit", (code) => {
+        console.log(`[AutoHealCron] auto_heal_faces.js exited with code ${code}`);
+      });
     },
     { timezone: "Asia/Kolkata" }
   );
@@ -169,8 +182,6 @@ const markSentTodayDailyFinal = (key) => {
 };
 
 if (isPrimaryCronInstance) {
-
-  // Daily Final Report Cron (9:30 AM IST) - ISOLATED
   cron.schedule(
     "30 09 * * *",
     async () => {
@@ -188,8 +199,9 @@ if (isPrimaryCronInstance) {
         }
 
         const runKey = todayKey();
-        if (hasSentTodayDailyFinal(runKey)) {
-          console.log("[WhatsApp Daily Final Cron] Already sent today, skipping.");
+        const runClaimed = await markCronRunStarted(client, "daily_final_report", runKey);
+        if (!runClaimed) {
+          console.log("[WhatsApp Daily Final Cron] Already claimed today, skipping.");
           return;
         }
 
@@ -214,7 +226,11 @@ if (isPrimaryCronInstance) {
         console.error('[WhatsApp Daily Final Cron] Cron error:', err.message);
       } finally {
         if (lockAcquired) {
-          await client.query("SELECT pg_advisory_unlock($1)", [FINAL_DAILY_LOCK_ID]);
+          try {
+            await client.query("SELECT pg_advisory_unlock($1)", [FINAL_DAILY_LOCK_ID]);
+          } catch (unlockErr) {
+            console.error('[WhatsApp Daily Final Cron] Unlock error:', unlockErr.message);
+          }
         }
         client.release();
       }
@@ -227,23 +243,6 @@ if (isPrimaryCronInstance) {
   // =============================================
   // NEW DAILY BULLETIN REPORT (V2) - ISOLATED
   // =============================================
-  const LAST_RUN_FILE_DAILY_V2 = path.join(__dirname, "whatsapp_report_daily_v2_last_run.txt");
-  const hasSentTodayDailyV2 = (key) => {
-    try {
-      const stored = fs.readFileSync(LAST_RUN_FILE_DAILY_V2, "utf8").trim();
-      return stored === key;
-    } catch (err) {
-      return false;
-    }
-  };
-  const markSentTodayDailyV2 = (key) => {
-    try {
-      fs.writeFileSync(LAST_RUN_FILE_DAILY_V2, key, "utf8");
-    } catch (err) {
-      console.error("Unable to record Daily V2 WhatsApp send date:", err.message);
-    }
-  };
-
   // Helper to trigger SWM daily bulletin report
   const triggerDailyBulletinNew = async (triggerName, lockId, targetDate) => {
     console.log(`[WhatsApp Daily V2 Cron] Daily V2 bulletin report triggered for ${triggerName}`);
@@ -259,8 +258,9 @@ if (isPrimaryCronInstance) {
       }
 
       const runKey = `${todayKey()}-${triggerName}`;
-      if (hasSentTodayDailyV2(runKey)) {
-        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Already sent today for ${triggerName}, skipping.`);
+      const runClaimed = await markCronRunStarted(client, "daily_v2_bulletin", runKey);
+      if (!runClaimed) {
+        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Already claimed today for ${triggerName}, skipping.`);
         return;
       }
 
@@ -286,15 +286,17 @@ if (isPrimaryCronInstance) {
         console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Failed bulk send V2:`, error.message);
       }
 
-      markSentTodayDailyV2(runKey);
-
       await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
       lockAcquired = false;
     } catch (err) {
       console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Cron error:`, err.message);
     } finally {
       if (lockAcquired) {
-        await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+        try {
+          await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+        } catch (unlockErr) {
+          console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Unlock error:`, unlockErr.message);
+        }
       }
       client.release();
     }
@@ -356,7 +358,11 @@ if (isPrimaryCronInstance) {
         console.error('[WhatsApp Weekly Cron] Cron error:', err.message);
       } finally {
         if (lockAcquired) {
-          await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+          try {
+            await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+          } catch (unlockErr) {
+            console.error('[WhatsApp Weekly Cron] Unlock error:', unlockErr.message);
+          }
         }
         client.release();
       }
@@ -486,6 +492,8 @@ socketio.init(server);
 
 // Run migrations before starting the server
 runMigrations().then(() => {
+  return ensureCronRunsTable();
+}).then(() => {
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
