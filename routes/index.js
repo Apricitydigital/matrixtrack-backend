@@ -43,6 +43,7 @@ router.use("/supervisor", supervisorRoutes);
 router.use("/assignedWardRoutes", assignedWardRoutes);
 router.use("/assignedKothiRoutes", assignedKothiRoutes);
 router.use("/admin", adminRoutes);
+router.use("/admin-management", require("./adminManagementRoutes"));
 router.use("/rbac", rbacRoutes);
 router.use("/whatsapp", whatsappRoutes);
 router.use("/user", userRoutes);

@@ -111,6 +111,26 @@ const fetchUserCityAccess = async (user, options = {}) => {
   }
 
   if (role && typeof role === "string" && role.toLowerCase() === "admin") {
+    const { rows: userRows } = await pool.query(
+      "SELECT permissions FROM users WHERE user_id = $1",
+      [userId]
+    );
+    const dbPermissions = userRows[0]?.permissions;
+    if (dbPermissions && Array.isArray(dbPermissions.assigned_cities)) {
+      const assignedIds = normalizeCityIds(dbPermissions.assigned_cities);
+      if (includeCityMetadata) {
+        if (assignedIds.length === 0) {
+          return { all: false, ids: [], cities: [] };
+        }
+        const { rows } = await pool.query(
+          "SELECT city_id, city_name FROM cities WHERE city_id = ANY($1::int[]) ORDER BY city_name ASC",
+          [assignedIds]
+        );
+        return { all: false, ids: assignedIds, cities: rows };
+      }
+      return { all: false, ids: assignedIds };
+    }
+
     if (includeCityMetadata) {
       const { rows } = await pool.query(
         "SELECT city_id, city_name FROM cities ORDER BY city_name ASC"

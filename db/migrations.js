@@ -25,6 +25,13 @@ async function runMigrations() {
     `);
     console.log("[Migration] ✅ updated_at column ready.");
 
+    // Add permissions column to users table for granular admin control
+    await client.query(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT NULL
+    `);
+    console.log("[Migration] ✅ users permissions column ready.");
+
     await client.query(`
       ALTER TABLE attendance
       ADD COLUMN IF NOT EXISTS mid_shift_punch_in_time TIMESTAMPTZ DEFAULT NULL,
