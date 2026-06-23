@@ -146,10 +146,13 @@ router.get("/daily", async (req, res) => {
         a.attendance_id,
         a.punch_in_time,
         a.punch_out_time,
+        a.mid_shift_punch_in_time,
         a.in_address,
         a.out_address,
-        TO_CHAR((a.punch_in_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_in_display,
-        TO_CHAR((a.punch_out_time AT TIME ZONE 'Asia/Kolkata'), 'HH12:MI AM') AS punch_out_display,
+        a.mid_in_address,
+        TO_CHAR(a.punch_in_time, 'HH12:MI AM') AS punch_in_display,
+        TO_CHAR(a.mid_shift_punch_in_time, 'HH12:MI AM') AS mid_shift_punch_in_display,
+        TO_CHAR(a.punch_out_time, 'HH12:MI AM') AS punch_out_display,
         CASE
           WHEN a.punch_in_time IS NOT NULL AND a.punch_out_time IS NOT NULL THEN 'Marked'
           WHEN a.punch_in_time IS NOT NULL THEN 'In Progress'
@@ -173,9 +176,13 @@ router.get("/daily", async (req, res) => {
       const punchOutRaw = row.punch_out_time
         ? new Date(row.punch_out_time)
         : null;
+      const midShiftPunchInRaw = row.mid_shift_punch_in_time
+        ? new Date(row.mid_shift_punch_in_time)
+        : null;
 
       const hasPunchIn = Boolean(punchInRaw);
       const hasPunchOut = Boolean(punchOutRaw);
+      const hasMidShiftPunchIn = Boolean(midShiftPunchInRaw);
 
       let durationMinutes = null;
       if (hasPunchIn && hasPunchOut) {
@@ -195,14 +202,18 @@ router.get("/daily", async (req, res) => {
         attendanceId: row.attendance_id ?? null,
         punchInIso: punchInRaw ? punchInRaw.toISOString() : null,
         punchOutIso: punchOutRaw ? punchOutRaw.toISOString() : null,
+        midShiftPunchInIso: midShiftPunchInRaw ? midShiftPunchInRaw.toISOString() : null,
         punchInDisplay: row.punch_in_display || formatDisplayTime(punchInRaw),
+        midShiftPunchInDisplay: row.mid_shift_punch_in_display || formatDisplayTime(midShiftPunchInRaw),
         punchOutDisplay:
           row.punch_out_display || formatDisplayTime(punchOutRaw),
         hasPunchIn,
         hasPunchOut,
+        hasMidShiftPunchIn,
         status,
         inAddress: row.in_address || null,
         outAddress: row.out_address || null,
+        midInAddress: row.mid_in_address || null,
         durationMinutes,
         durationDisplay: formatDuration(durationMinutes),
       };
