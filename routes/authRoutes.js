@@ -146,6 +146,39 @@ router.get("/me", authenticateToken, async (req, res) => {
   }
 });
 
+// ✅ Check duplicate fields
+router.post("/check-duplicate", async (req, res) => {
+  const { email, emp_code, phone, aadhar_number } = req.body;
+  try {
+    let emailExists = false;
+    let empCodeExists = false;
+    let phoneExists = false;
+    let aadharExists = false;
+
+    if (email) {
+      const emailCheck = await pool.query("SELECT user_id FROM users WHERE email = $1 LIMIT 1", [email.trim().toLowerCase()]);
+      emailExists = emailCheck.rowCount > 0;
+    }
+    if (emp_code) {
+      const empCodeCheck = await pool.query("SELECT user_id FROM users WHERE emp_code = $1 LIMIT 1", [emp_code.trim()]);
+      empCodeExists = empCodeCheck.rowCount > 0;
+    }
+    if (phone) {
+      const phoneCheck = await pool.query("SELECT user_id FROM users WHERE phone = $1 LIMIT 1", [phone.trim()]);
+      phoneExists = phoneCheck.rowCount > 0;
+    }
+    if (aadhar_number) {
+      const aadharCheck = await pool.query("SELECT user_id FROM users WHERE aadhar_number = $1 LIMIT 1", [aadhar_number.trim()]);
+      aadharExists = aadharCheck.rowCount > 0;
+    }
+
+    res.json({ emailExists, empCodeExists, phoneExists, aadharExists });
+  } catch (error) {
+    console.error("Duplicate check error:", error);
+    res.status(500).json({ error: "Check failed" });
+  }
+});
+
 // ✅ Create new User
 router.post("/register", async (req, res) => {
   const { name, emp_code, email, phone, role, password } = req.body;
@@ -265,6 +298,18 @@ router.put("/update", async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating user:", error);
+    if (error.code === "23505") {
+      if (error.constraint === "users_email_key") {
+        return res.status(400).json({ error: "Email address already exists." });
+      }
+      if (error.constraint === "users_emp_code_key") {
+        return res.status(400).json({ error: "Employee code already exists." });
+      }
+      if (error.constraint === "users_phone_key") {
+        return res.status(400).json({ error: "Phone number already exists." });
+      }
+      return res.status(400).json({ error: "Duplicate value violates unique credentials check." });
+    }
     res.status(500).json({ error: "Updation failed" });
   }
 });

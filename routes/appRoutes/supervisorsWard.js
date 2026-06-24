@@ -370,6 +370,7 @@ const fetchSupervisorSummary = async (
       SELECT
         se.emp_id,
         MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
       FROM scoped_employees se
@@ -384,6 +385,7 @@ const fetchSupervisorSummary = async (
       COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
+      COALESCE(SUM(CASE WHEN has_mid_shift_punch_in = 1 THEN 1 ELSE 0 END), 0) AS mid_shift_punch_in,
       GREATEST(
         (SELECT COUNT(*) FROM scoped_employees) -
         COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) -
@@ -402,10 +404,50 @@ const fetchSupervisorSummary = async (
   const fullyMarked = Number(row.fully_marked) || 0;
   const inProgress = Number(row.in_progress) || 0;
   const notMarked = Number(row.not_marked) || 0;
+  const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
   const attendanceRate =
     totalEmployees > 0
       ? Number((((present + onLeave) / totalEmployees) * 100).toFixed(1))
       : 0;
+
+  let change = {};
+  if (!options.skipYesterday) {
+    try {
+      const startMs = new Date(startDate).getTime();
+      const endMs = new Date(endDate).getTime();
+      const diffMs = endMs - startMs;
+      const oneDay = 24 * 60 * 60 * 1000;
+      const yesterdayStart = new Date(startMs - diffMs - oneDay).toISOString().slice(0, 10);
+      const yesterdayEnd = new Date(endMs - diffMs - oneDay).toISOString().slice(0, 10);
+
+      const yesterdayData = await fetchSupervisorSummary(
+        userId,
+        cityId,
+        yesterdayStart,
+        yesterdayEnd,
+        { ...options, skipYesterday: true }
+      );
+
+      const calcPercentChange = (todayVal, yesterdayVal) => {
+        if (!yesterdayVal || yesterdayVal === 0) {
+          return todayVal > 0 ? 100.0 : 0.0;
+        }
+        return Number((((todayVal - yesterdayVal) / yesterdayVal) * 100).toFixed(1));
+      };
+
+      change = {
+        totalEmployees: calcPercentChange(totalEmployees, yesterdayData.totalEmployees),
+        present: calcPercentChange(present, yesterdayData.present),
+        onLeave: calcPercentChange(onLeave, yesterdayData.onLeave),
+        absent: calcPercentChange(notMarked, yesterdayData.notMarked),
+        fullyMarked: calcPercentChange(fullyMarked, yesterdayData.fullyMarked),
+        midShiftPunchIn: calcPercentChange(midShiftPunchIn, yesterdayData.midShiftPunchIn),
+        supervisors: 0.0,
+      };
+    } catch (e) {
+      console.error("Error calculating yesterday change:", e);
+    }
+  }
 
   return {
     totalEmployees,
@@ -416,6 +458,8 @@ const fetchSupervisorSummary = async (
     onLeave,
     notMarked,
     attendanceRate,
+    midShiftPunchIn,
+    change,
   };
 };
 
@@ -1271,8 +1315,6 @@ router.post("/", async (req, res) => {
   }
 });
 
-module.exports = router;
-
 // ── Top Performing Supervisors ─────────────────────────────────────────────
 router.post("/top-supervisors", async (req, res) => {
   const requestingUser = req.user;
@@ -1345,3 +1387,81 @@ router.post("/top-supervisors", async (req, res) => {
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
+
+// ── Attendance Trend ─────────────────────────────────────────────
+router.post("/attendance-trend", async (req, res) => {
+  const requestingUser = req.user;
+  const isAdmin = requestingUser?.role === "admin";
+  const { user_id, city_id, startDate: startDateRaw, endDate: endDateRaw } = req.body;
+  const { cityId, valid: cityValid } = normalizeCityIdInput(city_id);
+
+  if (!cityValid) return res.status(400).json({ error: "Invalid city ID" });
+
+  const { cityId: scopedCityId } = enforceCityScope(req, cityId ?? null);
+  const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
+  
+  const effectiveUserId = isAdmin ? user_id : requestingUser?.user_id;
+
+  const params = [startDate, endDate];
+  let filterClause = "";
+  if (scopedCityId) {
+    params.push(scopedCityId);
+    filterClause += ` AND c.city_id = $${params.length}`;
+  }
+  
+  if (effectiveUserId) {
+    params.push(effectiveUserId);
+    filterClause += ` AND (
+      sw.supervisor_id = $${params.length} OR
+      w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $${params.length}) OR
+      w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $${params.length}) OR
+      w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $${params.length})
+    )`;
+  }
+
+  const query = `
+    WITH date_series AS (
+      SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS date
+    ),
+    scoped_employees AS (
+      SELECT DISTINCT e.emp_id
+      FROM employee e
+      JOIN wards w ON e.ward_id = w.ward_id
+      JOIN zones z ON w.zone_id = z.zone_id
+      JOIN cities c ON z.city_id = c.city_id
+      LEFT JOIN supervisor_ward sw ON sw.ward_id = w.ward_id
+      WHERE 1=1 ${filterClause}
+    )
+    SELECT
+      ds.date,
+      COUNT(DISTINCT CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN e.emp_id END) AS present,
+      COUNT(DISTINCT CASE WHEN a.leave_type IS NOT NULL THEN e.emp_id END) AS leave,
+      GREATEST(
+        (SELECT COUNT(*) FROM scoped_employees) - 
+        COUNT(DISTINCT CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN e.emp_id END) -
+        COUNT(DISTINCT CASE WHEN a.leave_type IS NOT NULL THEN e.emp_id END),
+        0
+      ) AS absent
+    FROM date_series ds
+    LEFT JOIN attendance a ON a.date::date = ds.date AND a.emp_id IN (SELECT emp_id FROM scoped_employees)
+    LEFT JOIN scoped_employees e ON e.emp_id = a.emp_id
+    GROUP BY ds.date
+    ORDER BY ds.date ASC;
+  `;
+
+  try {
+    const result = await pool.query(query, params);
+    const data = result.rows.map(r => ({
+      date: r.date,
+      present: Number(r.present) || 0,
+      leave: Number(r.leave) || 0,
+      absent: Number(r.absent) || 0
+    }));
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error("Error fetching attendance trend:", error);
+    res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
+module.exports = router;
