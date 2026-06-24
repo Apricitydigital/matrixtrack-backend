@@ -205,7 +205,8 @@ const markSentTodayDailyFinal = (key) => {
   }
 };
 
-if (isPrimaryCronInstance) {
+const WHATSAPP_CRON_ENABLED = process.env.WHATSAPP_CRON_ENABLED === "true";
+if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     "30 09 * * *",
     async () => {
@@ -560,7 +561,7 @@ if (isPrimaryCronInstance) {
 
 } else {
   console.log(
-    `[WhatsApp Cron] Skipping cron registration on cluster instance ${process.env.NODE_APP_INSTANCE}`
+    `[WhatsApp Cron] Skipping cron registration (WHATSAPP_CRON_ENABLED: ${process.env.WHATSAPP_CRON_ENABLED}, instance: ${process.env.NODE_APP_INSTANCE})`
   );
 }
 
