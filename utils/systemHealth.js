@@ -1,4 +1,4 @@
-﻿const os = require("os");
+const os = require("os");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const axios = require("axios");
@@ -598,11 +598,12 @@ const buildDatabaseSnapshot = async (client) => {
     safeQuery(
       client,
       `SELECT
-         EXTRACT(YEAR FROM date)::int AS year,
+         TO_CHAR(date, 'YYYY-MM') AS month,
          COUNT(*)::bigint AS records
        FROM attendance
        GROUP BY 1
-       ORDER BY 1 DESC`
+       ORDER BY 1 DESC
+       LIMIT 12`
     ),
     safeQuery(
       client,
@@ -742,8 +743,8 @@ const buildDatabaseSnapshot = async (client) => {
       indexBytes: toNumber(row.index_bytes),
       indexSizeLabel: formatBytes(row.index_bytes),
     })),
-    attendanceByYear: attendanceGrowthResult.rows.map((row) => ({
-      year: row.year,
+    attendanceByMonth: attendanceGrowthResult.rows.map((row) => ({
+      month: row.month,
       records: toNumber(row.records) || 0,
     })),
     wal: {
