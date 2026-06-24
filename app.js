@@ -56,6 +56,9 @@ const authRoutes = require("./routes/authRoutes");
 const allRoutes = require("./routes/index");
 const appRoutes = require("./routes/appRoutes/index");
 const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
+const supervisorAadharRoutes = require("./routes/supervisorAadharRoutes");
+const supervisorPhotoRoutes = require("./routes/supervisorPhotoRoutes");
+const otpRoutes = require("./routes/otpRoutes");
 
 const app = express();
 
@@ -484,6 +487,7 @@ app.get("/", (req, res) => {
 
 // Auth Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/otp", otpRoutes);
 
 // Other Routes
 app.use("/api", allRoutes);
@@ -491,6 +495,8 @@ app.use("/api", allRoutes);
 // App Routes
 app.use("/api/app", appRoutes);
 app.use("/api/app/attendance/employee", selfAttendanceRoutes);
+app.use("/api/supervisor-aadhar", supervisorAadharRoutes);
+app.use("/api/supervisor-photo", supervisorPhotoRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 5000;
