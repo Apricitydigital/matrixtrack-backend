@@ -2512,24 +2512,49 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           error: "Identity Mismatch",
           details: `Face does not match ${employeeRecord.name}.`,
         });
+      } else if (!fallback?.employee) {
+        return res.status(403).json({
+          error: "Face not recognized",
+          details: "The captured face does not match the enrolled face.",
+          suggestion: "Ensure good lighting and try again, or re-enroll face."
+        });
       }
     } else if (!matchedFace) {
       // Face not found in collection — instruct supervisor to re-enroll
       console.log(`[face-attendance] Individual: no collection match for emp_id=${requestedEmpId}. Fallback disabled.`);
-    }
+      
+      // Attempt a cheap direct 1:1 comparison with the selected employee
+      let directMatchPassed = false;
+      try {
+        const selectedFaceBuffer = await loadFaceBuffer(
+          employeeRecord.face_embedding,
+          employeeRecord.emp_id,
+          employeeRecord.emp_code
+        );
+        if (selectedFaceBuffer) {
+          const directMatch = await rekognition.send(
+            new CompareFacesCommand({
+              SourceImage: { Bytes: selectedFaceBuffer },
+              TargetImage: { Bytes: normalizedCaptureBuffer },
+              SimilarityThreshold: Math.max(88, Math.min(matchThreshold, 95)),
+            })
+          );
+          const directSimilarity = directMatch?.FaceMatches?.[0]?.Similarity ?? 0;
+          if (directSimilarity >= Math.max(88, Math.min(matchThreshold, 95))) {
+            directMatchPassed = true;
+          }
+        }
+      } catch (err) {
+        console.warn("Direct match fallback error:", err.message);
+      }
 
-    if (!employeeRecord) {
-      return res.status(403).json({
-        error: "No matching employee found",
-        suggestion: "Use manual attendance if face recognition fails",
-      });
-    }
-
-    if (!employeeRecord) {
-      return res.status(404).json({
-        error: "Employee not registered in system",
-        solution: "Register face first via /store-face",
-      });
+      if (!directMatchPassed) {
+        return res.status(403).json({
+          error: "Face not recognized",
+          details: "The captured face does not match the enrolled face.",
+          suggestion: "Ensure good lighting and try again, or re-enroll face."
+        });
+      }
     }
 
     const empId = employeeRecord.emp_id;
