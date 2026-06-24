@@ -41,7 +41,7 @@ router.get("/", async (req, res) => {
 router.post("/", async (req, res) => {
   try {
     const { name, email, password, phone, permissions, emp_code } = req.body;
-    
+
     // Simple validation
     if (!name || !email || !password) {
       return res.status(400).json({ error: "Name, email, and password are required" });
@@ -50,10 +50,10 @@ router.post("/", async (req, res) => {
     // Hash password
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
-    
+
     // emp_code generator logic or use provided code
-    const empCode = emp_code && emp_code.trim() !== "" 
-      ? emp_code.trim() 
+    const empCode = emp_code && emp_code.trim() !== ""
+      ? emp_code.trim()
       : ("ADM-" + Date.now().toString().slice(-6));
 
     const { rows } = await pool.query(
@@ -161,6 +161,185 @@ router.delete("/:id", async (req, res) => {
     console.error("Error deleting admin:", error);
     res.status(500).json({ error: "Failed to delete admin" });
   }
+});
+
+// Dynamic log enrichment function for fetch endpoint
+const enrichLogs = async (logs) => {
+  if (!Array.isArray(logs) || logs.length === 0) return logs;
+
+  const userIds = new Set();
+  const wardIds = new Set();
+  const sectorIds = new Set();
+  const cityIds = new Set();
+  const zoneIds = new Set();
+  const deptIds = new Set();
+  const desigIds = new Set();
+
+  const addId = (set, val) => {
+    if (val !== undefined && val !== null && !isNaN(val)) {
+      set.add(parseInt(val, 10));
+    }
+  };
+
+  logs.forEach(log => {
+    const payload = log.action?.payload;
+    if (payload && typeof payload === 'object') {
+      addId(userIds, payload.user_id || payload.supervisor_id || payload.userId || payload.supervisorId);
+      addId(wardIds, payload.ward_id || payload.wardId);
+      addId(sectorIds, payload.sector_id || payload.sectorId);
+      addId(cityIds, payload.city_id || payload.cityId);
+      addId(zoneIds, payload.zone_id || payload.zoneId);
+      addId(deptIds, payload.department_id || payload.departmentId);
+      addId(desigIds, payload.designation_id || payload.designationId);
+    }
+  });
+
+  const maps = {
+    users: {},
+    wards: {},
+    sectors: {},
+    cities: {},
+    zones: {},
+    departments: {},
+    designations: {}
+  };
+
+  try {
+    await Promise.all([
+      userIds.size > 0 ? (async () => {
+        const res = await pool.query(
+          "SELECT user_id, name FROM users WHERE user_id = ANY($1::int[])",
+          [[...userIds]]
+        );
+        res.rows.forEach(r => { maps.users[r.user_id] = r.name; });
+      })() : Promise.resolve(),
+
+      wardIds.size > 0 ? (async () => {
+        const res = await pool.query(
+          "SELECT ward_id, ward_name FROM wards WHERE ward_id = ANY($1::int[])",
+          [[...wardIds]]
+        );
+        res.rows.forEach(r => { maps.wards[r.ward_id] = r.ward_name; });
+      })() : Promise.resolve(),
+
+      sectorIds.size > 0 ? (async () => {
+        const res = await pool.query(
+          "SELECT sector_id, sector_name FROM sectors WHERE sector_id = ANY($1::int[])",
+          [[...sectorIds]]
+        );
+        res.rows.forEach(r => { maps.sectors[r.sector_id] = r.sector_name; });
+      })() : Promise.resolve(),
+
+      cityIds.size > 0 ? (async () => {
+        const res = await pool.query(
+          "SELECT city_id, city_name FROM cities WHERE city_id = ANY($1::int[])",
+          [[...cityIds]]
+        );
+        res.rows.forEach(r => { maps.cities[r.city_id] = r.city_name; });
+      })() : Promise.resolve(),
+
+      zoneIds.size > 0 ? (async () => {
+        const res = await pool.query(
+          "SELECT zone_id, zone_name FROM zones WHERE zone_id = ANY($1::int[])",
+          [[...zoneIds]]
+        );
+        res.rows.forEach(r => { maps.zones[r.zone_id] = r.zone_name; });
+      })() : Promise.resolve(),
+
+      deptIds.size > 0 ? (async () => {
+        const res = await pool.query(
+          "SELECT department_id, department_name FROM departments WHERE department_id = ANY($1::int[])",
+          [[...deptIds]]
+        );
+        res.rows.forEach(r => { maps.departments[r.department_id] = r.department_name; });
+      })() : Promise.resolve(),
+
+      desigIds.size > 0 ? (async () => {
+        const res = await pool.query(
+          "SELECT designation_id, designation_name FROM designations WHERE designation_id = ANY($1::int[])",
+          [[...desigIds]]
+        );
+        res.rows.forEach(r => { maps.designations[r.designation_id] = r.designation_name; });
+      })() : Promise.resolve()
+    ]);
+  } catch (dbErr) {
+    console.error("[audit-logs] DB lookup error during dynamic enrichment:", dbErr.message);
+  }
+
+  return logs.map(log => {
+    if (!log.action?.payload || typeof log.action.payload !== 'object') return log;
+    
+    // Clone log structure
+    const clonedLog = JSON.parse(JSON.stringify(log));
+    const payload = clonedLog.action.payload;
+
+    const tryEnrich = (val, map) => {
+      if (val !== undefined && val !== null && !isNaN(val)) {
+        const id = parseInt(val, 10);
+        if (map[id]) return map[id];
+      }
+      return val;
+    };
+
+    if (payload.user_id) payload.user_id = tryEnrich(payload.user_id, maps.users);
+    if (payload.userId) payload.userId = tryEnrich(payload.userId, maps.users);
+    if (payload.supervisor_id) payload.supervisor_id = tryEnrich(payload.supervisor_id, maps.users);
+    if (payload.supervisorId) payload.supervisorId = tryEnrich(payload.supervisorId, maps.users);
+
+    if (payload.ward_id) payload.ward_id = tryEnrich(payload.ward_id, maps.wards);
+    if (payload.wardId) payload.wardId = tryEnrich(payload.wardId, maps.wards);
+
+    if (payload.sector_id) payload.sector_id = tryEnrich(payload.sector_id, maps.sectors);
+    if (payload.sectorId) payload.sectorId = tryEnrich(payload.sectorId, maps.sectors);
+
+    if (payload.city_id) payload.city_id = tryEnrich(payload.city_id, maps.cities);
+    if (payload.cityId) payload.cityId = tryEnrich(payload.cityId, maps.cities);
+
+    if (payload.zone_id) payload.zone_id = tryEnrich(payload.zone_id, maps.zones);
+    if (payload.zoneId) payload.zoneId = tryEnrich(payload.zoneId, maps.zones);
+
+    if (payload.department_id) payload.department_id = tryEnrich(payload.department_id, maps.departments);
+    if (payload.departmentId) payload.departmentId = tryEnrich(payload.departmentId, maps.departments);
+
+    if (payload.designation_id) payload.designation_id = tryEnrich(payload.designation_id, maps.designations);
+    if (payload.designationId) payload.designationId = tryEnrich(payload.designationId, maps.designations);
+
+    return clonedLog;
+  });
+};
+
+// Fetch S3 activity logs for a given date
+router.get("/audit-logs", async (req, res) => {
+  try {
+    const { date } = req.query;
+    if (!date) {
+      return res.status(400).json({ error: "Date parameter is required (format: YYYY-MM-DD)" });
+    }
+
+    // Safety check: Only active admins can fetch logs
+    const initiatorRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [req.user.user_id]);
+    const initiatorEmail = initiatorRes.rows[0]?.email;
+    if (!initiatorEmail) {
+      return res.status(403).json({ error: "Access denied. Valid admin login required." });
+    }
+
+    const { fetchAuditLogsForDate } = require("../utils/s3Logger");
+    const rawLogs = await fetchAuditLogsForDate(date);
+    const enrichedLogs = await enrichLogs(rawLogs);
+    res.json(enrichedLogs);
+  } catch (error) {
+    console.error("Error fetching audit logs:", error);
+    res.status(500).json({ error: "Failed to fetch audit logs" });
+  }
+});
+
+// Generic logging endpoints for admin module
+router.post("/log-page-visit", async (req, res) => {
+  res.json({ success: true, message: "Page visit logged" });
+});
+
+router.post("/log-action", async (req, res) => {
+  res.json({ success: true, message: "Custom action logged" });
 });
 
 module.exports = router;
