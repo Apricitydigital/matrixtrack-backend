@@ -1,5 +1,9 @@
 const pool = require("../config/db");
 const axios = require("axios");
+const {
+  claimWhatsAppDispatch,
+  releaseWhatsAppDispatch,
+} = require("./whatsappDispatchGuard");
 
 const BASE_URL = (process.env.MSG91_WHATSAPP_BASE_URL || "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk").replace(/\/+$/, "");
 const AUTH_KEY = process.env.MSG91_WHATSAPP_AUTH_KEY || process.env.MSG91_AUTH_KEY;
@@ -7,6 +11,7 @@ const TEMPLATE_NAMESPACE = "5c8f516b_8ec5_4384_bb73_3bfd7a369e84";
 const TEMPLATE_NAME = "pune_swm_daily_bulletin_report_hms";
 const TEMPLATE_LANGUAGE = "en";
 const INTEGRATED_NUMBER = "919111001035";
+const DISPATCH_REPORT_NAME = "pmc_swm_daily_bulletin";
 
 const normalizePhoneNumber = (phoneNumber = "") => {
   const digits = String(phoneNumber).replace(/[^\d]/g, "");
@@ -38,6 +43,21 @@ const getReportDates = (overrideDate) => {
     timeZone: REPORT_TIMEZONE,
   });
   return { isoDate: targetDateStr, displayDate };
+};
+
+const hasMeaningfulBulletinData = (data) => {
+  const totals = [
+    data?.cityRegistered,
+    data?.cityPresent,
+    data?.cityLeave,
+    data?.cityAbsent,
+  ];
+
+  const zoneHasData = Array.isArray(data?.zonesData)
+    && data.zonesData.some((zone) => [zone.registered, zone.present, zone.leave, zone.absent]
+      .some((value) => Number(value || 0) > 0));
+
+  return totals.some((value) => Number(String(value).replace(/,/g, "") || 0) > 0) || zoneHasData;
 };
 
 const generateDailyBulletinData = async (overrideDate) => {
@@ -200,6 +220,7 @@ Powered by Apricity Digital Labs Pvt Ltd`;
 
   return {
     date: displayDate,
+    isoDate,
     statusText,
     statusDesc,
     cityRegistered: formatNum(cityRegistered),
@@ -214,7 +235,7 @@ Powered by Apricity Digital Labs Pvt Ltd`;
   };
 };
 
-const sendDailyBulletinWhatsAppNew = async ({ phoneNumber, date }) => {
+const sendDailyBulletinWhatsAppNew = async ({ phoneNumber, date, useDispatchGuard = false }) => {
   if (!phoneNumber) {
     throw new Error("phoneNumber is required.");
   }
@@ -234,6 +255,30 @@ const sendDailyBulletinWhatsAppNew = async ({ phoneNumber, date }) => {
 
   // 1. Generate SWM data
   const data = await generateDailyBulletinData(date);
+
+  if (!hasMeaningfulBulletinData(data)) {
+    throw new Error(
+      `[Daily Bulletin] Refusing to send empty bulletin for ${data.isoDate} to ${recipients.join(",")}.`
+    );
+  }
+
+  const dispatchIdentity = {
+    reportName: DISPATCH_REPORT_NAME,
+    reportDate: data.isoDate,
+    recipientKey: [...recipients].sort().join(","),
+  };
+
+  if (useDispatchGuard) {
+    const claimed = await claimWhatsAppDispatch(dispatchIdentity);
+    if (!claimed) {
+      return {
+        skipped: true,
+        reason: "duplicate_dispatch",
+        reportData: data,
+        phoneNumber: recipients.join(", "),
+      };
+    }
+  }
 
   const getOverviewText = (idx) => {
     return data.overviewLines[idx] || "";
@@ -333,16 +378,23 @@ const sendDailyBulletinWhatsAppNew = async ({ phoneNumber, date }) => {
     authkey: AUTH_KEY,
   };
 
-  const response = await axios.post(`${BASE_URL}/`, payload, {
-    headers,
-    timeout: 15000,
-  });
+  try {
+    const response = await axios.post(`${BASE_URL}/`, payload, {
+      headers,
+      timeout: 15000,
+    });
 
-  return {
-    providerResponse: response.data,
-    reportData: data,
-    phoneNumber: recipients.join(", "),
-  };
+    return {
+      providerResponse: response.data,
+      reportData: data,
+      phoneNumber: recipients.join(", "),
+    };
+  } catch (error) {
+    if (useDispatchGuard) {
+      await releaseWhatsAppDispatch(dispatchIdentity);
+    }
+    throw error;
+  }
 };
 
 module.exports = {
