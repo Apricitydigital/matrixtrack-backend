@@ -248,7 +248,7 @@ const enrichLogs = async (logs) => {
 
       deptIds.size > 0 ? (async () => {
         const res = await pool.query(
-          "SELECT department_id, department_name FROM departments WHERE department_id = ANY($1::int[])",
+          "SELECT department_id, department_name FROM department WHERE department_id = ANY($1::int[])",
           [[...deptIds]]
         );
         res.rows.forEach(r => { maps.departments[r.department_id] = r.department_name; });
@@ -256,7 +256,7 @@ const enrichLogs = async (logs) => {
 
       desigIds.size > 0 ? (async () => {
         const res = await pool.query(
-          "SELECT designation_id, designation_name FROM designations WHERE designation_id = ANY($1::int[])",
+          "SELECT designation_id, designation_name FROM designation WHERE designation_id = ANY($1::int[])",
           [[...desigIds]]
         );
         res.rows.forEach(r => { maps.designations[r.designation_id] = r.designation_name; });

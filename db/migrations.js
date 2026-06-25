@@ -33,6 +33,18 @@ async function runMigrations() {
     console.log("[Migration] ✅ users permissions column ready.");
 
     await client.query(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL
+    `);
+    await client.query(`
+      UPDATE users
+      SET is_deleted = FALSE
+      WHERE is_deleted IS NULL
+    `);
+    console.log("[Migration] ✅ users soft delete columns ready.");
+
+    await client.query(`
       ALTER TABLE attendance
       ADD COLUMN IF NOT EXISTS mid_shift_punch_in_time TIMESTAMPTZ DEFAULT NULL,
       ADD COLUMN IF NOT EXISTS latitude_mid_in VARCHAR(100) DEFAULT NULL,

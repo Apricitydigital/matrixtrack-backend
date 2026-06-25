@@ -1,7 +1,313 @@
 // middleware/auditLoggerMiddleware.js
-const { uploadAuditLog } = require("../utils/s3Logger");
+const { getEnvironmentScope, uploadAuditLog } = require("../utils/s3Logger");
 const pool = require("../config/db");
+const AUDITABLE_PREFIXES = [
+  "/api/admin-management",
+  "/api/rbac",
+  "/api/log-page-visit",
+  "/api/log-action",
+  "/api/employees",
+  "/api/supervisor",
+  "/api/assignedWardRoutes",
+  "/api/assignedKothiRoutes",
+  "/api/geofencing",
+  "/api/cities",
+  "/api/zones",
+  "/api/wards",
+  "/api/sectors",
+  "/api/departments",
+  "/api/designations",
+  "/api/announcements",
+  "/api/feedback",
+  "/api/migration",
+  "/api/employee-migration",
+];
+const AUDITABLE_AUTH_PATHS = new Set([
+  "/api/auth/login",
+  "/api/auth/logout",
+  "/api/auth/register",
+  "/api/auth/update",
+]);
 
+// Helper to extract identifier (numeric or UUID) from the end of the URL path
+const extractIdFromUrl = (url) => {
+  const parts = url.split("?")[0].split("/");
+  const last = parts[parts.length - 1];
+  if (
+    last &&
+    (last.match(/^[0-9a-fA-F-]+$/) || !isNaN(last)) &&
+    last !== "log-page-visit" &&
+    last !== "log-action" &&
+    last !== "audit-logs" &&
+    last !== "merge" &&
+    last !== "approve" &&
+    last !== "reject"
+  ) {
+    return last;
+  }
+  return null;
+};
+
+const fetchDeleteContext = async (req) => {
+  const normalizedPath = (req.originalUrl || req.url || "").split("?")[0];
+  let entityId = req.params?.id ? Number(req.params.id) : null;
+  if (!entityId || isNaN(entityId)) {
+    const extracted = extractIdFromUrl(normalizedPath);
+    if (extracted && !isNaN(extracted)) {
+      entityId = Number(extracted);
+    }
+  }
+
+  if (req.method !== "DELETE" || !Number.isFinite(entityId)) {
+    return null;
+  }
+
+  if (normalizedPath.startsWith("/api/employees/")) {
+    const { rows } = await pool.query(
+      `SELECT
+         e.emp_id,
+         e.name,
+         e.emp_code,
+         c.city_name,
+         z.zone_name,
+         s.sector_name,
+         w.ward_name
+       FROM employee e
+       LEFT JOIN wards w ON e.ward_id = w.ward_id
+       LEFT JOIN sectors s ON w.sector_id = s.sector_id
+       LEFT JOIN zones z ON COALESCE(w.zone_id, s.zone_id) = z.zone_id
+       LEFT JOIN cities c ON z.city_id = c.city_id
+       WHERE e.emp_id = $1
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "employee",
+        employee: rows[0],
+      };
+    }
+  }
+
+  if (normalizedPath.startsWith("/api/wards/")) {
+    const { rows } = await pool.query(
+      `SELECT
+         w.ward_id,
+         w.ward_name,
+         s.sector_name,
+         z.zone_name,
+         c.city_name
+       FROM wards w
+       LEFT JOIN sectors s ON w.sector_id = s.sector_id
+       LEFT JOIN zones z ON w.zone_id = z.zone_id
+       LEFT JOIN cities c ON z.city_id = c.city_id
+       WHERE w.ward_id = $1
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "kothi",
+        kothi: rows[0],
+      };
+    }
+  }
+
+  if (normalizedPath.startsWith("/api/sectors/")) {
+    const { rows } = await pool.query(
+      `SELECT
+         s.sector_id,
+         s.sector_name,
+         z.zone_name,
+         c.city_name,
+         COUNT(w.ward_id)::int AS kothi_count
+       FROM sectors s
+       LEFT JOIN zones z ON s.zone_id = z.zone_id
+       LEFT JOIN cities c ON z.city_id = c.city_id
+       LEFT JOIN wards w ON w.sector_id = s.sector_id
+       WHERE s.sector_id = $1
+       GROUP BY s.sector_id, s.sector_name, z.zone_name, c.city_name
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "ward",
+        ward: rows[0],
+      };
+    }
+  }
+
+  if (normalizedPath.startsWith("/api/zones/")) {
+    const { rows } = await pool.query(
+      `SELECT z.zone_id, z.zone_name, c.city_name
+       FROM zones z
+       LEFT JOIN cities c ON z.city_id = c.city_id
+       WHERE z.zone_id = $1
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "zone",
+        zone: rows[0],
+      };
+    }
+  }
+
+  if (normalizedPath.startsWith("/api/cities/")) {
+    const { rows } = await pool.query(
+      `SELECT city_id, city_name, state
+       FROM public.cities
+       WHERE city_id = $1
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "city",
+        city: rows[0],
+      };
+    }
+  }
+
+  if (normalizedPath.startsWith("/api/departments/")) {
+    const { rows } = await pool.query(
+      `SELECT department_id, department_name
+       FROM department
+       WHERE department_id = $1
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "department",
+        department: rows[0],
+      };
+    }
+  }
+
+  if (normalizedPath.startsWith("/api/designations/")) {
+    const { rows } = await pool.query(
+      `SELECT d.designation_id, d.designation_name, dept.department_name
+       FROM designation d
+       LEFT JOIN department dept ON d.department_id = dept.department_id
+       WHERE d.designation_id = $1
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "designation",
+        designation: rows[0],
+      };
+    }
+  }
+
+  if (normalizedPath.startsWith("/api/supervisor/")) {
+    const { rows } = await pool.query(
+      `WITH all_assignments AS (
+         SELECT user_id, ward_id FROM user_kothi_access
+         UNION
+         SELECT supervisor_id AS user_id, ward_id FROM supervisor_kothi
+         UNION
+         SELECT supervisor_id AS user_id, ward_id FROM supervisor_ward
+       )
+       SELECT
+         u.user_id,
+         u.name,
+         u.emp_code,
+         u.email,
+         u.phone,
+         STRING_AGG(DISTINCT c.city_name, ', ') AS city_name,
+         STRING_AGG(DISTINCT z.zone_name, ', ') AS zone_name,
+         STRING_AGG(DISTINCT s.sector_name, ', ') AS ward_name,
+         STRING_AGG(DISTINCT w.ward_name, ', ') AS kothi_name
+       FROM users u
+       LEFT JOIN all_assignments aa ON u.user_id = aa.user_id
+       LEFT JOIN wards w ON aa.ward_id = w.ward_id
+       LEFT JOIN sectors s ON w.sector_id = s.sector_id
+       LEFT JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
+       LEFT JOIN cities c ON z.city_id = c.city_id
+       WHERE u.user_id = $1
+       GROUP BY u.user_id, u.name, u.emp_code, u.email, u.phone
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "supervisor",
+        supervisor: rows[0],
+      };
+    }
+  }
+
+  if (normalizedPath.startsWith("/api/assignedWardRoutes/")) {
+    const { rows } = await pool.query(
+      `SELECT
+         sw.assigned_id,
+         u.name,
+         u.emp_code,
+         w.ward_name,
+         z.zone_name,
+         c.city_name
+       FROM supervisor_ward sw
+       JOIN users u ON sw.supervisor_id = u.user_id
+       JOIN wards w ON sw.ward_id = w.ward_id
+       JOIN zones z ON w.zone_id = z.zone_id
+       JOIN cities c ON z.city_id = c.city_id
+       WHERE sw.assigned_id = $1
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "supervisorWardAssignment",
+        supervisorWardAssignment: rows[0],
+      };
+    }
+  }
+
+  if (normalizedPath.startsWith("/api/assignedKothiRoutes/")) {
+    const { rows } = await pool.query(
+      `SELECT
+         sk.assigned_id,
+         u.name,
+         u.emp_code,
+         w.ward_name AS kothi_name,
+         s.sector_name AS ward_name,
+         z.zone_name,
+         c.city_name
+       FROM supervisor_kothi sk
+       JOIN users u ON sk.supervisor_id = u.user_id
+       JOIN wards w ON sk.ward_id = w.ward_id
+       LEFT JOIN sectors s ON w.sector_id = s.sector_id
+       LEFT JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
+       LEFT JOIN cities c ON z.city_id = c.city_id
+       WHERE sk.assigned_id = $1
+       LIMIT 1`,
+      [entityId]
+    );
+
+    if (rows.length > 0) {
+      return {
+        entityType: "supervisorKothiAssignment",
+        supervisorKothiAssignment: rows[0],
+      };
+    }
+  }
+
+  return null;
+};
 // Simple user-agent parser for OS/Browser info
 const parseUserAgent = (uaString) => {
   if (!uaString) return "Unknown Device";
@@ -120,27 +426,10 @@ const enrichPayload = async (data) => {
 };
 
 
-// Helper to extract identifier (numeric or UUID) from the end of the URL path
-const extractIdFromUrl = (url) => {
-  const parts = url.split("?")[0].split("/");
-  const last = parts[parts.length - 1];
-  if (
-    last &&
-    (last.match(/^[0-9a-fA-F-]+$/) || !isNaN(last)) &&
-    last !== "log-page-visit" &&
-    last !== "log-action" &&
-    last !== "audit-logs" &&
-    last !== "merge" &&
-    last !== "approve" &&
-    last !== "reject"
-  ) {
-    return last;
-  }
-  return null;
-};
+// extractIdFromUrl moved to the top of the file
 
 // Helper to get human-readable description for specific route actions
-const getActionDescription = (req, body) => {
+const getActionDescription = (req, body, context = null) => {
   const method = req.method;
   const url = req.originalUrl || req.url;
   const id = extractIdFromUrl(url);
@@ -190,13 +479,21 @@ const getActionDescription = (req, body) => {
 
   // ── Supervisor Management Page ──
   if (url.includes("/api/supervisor")) {
-    if (method === "POST") return `Supervisor Management: Added new Supervisor — ${req.body?.name || req.body?.email || "unknown"}`;
-    if (method === "PUT") return `Supervisor Management: Updated Supervisor — ${req.body?.name || req.body?.email || `ID ${id || "unknown"}`}`;
-    if (method === "DELETE") return `Supervisor Management: Deleted Supervisor ID: ${id || "unknown"}`;
+    const deletedSupervisor = context?.supervisor;
+    if (method === "POST") return `Supervisor Management: Added new Supervisor - ${req.body?.name || req.body?.email || "unknown"}`;
+    if (method === "PUT") return `Supervisor Management: Updated Supervisor - ${req.body?.name || req.body?.email || `ID ${id || "unknown"}`}`;
+    if (method === "DELETE") {
+      if (deletedSupervisor) {
+        return `Supervisor Management: Deleted Supervisor - ${deletedSupervisor.name || deletedSupervisor.emp_code || `ID ${id || "unknown"}`} | City: ${deletedSupervisor.city_name || "N/A"} | Zone: ${deletedSupervisor.zone_name || "N/A"} | Ward: ${deletedSupervisor.ward_name || "N/A"} | Kothi: ${deletedSupervisor.kothi_name || "N/A"}`;
+      }
+      return `Supervisor Management: Deleted Supervisor ID: ${id || "unknown"}`;
+    }
   }
 
   // ── Assign Supervisor to Ward/Kothi ──
   if (url.includes("/api/assignedWardRoutes") || url.includes("/api/assignedKothiRoutes")) {
+    const wardAssignment = context?.supervisorWardAssignment;
+    const kothiAssignment = context?.supervisorKothiAssignment;
     if (method === "POST") {
       const supName = req.body?.supervisorName || req.body?.name || "";
       const ward = req.body?.ward_name || req.body?.wardName || "";
@@ -205,18 +502,32 @@ const getActionDescription = (req, body) => {
       return "Assign Supervisor: Created new ward/kothi assignment";
     }
     if (method === "PUT") return `Assign Supervisor: Updated ward/kothi assignment ID: ${id || "unknown"}`;
-    if (method === "DELETE") return `Assign Supervisor: Removed ward/kothi assignment ID: ${id || "unknown"}`;
+    if (method === "DELETE") {
+      if (wardAssignment) {
+        return `Assign Supervisor: Removed ward assignment - ${wardAssignment.name || wardAssignment.emp_code || "unknown"} | Kothi: ${wardAssignment.ward_name || "N/A"} | Zone: ${wardAssignment.zone_name || "N/A"} | City: ${wardAssignment.city_name || "N/A"}`;
+      }
+      if (kothiAssignment) {
+        return `Assign Supervisor: Removed kothi assignment - ${kothiAssignment.name || kothiAssignment.emp_code || "unknown"} | Ward: ${kothiAssignment.ward_name || "N/A"} | Kothi: ${kothiAssignment.kothi_name || "N/A"} | Zone: ${kothiAssignment.zone_name || "N/A"} | City: ${kothiAssignment.city_name || "N/A"}`;
+      }
+      return `Assign Supervisor: Removed ward/kothi assignment ID: ${id || "unknown"}`;
+    }
   }
 
   // ── Employee Management Page ──
   if (url.includes("/api/employees")) {
     const empName = req.body?.name || req.body?.emp_code || "";
+    const deletedEmployee = context?.employee;
     if (url.includes("/aadhar") && method === "POST") {
       return `Employee Management: Uploaded Aadhar document for Employee ID: ${id || "unknown"}`;
     }
-    if (method === "POST") return `Employee Management: Added new Employee — ${empName || "unknown"}`;
-    if (method === "PUT") return `Employee Management: Updated Employee record — ${empName || `ID ${id || "unknown"}`}`;
-    if (method === "DELETE") return `Employee Management: Deleted Employee ID: ${id || "unknown"}`;
+    if (method === "POST") return `Employee Management: Added new Employee - ${empName || "unknown"}`;
+    if (method === "PUT") return `Employee Management: Updated Employee record - ${empName || `ID ${id || "unknown"}`}`;
+    if (method === "DELETE") {
+      if (deletedEmployee) {
+        return `Employee Management: Deleted Employee - ${deletedEmployee.name || deletedEmployee.emp_code || `ID ${id || "unknown"}`} | City: ${deletedEmployee.city_name || "N/A"} | Zone: ${deletedEmployee.zone_name || "N/A"} | Ward: ${deletedEmployee.sector_name || "N/A"} | Kothi: ${deletedEmployee.ward_name || "N/A"}`;
+      }
+      return `Employee Management: Deleted Employee ID: ${id || "unknown"}`;
+    }
   }
 
   // ── GeoFencing Page ──
@@ -246,50 +557,86 @@ const getActionDescription = (req, body) => {
   // ── Master Setup — Cities ──
   if (url.includes("/api/cities")) {
     const name = req.body?.city_name || req.body?.name || "";
-    if (method === "POST") return `Master Setup (Cities): Added new City — "${name || "unknown"}"`;
-    if (method === "PUT") return `Master Setup (Cities): Updated City — "${name || `ID ${id || "unknown"}`}"`;
-    if (method === "DELETE") return `Master Setup (Cities): Deleted City ID: ${id || "unknown"}`;
+    const deletedCity = context?.city;
+    if (method === "POST") return `Master Setup (Cities): Added new City - "${name || "unknown"}"`;
+    if (method === "PUT") return `Master Setup (Cities): Updated City - "${name || `ID ${id || "unknown"}`}"`;
+    if (method === "DELETE") {
+      if (deletedCity) {
+        return `Master Setup (Cities): Deleted City - ${deletedCity.city_name || `ID ${id || "unknown"}`} | State: ${deletedCity.state || "N/A"}`;
+      }
+      return `Master Setup (Cities): Deleted City ID: ${id || "unknown"}`;
+    }
   }
 
   // ── Master Setup — Zones ──
   if (url.includes("/api/zones")) {
     const name = req.body?.zone_name || req.body?.name || "";
+    const deletedZone = context?.zone;
     if (url.includes("/merge")) return `Master Setup (Zones): Merged Zones (target ID: ${req.body?.targetZoneId || "unknown"})`;
-    if (method === "POST") return `Master Setup (Zones): Added new Zone — "${name || "unknown"}"`;
-    if (method === "PUT") return `Master Setup (Zones): Updated Zone — "${name || `ID ${id || "unknown"}`}"`;
-    if (method === "DELETE") return `Master Setup (Zones): Deleted Zone ID: ${id || "unknown"}`;
+    if (method === "POST") return `Master Setup (Zones): Added new Zone - "${name || "unknown"}"`;
+    if (method === "PUT") return `Master Setup (Zones): Updated Zone - "${name || `ID ${id || "unknown"}`}"`;
+    if (method === "DELETE") {
+      if (deletedZone) {
+        return `Master Setup (Zones): Deleted Zone - ${deletedZone.zone_name || `ID ${id || "unknown"}`} | City: ${deletedZone.city_name || "N/A"}`;
+      }
+      return `Master Setup (Zones): Deleted Zone ID: ${id || "unknown"}`;
+    }
   }
 
   // ── Master Setup — Wards / Sectors ──
   if (url.includes("/api/sectors")) {
     const name = req.body?.sector_name || req.body?.sectorName || req.body?.name || "";
-    if (method === "POST") return `Master Setup (Wards): Added new Ward — "${name || "unknown"}"`;
-    if (method === "PUT") return `Master Setup (Wards): Updated Ward — "${name || `ID ${id || "unknown"}`}"`;
-    if (method === "DELETE") return `Master Setup (Wards): Deleted Ward ID: ${id || "unknown"}`;
+    const deletedWard = context?.ward;
+    if (method === "POST") return `Master Setup (Wards): Added new Ward - "${name || "unknown"}"`;
+    if (method === "PUT") return `Master Setup (Wards): Updated Ward - "${name || `ID ${id || "unknown"}`}"`;
+    if (method === "DELETE") {
+      if (deletedWard) {
+        return `Master Setup (Wards): Deleted Ward - ${deletedWard.sector_name || `ID ${id || "unknown"}`} | Zone: ${deletedWard.zone_name || "N/A"} | City: ${deletedWard.city_name || "N/A"} | Kothis: ${deletedWard.kothi_count ?? 0}`;
+      }
+      return `Master Setup (Wards): Deleted Ward ID: ${id || "unknown"}`;
+    }
   }
 
   // ── Master Setup — Kothi (sub-ward) ──
   if (url.includes("/api/wards")) {
     const name = req.body?.ward_name || req.body?.wardName || req.body?.name || "";
-    if (method === "POST") return `Master Setup (Kothi): Added new Kothi — "${name || "unknown"}"`;
-    if (method === "PUT") return `Master Setup (Kothi): Updated Kothi — "${name || `ID ${id || "unknown"}`}"`;
-    if (method === "DELETE") return `Master Setup (Kothi): Deleted Kothi ID: ${id || "unknown"}`;
+    const deletedKothi = context?.kothi;
+    if (method === "POST") return `Master Setup (Kothi): Added new Kothi - "${name || "unknown"}"`;
+    if (method === "PUT") return `Master Setup (Kothi): Updated Kothi - "${name || `ID ${id || "unknown"}`}"`;
+    if (method === "DELETE") {
+      if (deletedKothi) {
+        return `Master Setup (Kothi): Deleted Kothi - ${deletedKothi.ward_name || `ID ${id || "unknown"}`} | Ward: ${deletedKothi.sector_name || "N/A"} | Zone: ${deletedKothi.zone_name || "N/A"} | City: ${deletedKothi.city_name || "N/A"}`;
+      }
+      return `Master Setup (Kothi): Deleted Kothi ID: ${id || "unknown"}`;
+    }
   }
 
   // ── Master Setup — Departments ──
   if (url.includes("/api/departments")) {
     const name = req.body?.department_name || req.body?.departmentName || req.body?.name || "";
-    if (method === "POST") return `Master Setup (Departments): Added new Department — "${name || "unknown"}"`;
-    if (method === "PUT") return `Master Setup (Departments): Updated Department — "${name || `ID ${id || "unknown"}`}"`;
-    if (method === "DELETE") return `Master Setup (Departments): Deleted Department ID: ${id || "unknown"}`;
+    const deletedDepartment = context?.department;
+    if (method === "POST") return `Master Setup (Departments): Added new Department - "${name || "unknown"}"`;
+    if (method === "PUT") return `Master Setup (Departments): Updated Department - "${name || `ID ${id || "unknown"}`}"`;
+    if (method === "DELETE") {
+      if (deletedDepartment) {
+        return `Master Setup (Departments): Deleted Department - ${deletedDepartment.department_name || `ID ${id || "unknown"}`}`;
+      }
+      return `Master Setup (Departments): Deleted Department ID: ${id || "unknown"}`;
+    }
   }
 
   // ── Master Setup — Designations ──
   if (url.includes("/api/designations")) {
     const name = req.body?.designation_name || req.body?.designationName || req.body?.name || "";
-    if (method === "POST") return `Master Setup (Designations): Added new Designation — "${name || "unknown"}"`;
-    if (method === "PUT") return `Master Setup (Designations): Updated Designation — "${name || `ID ${id || "unknown"}`}"`;
-    if (method === "DELETE") return `Master Setup (Designations): Deleted Designation ID: ${id || "unknown"}`;
+    const deletedDesignation = context?.designation;
+    if (method === "POST") return `Master Setup (Designations): Added new Designation - "${name || "unknown"}"`;
+    if (method === "PUT") return `Master Setup (Designations): Updated Designation - "${name || `ID ${id || "unknown"}`}"`;
+    if (method === "DELETE") {
+      if (deletedDesignation) {
+        return `Master Setup (Designations): Deleted Designation - ${deletedDesignation.designation_name || `ID ${id || "unknown"}`} | Department: ${deletedDesignation.department_name || "N/A"}`;
+      }
+      return `Master Setup (Designations): Deleted Designation ID: ${id || "unknown"}`;
+    }
   }
 
   // ── Master Setup — Employee Migration ──
@@ -396,13 +743,34 @@ async function logRequest(req, res, responseBody) {
     }
 
     const rawPayload = maskPayload(req.body);
-    const enrichedPayload = await enrichPayload(rawPayload);
+    const deleteContext = req._deleteContext || null;
+    const contextPayload =
+      deleteContext?.employee
+        ? {
+            ...rawPayload,
+            deleted_employee_name: deleteContext.employee.name,
+            deleted_employee_emp_code: deleteContext.employee.emp_code,
+            city_name: deleteContext.employee.city_name,
+            zone_name: deleteContext.employee.zone_name,
+            ward_name: deleteContext.employee.sector_name,
+            kothi_name: deleteContext.employee.ward_name,
+            delete_context: deleteContext,
+          }
+        : deleteContext
+          ? {
+              ...rawPayload,
+              delete_context: deleteContext,
+            }
+          : rawPayload;
+    const enrichedPayload = await enrichPayload(contextPayload);
+
+    const envScope = getEnvironmentScope();
 
     const logObject = {
       timestamp,
       actor,
       action: {
-        description: getActionDescription(req, responseBody),
+        description: getActionDescription(req, responseBody, deleteContext),
         method: req.method,
         url: req.originalUrl || req.url,
         payload: enrichedPayload,
@@ -410,6 +778,11 @@ async function logRequest(req, res, responseBody) {
       client: {
         ip,
         device,
+      },
+      environment: {
+        db_host: envScope.dbHost,
+        db_name: envScope.dbName,
+        scope_key: envScope.scopeKey,
       },
     };
 
@@ -420,22 +793,31 @@ async function logRequest(req, res, responseBody) {
   }
 }
 
-module.exports = (req, res, next) => {
+module.exports = async (req, res, next) => {
   const isModifying = ["POST", "PUT", "DELETE"].includes(req.method);
+  const requestPath = req.originalUrl || req.url || "";
+  const normalizedPath = requestPath.split("?")[0];
+  const isAuditableRoute =
+    AUDITABLE_PREFIXES.some((prefix) => normalizedPath.startsWith(prefix)) ||
+    AUDITABLE_AUTH_PATHS.has(normalizedPath);
 
-  // We only log modifying requests (POST, PUT, DELETE)
-  if (!isModifying) {
+  if (!isModifying || !isAuditableRoute) {
     return next();
   }
 
-  // Intercept the response JSON
+  if (req.method === "DELETE") {
+    try {
+      req._deleteContext = await fetchDeleteContext(req);
+    } catch (err) {
+      console.error("[AuditLogger] Error fetching pre-delete context:", err.message);
+    }
+  }
+
   const originalJson = res.json;
   res.json = function (body) {
-    // Execute the original res.json first to avoid blocking user response
     originalJson.apply(this, arguments);
 
     try {
-      // We only log successful actions (2xx status codes)
       if (res.statusCode >= 200 && res.statusCode < 300) {
         logRequest(req, res, body);
       }
@@ -446,3 +828,8 @@ module.exports = (req, res, next) => {
 
   next();
 };
+
+
+
+
+

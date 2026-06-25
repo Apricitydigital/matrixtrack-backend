@@ -34,6 +34,13 @@ router.put("/:id", async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: "AssignedID not found" });
     }
+
+    // Enforce that this supervisor has no other assignment rows (e.g. if updated to another supervisor who was already assigned)
+    await pool.query(
+      "DELETE FROM supervisor_ward WHERE supervisor_id = $1 AND assigned_id != $2",
+      [user_id, assigned_id]
+    );
+
     invalidateCityAccessCache();
     invalidateKothiAccessCache();
     res.json(result.rows[0]); // Send the updated record as a response
@@ -50,26 +57,41 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "All fields are required" });
   }
   try {
+    // Check if the supervisor is already assigned to any ward
+    const check = await pool.query(
+      "SELECT assigned_id FROM supervisor_ward WHERE supervisor_id = $1 ORDER BY assigned_id ASC",
+      [user_id]
+    );
+
+    if (check.rowCount > 0) {
+      // Update the existing assignment to the new ward
+      const assigned_id = check.rows[0].assigned_id;
+      const result = await pool.query(
+        "UPDATE supervisor_ward SET ward_id = $1 WHERE assigned_id = $2 RETURNING *",
+        [ward_id, assigned_id]
+      );
+
+      // Clean up any extra duplicates if they somehow exist
+      if (check.rowCount > 1) {
+        const extraIds = check.rows.slice(1).map((r) => r.assigned_id);
+        await pool.query(
+          "DELETE FROM supervisor_ward WHERE assigned_id = ANY($1)",
+          [extraIds]
+        );
+      }
+
+      invalidateCityAccessCache();
+      invalidateKothiAccessCache();
+      return res.status(200).json(result.rows[0]);
+    }
+
+    // Otherwise, insert new assignment
     const result = await pool.query(
       `INSERT INTO supervisor_ward (supervisor_id, ward_id)
        VALUES ($1, $2)
-       ON CONFLICT DO NOTHING
        RETURNING *`,
       [user_id, ward_id]
     );
-
-    if (result.rowCount === 0) {
-      console.warn("Record exists, skipping");
-      const existing = await pool.query(
-        `SELECT * FROM supervisor_ward WHERE supervisor_id = $1 AND ward_id = $2 LIMIT 1`,
-        [user_id, ward_id]
-      );
-      invalidateCityAccessCache();
-    invalidateKothiAccessCache();
-      return res
-        .status(200)
-        .json(existing.rows[0] || { message: "Record exists, skipping" });
-    }
 
     invalidateCityAccessCache();
     invalidateKothiAccessCache();
