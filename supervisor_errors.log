@@ -1055,3 +1055,28 @@
     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
     at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:677:18)
     at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1590:22
+[2026-06-24T14:37:04.660Z] wards-post: error: canceling statement due to statement timeout
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:677:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1590:22
+[2026-06-24T14:37:07.774Z] wards-post: error: canceling statement due to statement timeout
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:677:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1590:22
+[2026-06-24T14:37:47.688Z] wards-post: error: canceling statement due to statement timeout
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:677:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1590:22
+[2026-06-24T14:37:54.185Z] wards-post: error: canceling statement due to statement timeout
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:677:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1590:22
+[2026-06-24T14:38:06.537Z] wards-post: Error: Connection terminated unexpectedly
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:677:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1590:22

@@ -1,6 +1,7 @@
 const SUPPORTED_FORMATS = new Set(["csv", "json"]);
 const SUPPORTED_GROUPINGS = new Set([
   "detail",
+  "simple", // <-- ADD THIS
   "zone",
   "ward",
   "city",
@@ -386,7 +387,8 @@ const groupingConfigs = {
       e.emp_code,
       a.leave_type,
       e.phone AS contact_no,
-      TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,
+      a.date,
+TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,
       TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in_time,
       TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in_time,
       TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_out_time,
@@ -446,6 +448,19 @@ const groupingConfigs = {
       { key: "punched_out_by", label: "Punched Out By", formatter: (val, row) => row.punch_out_time ? val : "-" },
       { key: "out_address", label: "Out Address", formatter: (val) => val || "-" },
       { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? { text: `${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}`, hyperlink: `https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}` } : "-" },
+    ],
+  },
+  simple: {
+    label: "Simple Attendance Report",
+    filenameSuffix: "simple-attendance",
+
+    csvHeaders: [
+      { key: "sr_no", label: "Sr No." },
+      { key: "emp_code", label: "Employee Code" },
+      { key: "employee_name", label: "Employee Name" },
+      { key: "kothi_name", label: "Kothi" },
+      { key: "zone_name", label: "Zone" },
+      { key: "employee_type", label: "Employee Type" },
     ],
   },
   zone: {
@@ -778,7 +793,10 @@ const createAttendanceDownloadHandler =
 
         let allRows;
 
-        if (requestedGrouping === "detail") {
+        if (
+          requestedGrouping === "detail" ||
+          requestedGrouping === "simple"
+        ) {
           // Single unified query: start from employee and left-join attendance for the target date.
           const startDate =
             payload.start_date ||
@@ -894,6 +912,7 @@ a.attendance_id,
               e.emp_code,
                  a.leave_type,
               e.phone AS contact_no,
+a.date,
 TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,         
  TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in_time,
               TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in_time,
@@ -952,6 +971,186 @@ TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,
           console.log("QUERY:", unifiedQuery);
           const unifiedResult = await pool.query(unifiedQuery, detailParams);
           allRows = unifiedResult.rows;
+          if (requestedGrouping === "simple") {
+
+            const employeeMap = new Map();
+
+            allRows.forEach((row) => {
+
+              const empId = row.emp_id;
+
+              if (!employeeMap.has(empId)) {
+
+                employeeMap.set(empId, {
+                  emp_id: row.emp_id,
+                  emp_code: row.emp_code,
+
+                  employee_name: row.employee_name,
+                  kothi_name: row.ward_name,
+                  zone_name: row.zone_name,
+                  employee_type: row.designation_name,
+
+                  days: {},
+                  summary: {}
+                });
+              }
+
+              const emp = employeeMap.get(empId);
+
+              // const dateKey = new Date(row.date)
+              //   .toISOString()
+              //   .split("T")[0];
+              const dateKey = row.attendance_date;
+
+              let status = "A";
+
+              if (row.leave_type) {
+
+                status = row.leave_type;
+
+              } else if (
+                row.punch_in_time &&
+                row.punch_in_time !== "-"
+              ) {
+
+                status = "P";
+
+              }
+
+              emp.days[dateKey] = status;
+
+              emp.summary[status] =
+                (emp.summary[status] || 0) + 1;
+
+            });
+
+            // const allDates = [
+            //   ...new Set(
+            //     allRows.flatMap(r => Object.keys(r.days || {}))
+            //   )
+            // ].sort();
+
+
+
+            // groupConfig.csvHeaders = [
+            //   { key: "sr_no", label: "Sr No." },
+            //   { key: "emp_code", label: "Employee Code" },
+            //   { key: "employee_name", label: "Employee Name" },
+            //   { key: "kothi_name", label: "Kothi" },
+            //   { key: "zone_name", label: "Zone" },
+            //   { key: "employee_type", label: "Employee Type" },
+
+            //   ...allDates.map(date => ({
+            //     key: date,
+            //     label: date.slice(-2),
+            //     formatter: (_, row) => row.days?.[date] ?? "-"
+            //   })),
+
+            //   { key: "P", label: "P" },
+            //   { key: "A", label: "A" },
+            //   { key: "CL", label: "CL" },
+            //   { key: "EL", label: "EL" },
+            //   { key: "ML", label: "ML" },
+            //   { key: "WO", label: "WO" },
+            //   { key: "TOTAL", label: "TOTAL" }
+            // ];
+            // const allDates = [
+            //   ...new Set(
+            //     allRows.flatMap(r => Object.keys(r.days || {}))
+            //   )
+            // ].sort();
+
+            // groupConfig.csvHeaders = [
+            //   { key: "sr_no", label: "Sr No." },
+            //   { key: "emp_code", label: "Employee Code" },
+            //   { key: "employee_name", label: "Employee Name" },
+            //   { key: "kothi_name", label: "Kothi" },
+            //   { key: "zone_name", label: "Zone" },
+            //   { key: "employee_type", label: "Employee Type" },
+
+            //   ...allDates.map(date => ({
+            //     key: date,
+            //     label: date,
+            //     formatter: (_, row) => row.days?.[date] || "-"
+            //   }))
+            // ];
+            const allDates = [];
+
+            if (startDate && endDate) {
+              let current = new Date(startDate);
+              const last = new Date(endDate);
+
+              while (current <= last) {
+                const dd = String(current.getDate()).padStart(2, "0");
+                const mm = String(current.getMonth() + 1).padStart(2, "0");
+                const yyyy = current.getFullYear();
+
+                allDates.push(`${dd}-${mm}-${yyyy}`);
+
+                current.setDate(current.getDate() + 1);
+              }
+            } else {
+              allDates.push(row.attendance_date);
+            }
+            allRows = Array.from(employeeMap.values()).map((row, index) => ({
+              sr_no: index + 1,
+              ...row,
+
+              P: row.summary?.P || 0,
+              A: row.summary?.A || 0,
+              CL: row.summary?.CL || 0,
+              EL: row.summary?.EL || 0,
+              ML: row.summary?.ML || 0,
+              WO: row.summary?.WO || 0,
+
+              TOTAL: allDates.length
+            }));
+            const leaveTypes = [
+              ...new Set(
+                allRows.flatMap(r => Object.keys(r.summary || {}))
+              )
+            ]
+              .filter(k => !["P", "A"].includes(k))
+              .sort();
+
+            groupConfig.csvHeaders = [
+              { key: "sr_no", label: "Sr No." },
+              { key: "emp_code", label: "Employee Code" },
+              { key: "employee_name", label: "Employee Name" },
+              { key: "kothi_name", label: "Kothi" },
+              { key: "zone_name", label: "Zone" },
+              { key: "employee_type", label: "Employee Type" },
+
+              ...allDates.map(date => ({
+                key: date,
+                label: date.split("-")[0], // only day: 05 06 07 ...
+                formatter: (_, row) => row.days?.[date] ?? "-"
+              })),
+
+              {
+                key: "P",
+                label: "P",
+                formatter: (_, row) => row.summary?.P || 0
+              },
+              {
+                key: "A",
+                label: "A",
+                formatter: (_, row) => row.summary?.A || 0
+              },
+
+              ...leaveTypes.map(type => ({
+                key: type,
+                label: type,
+                formatter: (_, row) => row.summary?.[type] || 0
+              })),
+
+              {
+                key: "TOTAL",
+                label: "TOTAL",
+                formatter: () => allDates.length
+              }
+            ];
+          }
         } else {
           const selectClause =
             typeof groupConfig.select === "function"

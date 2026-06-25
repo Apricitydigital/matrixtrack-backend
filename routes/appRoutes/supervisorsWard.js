@@ -383,6 +383,7 @@ const fetchSupervisorSummary = async (
       SELECT
         se.emp_id,
         MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
         MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in
@@ -440,6 +441,7 @@ const fetchSupervisorSummary = async (
   const inProgress = Number(row.in_progress) || 0;
   const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
   const notMarked = Number(row.not_marked) || 0;
+  const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
   const attendanceRate =
     totalEmployees > 0
       ? Number((((present + onLeave) / totalEmployees) * 100).toFixed(1))
@@ -453,6 +455,7 @@ const fetchSupervisorSummary = async (
     notMarked,
   });
 
+<<<<<<< HEAD
   console.log("YESTERDAY SUMMARY =", yesterdaySummary);
 
   console.log("CHANGE =", {
@@ -481,6 +484,47 @@ const fetchSupervisorSummary = async (
       yesterdaySummary.midShiftPunchIn
     ),
   });
+=======
+  let change = {};
+  if (!options.skipYesterday) {
+    try {
+      const startMs = new Date(startDate).getTime();
+      const endMs = new Date(endDate).getTime();
+      const diffMs = endMs - startMs;
+      const oneDay = 24 * 60 * 60 * 1000;
+      const yesterdayStart = new Date(startMs - diffMs - oneDay).toISOString().slice(0, 10);
+      const yesterdayEnd = new Date(endMs - diffMs - oneDay).toISOString().slice(0, 10);
+
+      const yesterdayData = await fetchSupervisorSummary(
+        userId,
+        cityId,
+        yesterdayStart,
+        yesterdayEnd,
+        { ...options, skipYesterday: true }
+      );
+
+      const calcPercentChange = (todayVal, yesterdayVal) => {
+        if (!yesterdayVal || yesterdayVal === 0) {
+          return todayVal > 0 ? 100.0 : 0.0;
+        }
+        return Number((((todayVal - yesterdayVal) / yesterdayVal) * 100).toFixed(1));
+      };
+
+      change = {
+        totalEmployees: calcPercentChange(totalEmployees, yesterdayData.totalEmployees),
+        present: calcPercentChange(present, yesterdayData.present),
+        onLeave: calcPercentChange(onLeave, yesterdayData.onLeave),
+        absent: calcPercentChange(notMarked, yesterdayData.notMarked),
+        fullyMarked: calcPercentChange(fullyMarked, yesterdayData.fullyMarked),
+        midShiftPunchIn: calcPercentChange(midShiftPunchIn, yesterdayData.midShiftPunchIn),
+        supervisors: 0.0,
+      };
+    } catch (e) {
+      console.error("Error calculating yesterday change:", e);
+    }
+  }
+
+>>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
   return {
     totalEmployees,
     present,
@@ -491,6 +535,7 @@ const fetchSupervisorSummary = async (
     onLeave,
     notMarked,
     attendanceRate,
+<<<<<<< HEAD
 
     change: {
       totalEmployees: calculatePercentageChange(
@@ -523,6 +568,10 @@ const fetchSupervisorSummary = async (
         yesterdaySummary.midShiftPunchIn
       ),
     },
+=======
+    midShiftPunchIn,
+    change,
+>>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
   };
 };
 
@@ -608,6 +657,7 @@ const fetchSupervisorEmployees = async (
         MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_start,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+        STRING_AGG(DISTINCT a.leave_type, ', ') AS leave_type,
         COUNT(DISTINCT a.date::date) FILTER (WHERE (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)) AS days_present,
         COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
         MAX(a.leave_type) FILTER (WHERE a.leave_type IS NOT NULL) AS leave_type,
@@ -642,6 +692,7 @@ const fetchSupervisorEmployees = async (
         WHEN COALESCE(summary.has_leave, 0) = 1 THEN 'Leave'
         ELSE 'Not Marked'
       END AS attendance_status,
+      summary.leave_type AS leave_type,
       COALESCE(summary.days_present, 0) AS days_present,
       COALESCE(summary.days_marked, 0) AS days_marked,
       summary.leave_type,
@@ -1603,8 +1654,11 @@ router.post("/", async (req, res) => {
   }
 });
 
+<<<<<<< HEAD
 
 
+=======
+>>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
 // ── Top Performing Supervisors ─────────────────────────────────────────────
 router.post("/top-supervisors", async (req, res) => {
   const requestingUser = req.user;
@@ -1677,4 +1731,85 @@ router.post("/top-supervisors", async (req, res) => {
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
+<<<<<<< HEAD
 module.exports = router;
+=======
+
+// ── Attendance Trend ─────────────────────────────────────────────
+router.post("/attendance-trend", async (req, res) => {
+  const requestingUser = req.user;
+  const isAdmin = requestingUser?.role === "admin";
+  const { user_id, city_id, startDate: startDateRaw, endDate: endDateRaw } = req.body;
+  const { cityId, valid: cityValid } = normalizeCityIdInput(city_id);
+
+  if (!cityValid) return res.status(400).json({ error: "Invalid city ID" });
+
+  const { cityId: scopedCityId } = enforceCityScope(req, cityId ?? null);
+  const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
+  
+  const effectiveUserId = isAdmin ? user_id : requestingUser?.user_id;
+
+  const params = [startDate, endDate];
+  let filterClause = "";
+  if (scopedCityId) {
+    params.push(scopedCityId);
+    filterClause += ` AND c.city_id = $${params.length}`;
+  }
+  
+  if (effectiveUserId) {
+    params.push(effectiveUserId);
+    filterClause += ` AND (
+      sw.supervisor_id = $${params.length} OR
+      w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $${params.length}) OR
+      w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $${params.length}) OR
+      w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $${params.length})
+    )`;
+  }
+
+  const query = `
+    WITH date_series AS (
+      SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS date
+    ),
+    scoped_employees AS (
+      SELECT DISTINCT e.emp_id
+      FROM employee e
+      JOIN wards w ON e.ward_id = w.ward_id
+      JOIN zones z ON w.zone_id = z.zone_id
+      JOIN cities c ON z.city_id = c.city_id
+      LEFT JOIN supervisor_ward sw ON sw.ward_id = w.ward_id
+      WHERE 1=1 ${filterClause}
+    )
+    SELECT
+      ds.date,
+      COUNT(DISTINCT CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN e.emp_id END) AS present,
+      COUNT(DISTINCT CASE WHEN a.leave_type IS NOT NULL THEN e.emp_id END) AS leave,
+      GREATEST(
+        (SELECT COUNT(*) FROM scoped_employees) - 
+        COUNT(DISTINCT CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN e.emp_id END) -
+        COUNT(DISTINCT CASE WHEN a.leave_type IS NOT NULL THEN e.emp_id END),
+        0
+      ) AS absent
+    FROM date_series ds
+    LEFT JOIN attendance a ON a.date::date = ds.date AND a.emp_id IN (SELECT emp_id FROM scoped_employees)
+    LEFT JOIN scoped_employees e ON e.emp_id = a.emp_id
+    GROUP BY ds.date
+    ORDER BY ds.date ASC;
+  `;
+
+  try {
+    const result = await pool.query(query, params);
+    const data = result.rows.map(r => ({
+      date: r.date,
+      present: Number(r.present) || 0,
+      leave: Number(r.leave) || 0,
+      absent: Number(r.absent) || 0
+    }));
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error("Error fetching attendance trend:", error);
+    res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
+module.exports = router;
+>>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17

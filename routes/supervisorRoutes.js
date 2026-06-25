@@ -63,15 +63,23 @@ router.get("/", requireCityScope(), async (req, res) => {
     let params;
 
     if (scopedCityId === null) {
-      // Admin with no city filter — return ALL supervisors
+      // Admin with no city filter — return ALL supervisors with aggregated details
       query = `
-        SELECT DISTINCT ON (u.user_id)
+        WITH all_assignments AS (
+          SELECT user_id, ward_id FROM user_kothi_access
+          UNION
+          SELECT supervisor_id AS user_id, ward_id FROM supervisor_kothi
+          UNION
+          SELECT supervisor_id AS user_id, ward_id FROM supervisor_ward
+        )
+        SELECT 
           u.user_id,
           u.name,
           u.emp_code,
           u.email,
           u.phone,
           u.role,
+<<<<<<< HEAD
           u.aadhar_number,
           u.profile_photo_url,
           u.aadhar_doc_url,
@@ -79,26 +87,47 @@ router.get("/", requireCityScope(), async (req, res) => {
           z.zone_name,
           s.sector_name as ward_group,
           w.ward_name as kothi_name
+=======
+          STRING_AGG(DISTINCT c.city_name, ', ') AS city_name,
+          STRING_AGG(DISTINCT z.zone_name, ', ') AS zone_name,
+          STRING_AGG(DISTINCT s.sector_name, ', ') AS ward_group,
+          STRING_AGG(DISTINCT w.ward_name, ', ') AS kothi_name
+>>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
         FROM users u
-        LEFT JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
-        LEFT JOIN wards w ON sw.ward_id = w.ward_id
-        LEFT JOIN zones z ON w.zone_id = z.zone_id
+        LEFT JOIN all_assignments aa ON u.user_id = aa.user_id
+        LEFT JOIN wards w ON aa.ward_id = w.ward_id
+        LEFT JOIN sectors s ON w.sector_id = s.sector_id
+        LEFT JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
         LEFT JOIN cities c ON z.city_id = c.city_id
+<<<<<<< HEAD
         LEFT JOIN sectors s ON w.sector_id = s.sector_id
         WHERE u.role = 'supervisor' OR u.role = 'admin'
         ORDER BY u.user_id, u.name
+=======
+        WHERE u.role = 'supervisor'
+        GROUP BY u.user_id, u.name, u.emp_code, u.email, u.phone, u.role
+        ORDER BY u.name ASC
+>>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
       `;
       params = [];
     } else {
-      // City-scoped user — return ONLY supervisors assigned to that city
+      // City-scoped user — return ONLY supervisors assigned to that city (via direct assignments or city access)
       query = `
-        SELECT DISTINCT ON (u.user_id)
+        WITH all_assignments AS (
+          SELECT user_id, ward_id FROM user_kothi_access
+          UNION
+          SELECT supervisor_id AS user_id, ward_id FROM supervisor_kothi
+          UNION
+          SELECT supervisor_id AS user_id, ward_id FROM supervisor_ward
+        )
+        SELECT 
           u.user_id,
           u.name,
           u.emp_code,
           u.email,
           u.phone,
           u.role,
+<<<<<<< HEAD
           u.aadhar_number,
           u.profile_photo_url,
           u.aadhar_doc_url,
@@ -106,14 +135,30 @@ router.get("/", requireCityScope(), async (req, res) => {
           z.zone_name,
           s.sector_name as ward_group,
           w.ward_name as kothi_name
+=======
+          STRING_AGG(DISTINCT c.city_name, ', ') AS city_name,
+          STRING_AGG(DISTINCT z.zone_name, ', ') AS zone_name,
+          STRING_AGG(DISTINCT s.sector_name, ', ') AS ward_group,
+          STRING_AGG(DISTINCT w.ward_name, ', ') AS kothi_name
+>>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
         FROM users u
-        INNER JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
-        INNER JOIN wards w ON sw.ward_id = w.ward_id
-        INNER JOIN zones z ON w.zone_id = z.zone_id
+        INNER JOIN all_assignments aa ON u.user_id = aa.user_id
+        INNER JOIN wards w ON aa.ward_id = w.ward_id
+        INNER JOIN sectors s ON w.sector_id = s.sector_id
+        INNER JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
         INNER JOIN cities c ON z.city_id = c.city_id
+<<<<<<< HEAD
         LEFT JOIN sectors s ON w.sector_id = s.sector_id
         WHERE c.city_id = $1 AND (u.role = 'supervisor' OR u.role = 'admin')
         ORDER BY u.user_id, u.name
+=======
+        WHERE u.role = 'supervisor'
+          AND (c.city_id = $1::int OR EXISTS (
+            SELECT 1 FROM user_city_access uca WHERE uca.user_id = u.user_id AND uca.city_id = $1::int
+          ))
+        GROUP BY u.user_id, u.name, u.emp_code, u.email, u.phone, u.role
+        ORDER BY u.name ASC
+>>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
       `;
       params = [scopedCityId];
     }

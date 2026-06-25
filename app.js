@@ -61,6 +61,7 @@ const appRoutes = require("./routes/appRoutes/index");
 const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
 const supervisorAadharRoutes = require("./routes/supervisorAadharRoutes");
 const supervisorPhotoRoutes = require("./routes/supervisorPhotoRoutes");
+const otpRoutes = require("./routes/otpRoutes");
 
 const app = express();
 
@@ -234,10 +235,15 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
 
         for (const mobile of recipients) {
           try {
-            const { reportData } = await sendDailyWhatsAppReportFinal({
+            const result = await sendDailyWhatsAppReportFinal({
               phoneNumber: mobile,
+              useDispatchGuard: true,
             });
-            console.log('[WhatsApp Daily Final Cron] Sent to:', mobile, reportData.date);
+            if (result.skipped) {
+              console.log('[WhatsApp Daily Final Cron] Duplicate suppressed for:', mobile, result.reportData.date);
+            } else {
+              console.log('[WhatsApp Daily Final Cron] Sent to:', mobile, result.reportData.date);
+            }
           } catch (error) {
             console.error('[WhatsApp Daily Final Cron] Failed for:', mobile, error.message);
           }
@@ -302,11 +308,16 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
       const reportDate = targetDate || todayKey();
 
       try {
-        const { reportData } = await sendDailyBulletinWhatsAppNew({
+        const result = await sendDailyBulletinWhatsAppNew({
           phoneNumber: recipientsV2,
           date: reportDate, // Shared for the SAME DATE
+          useDispatchGuard: true,
         });
-        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Sent PMC SWM V2 Daily Bulletin in bulk to:`, recipientsV2.join(", "), 'for date:', reportData.date);
+        if (result.skipped) {
+          console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Duplicate suppressed for date:`, result.reportData.date);
+        } else {
+          console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Sent PMC SWM V2 Daily Bulletin in bulk to:`, recipientsV2.join(", "), 'for date:', result.reportData.date);
+        }
       } catch (error) {
         console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Failed bulk send V2:`, error.message);
       }
@@ -666,6 +677,7 @@ app.post("/api/auth/check-duplicate", async (req, res) => {
   }
 });
 app.use("/api/auth", authRoutes);
+app.use("/api/otp", otpRoutes);
 
 // Other Routes
 app.use("/api", allRoutes);

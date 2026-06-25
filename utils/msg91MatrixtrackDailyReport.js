@@ -1,5 +1,9 @@
 const axios = require("axios");
 const pool = require("../config/db");
+const {
+  claimWhatsAppDispatch,
+  releaseWhatsAppDispatch,
+} = require("./whatsappDispatchGuard");
 
 const BASE_URL = (process.env.MSG91_WHATSAPP_BASE_URL || "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk").replace(/\/+$/, "");
 const AUTH_KEY = process.env.MSG91_WHATSAPP_AUTH_KEY || process.env.MSG91_AUTH_KEY;
@@ -10,6 +14,7 @@ const INTEGRATED_NUMBER = "919111001035";
 
 const REPORT_CITY = "Pune";
 const REPORT_TIMEZONE = "Asia/Kolkata";
+const DISPATCH_REPORT_NAME = "matrixtrack_daily_final";
 
 const getReportDates = () => {
   const nowUtc = new Date();
@@ -35,6 +40,18 @@ const normalizePhoneNumber = (phoneNumber = "") => {
   if (!digits) return "";
   if (digits.length === 10) return `91${digits}`;
   return digits;
+};
+
+const hasMeaningfulReportData = (data) => {
+  const totals = [
+    data?.city?.total,
+    data?.city?.present,
+    data?.city?.onLeave,
+    data?.ramp?.total,
+    data?.pmc?.total,
+  ];
+
+  return totals.some((value) => Number(value || 0) > 0);
 };
 
 const fetchCityReportData = async (date) => {
@@ -100,12 +117,36 @@ const fetchCityReportData = async (date) => {
   };
 };
 
-const sendDailyWhatsAppReportFinal = async ({ phoneNumber }) => {
+const sendDailyWhatsAppReportFinal = async ({ phoneNumber, useDispatchGuard = false }) => {
   if (!phoneNumber) throw new Error("phoneNumber is required.");
 
   const normalizedPhone = normalizePhoneNumber(phoneNumber);
   const { isoDate, displayDate } = getReportDates();
   const data = await fetchCityReportData(isoDate);
+  const reportData = { ...data, date: displayDate };
+
+  if (!hasMeaningfulReportData(data)) {
+    throw new Error(
+      `[Daily Final Report] Refusing to send empty report for ${isoDate} to ${normalizedPhone}.`
+    );
+  }
+
+  const dispatchIdentity = {
+    reportName: DISPATCH_REPORT_NAME,
+    reportDate: isoDate,
+    recipientKey: normalizedPhone,
+  };
+
+  if (useDispatchGuard) {
+    const claimed = await claimWhatsAppDispatch(dispatchIdentity);
+    if (!claimed) {
+      return {
+        skipped: true,
+        reason: "duplicate_dispatch",
+        reportData,
+      };
+    }
+  }
 
   const payload = {
     integrated_number: INTEGRATED_NUMBER,
@@ -144,18 +185,25 @@ const sendDailyWhatsAppReportFinal = async ({ phoneNumber }) => {
     },
   };
 
-  const response = await axios.post(`${BASE_URL}/`, payload, {
-    headers: {
-      "Content-Type": "application/json",
-      authkey: AUTH_KEY,
-    },
-    timeout: 15000,
-  });
+  try {
+    const response = await axios.post(`${BASE_URL}/`, payload, {
+      headers: {
+        "Content-Type": "application/json",
+        authkey: AUTH_KEY,
+      },
+      timeout: 15000,
+    });
 
-  return {
-    providerResponse: response.data,
-    reportData: { ...data, date: displayDate },
-  };
+    return {
+      providerResponse: response.data,
+      reportData,
+    };
+  } catch (error) {
+    if (useDispatchGuard) {
+      await releaseWhatsAppDispatch(dispatchIdentity);
+    }
+    throw error;
+  }
 };
 
 module.exports = {
