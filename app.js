@@ -495,6 +495,10 @@ app.get("/", (req, res) => {
   res.send("Attendance System API is running...");
 });
 
+// Mount Global Audit Logger Middleware (Asynchronous S3 logging)
+const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");
+app.use("/api", auditLoggerMiddleware);
+
 // Auth Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/otp", otpRoutes);

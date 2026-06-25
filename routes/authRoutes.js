@@ -54,6 +54,9 @@ const computeAllowedCities = async (userRow, access) => {
       (role) => (role.name || "").toLowerCase() === "admin"
     );
   if (isAdminRole) {
+    if (userRow?.permissions && Array.isArray(userRow.permissions.assigned_cities)) {
+      return userRow.permissions.assigned_cities.map(Number);
+    }
     return null; // all cities
   }
 
@@ -120,7 +123,7 @@ const fetchEmployeeProfile = async (empCode) => {
 router.get("/me", authenticateToken, async (req, res) => {
   try {
     const user = await pool.query(
-      "SELECT user_id, name, email, role FROM users WHERE user_id = $1",
+      "SELECT user_id, name, email, role, permissions, emp_code, phone FROM users WHERE user_id = $1",
       [req.user.user_id]
     );
 
@@ -136,6 +139,7 @@ router.get("/me", authenticateToken, async (req, res) => {
 
     res.json({
       ...user.rows[0],
+      customPermissions: user.rows[0].permissions,
       access,
       allowedCities,
       uiPermissions,
@@ -329,6 +333,22 @@ router.post("/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.rows[0].password_hash);
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
+    // ✅ Super admin bypass — admin@gmail.com can ALWAYS login
+    const isSuperAdmin = user.rows[0].email === 'admin@gmail.com';
+
+    // ✅ Block soft-deleted accounts (except super admin)
+    if (!isSuperAdmin && user.rows[0].is_deleted === true) {
+      return res.status(403).json({ error: "Your account has been deleted. Please contact the super admin." });
+    }
+
+    // ✅ Block inactive admin accounts (except super admin)
+    if (!isSuperAdmin && user.rows[0].role === 'admin') {
+      const perms = user.rows[0].permissions;
+      if (perms && perms.is_active === false) {
+        return res.status(403).json({ error: "Your account has been deactivated. Please contact the super admin." });
+      }
+    }
+
     // ✅ Generate JWT Token
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
@@ -359,6 +379,7 @@ router.post("/login", async (req, res) => {
         role: primaryRole,
         roles: access.roles,
         permissions: access.permissions,
+        customPermissions: user.rows[0].permissions,
         emp_code: user.rows[0].emp_code,
         phone: user.rows[0].phone,
         allowedCities,
@@ -397,6 +418,19 @@ router.post("/supervisor-login", async (req, res) => {
       });
     }
 
+    // ✅ Block soft-deleted accounts
+    if (user.rows[0].is_deleted === true) {
+      return res.status(403).json({ success: false, error: "Your account has been deleted. Please contact the super admin." });
+    }
+
+    // ✅ Block inactive admin accounts
+    if (user.rows[0].role === 'admin') {
+      const perms = user.rows[0].permissions;
+      if (perms && perms.is_active === false) {
+        return res.status(403).json({ success: false, error: "Your account has been deactivated. Please contact the super admin." });
+      }
+    }
+
     // ✅ Generate JWT Token for supervisor
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
@@ -421,6 +455,7 @@ router.post("/supervisor-login", async (req, res) => {
         role: access.roles?.[0]?.name || user.rows[0].role,
         roles: access.roles,
         permissions: access.permissions,
+        customPermissions: user.rows[0].permissions,
         emp_code: user.rows[0].emp_code,
         phone: user.rows[0].phone,
         allowedCities,

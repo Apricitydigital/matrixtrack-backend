@@ -133,13 +133,44 @@ const authorize = (requiredModule, requiredAction) => {
           .json({ error: "Unauthorized: user context missing" });
       }
 
-      // Admins always pass
-      if (req.user?.role === "admin") {
-        return next();
+      // Fetch the user's role and permissions from DB
+      const userRes = await pool.query(
+        "SELECT role, permissions FROM users WHERE user_id = $1",
+        [userId]
+      );
+      if (userRes.rows.length === 0) {
+        return res.status(401).json({ error: "Unauthorized: user not found" });
+      }
+      const dbUser = userRes.rows[0];
+
+      if (dbUser.role === "admin") {
+        if (!dbUser.permissions || dbUser.permissions.role_type === "super_admin") {
+          return next();
+        }
+
+        if (dbUser.permissions.is_active === false) {
+          return res.status(403).json({ error: "Forbidden: account is inactive" });
+        }
+
+        const modules = dbUser.permissions.modules || {};
+        const normModule = requiredModule.toLowerCase().replace(/-/g, "_");
+        const access = modules[normModule];
+
+        if (access === "write") {
+          return next();
+        }
+        if ((access === "view" || access === true) && requiredAction === "view") {
+          return next();
+        }
+
+        return res.status(403).json({
+          error: "Forbidden: missing permission",
+          permission: `${requiredModule}:${requiredAction}`,
+        });
       }
 
       // Supervisors inherently have dashboard view access for the mobile app
-      if (req.user?.role === "supervisor" && requiredModule.toLowerCase() === "dashboard" && requiredAction === "view") {
+      if (dbUser.role === "supervisor" && requiredModule.toLowerCase() === "dashboard" && requiredAction === "view") {
          return next();
       }
 
