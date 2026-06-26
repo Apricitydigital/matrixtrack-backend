@@ -160,9 +160,6 @@ router.get("/me", authenticateToken, async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
-// ✅ Create new User (with optional aadhar_number and ward assignment)
-=======
 // ✅ Check duplicate fields
 router.post("/check-duplicate", async (req, res) => {
   const { email, emp_code, phone, aadhar_number } = req.body;
@@ -197,7 +194,6 @@ router.post("/check-duplicate", async (req, res) => {
 });
 
 // ✅ Create new User
->>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
 router.post("/register", async (req, res) => {
   const { name, emp_code, email, phone, role, password, aadhar_number, ward_id } = req.body;
 

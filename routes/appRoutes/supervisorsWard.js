@@ -439,7 +439,7 @@ const fetchSupervisorSummary = async (
   const onLeave = Number(row.on_leave) || 0;
   const fullyMarked = Number(row.fully_marked) || 0;
   const inProgress = Number(row.in_progress) || 0;
-  const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
+  // const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
   const notMarked = Number(row.not_marked) || 0;
   const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
   const attendanceRate =
@@ -455,36 +455,6 @@ const fetchSupervisorSummary = async (
     notMarked,
   });
 
-<<<<<<< HEAD
-  console.log("YESTERDAY SUMMARY =", yesterdaySummary);
-
-  console.log("CHANGE =", {
-    totalEmployees: calculatePercentageChange(
-      totalEmployees,
-      yesterdaySummary.totalEmployees
-    ),
-    present: calculatePercentageChange(
-      present,
-      yesterdaySummary.present
-    ),
-    onLeave: calculatePercentageChange(
-      onLeave,
-      yesterdaySummary.onLeave
-    ),
-    absent: calculatePercentageChange(
-      notMarked,
-      yesterdaySummary.notMarked
-    ),
-    fullyMarked: calculatePercentageChange(
-      fullyMarked,
-      yesterdaySummary.fullyMarked
-    ),
-    midShiftPunchIn: calculatePercentageChange(
-      midShiftPunchIn,
-      yesterdaySummary.midShiftPunchIn
-    ),
-  });
-=======
   let change = {};
   if (!options.skipYesterday) {
     try {
@@ -524,7 +494,6 @@ const fetchSupervisorSummary = async (
     }
   }
 
->>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
   return {
     totalEmployees,
     present,
@@ -535,43 +504,8 @@ const fetchSupervisorSummary = async (
     onLeave,
     notMarked,
     attendanceRate,
-<<<<<<< HEAD
-
-    change: {
-      totalEmployees: calculatePercentageChange(
-        totalEmployees,
-        yesterdaySummary.totalEmployees
-      ),
-
-      present: calculatePercentageChange(
-        present,
-        yesterdaySummary.present
-      ),
-
-      onLeave: calculatePercentageChange(
-        onLeave,
-        yesterdaySummary.onLeave
-      ),
-
-      absent: calculatePercentageChange(
-        notMarked,
-        yesterdaySummary.notMarked
-      ),
-
-      fullyMarked: calculatePercentageChange(
-        fullyMarked,
-        yesterdaySummary.fullyMarked
-      ),
-
-      midShiftPunchIn: calculatePercentageChange(
-        midShiftPunchIn,
-        yesterdaySummary.midShiftPunchIn
-      ),
-    },
-=======
     midShiftPunchIn,
     change,
->>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
   };
 };
 
@@ -1654,11 +1588,6 @@ router.post("/", async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
-
-
-=======
->>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17
 // ── Top Performing Supervisors ─────────────────────────────────────────────
 router.post("/top-supervisors", async (req, res) => {
   const requestingUser = req.user;
@@ -1731,9 +1660,6 @@ router.post("/top-supervisors", async (req, res) => {
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
-<<<<<<< HEAD
-module.exports = router;
-=======
 
 // ── Attendance Trend ─────────────────────────────────────────────
 router.post("/attendance-trend", async (req, res) => {
@@ -1812,4 +1738,3 @@ router.post("/attendance-trend", async (req, res) => {
 });
 
 module.exports = router;
->>>>>>> 27178267eaecafc5ca495581742e85a4e7b05b17

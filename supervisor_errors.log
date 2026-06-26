@@ -1080,3 +1080,63 @@
     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
     at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:677:18)
     at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1590:22
+[2026-06-26T02:11:36.421Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:11:36.499Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:11:36.553Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:20:53.617Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:20:53.719Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:20:53.780Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:20:53.920Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:21:00.498Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:21:21.487Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:21:21.841Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:21:22.694Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-06-26T02:21:22.700Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
