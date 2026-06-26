@@ -37,6 +37,15 @@ router.get("/protected", authenticateUser, (req, res) => {
   res.json({ message: "You are authorized!", user: req.user });
 });
 
+// Generic logging endpoints
+router.post("/log-page-visit", authenticateUser, (req, res) => {
+  res.json({ success: true, message: "Page visit logged" });
+});
+
+router.post("/log-action", authenticateUser, (req, res) => {
+  res.json({ success: true, message: "Custom action logged" });
+});
+
 // Register Routes
 router.use("/employees", employeeRoutes);
 router.use("/cities", cityRoutes);
@@ -58,6 +67,7 @@ router.use("/admin", professionalReportsRoutes);
 router.use("/assignedWardRoutes", assignedWardRoutes);
 router.use("/assignedKothiRoutes", assignedKothiRoutes);
 router.use("/admin", adminRoutes);
+router.use("/admin-management", require("./adminManagementRoutes"));
 router.use("/rbac", rbacRoutes);
 router.use("/whatsapp", whatsappRoutes);
 router.use("/user", userRoutes);
