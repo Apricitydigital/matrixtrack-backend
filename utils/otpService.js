@@ -1,5 +1,5 @@
 /**
- * OTP Service — AWS SNS SMS
+ * OTP Service ΓÇö AWS SNS SMS
  * Stores OTPs in-memory with 5-minute expiry.
  * No DB changes needed.
  */
@@ -36,7 +36,7 @@ const sendOtp = async (phone) => {
 
   const internationalPhone = `+91${phone}`;
 
-  // Check cooldown — prevent spamming
+  // Check cooldown ΓÇö prevent spamming
   const existing = otpStore.get(phone);
   if (existing) {
     const timeSinceSent = Date.now() - (existing.expiresAt - OTP_EXPIRY_MS);
@@ -97,7 +97,7 @@ const verifyOtp = (phone, otp) => {
     return { success: false, message: "Incorrect OTP. Please try again." };
   }
 
-  // Mark as verified — keeps entry for registration flow
+  // Mark as verified ΓÇö keeps entry for registration flow
   otpStore.set(phone, { ...entry, verified: true });
   return { success: true, message: "Phone number verified successfully." };
 };
