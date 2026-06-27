@@ -497,7 +497,7 @@ const approveRequest = async (req, res) => {
       `Email: ${request.email}`,
       `Password: ${plainTextPassword}`,
       '',
-      'Welcome to MatrixTrack!≡ƒÄë'
+      'Welcome to MatrixTrack! 🎉'
     ].join('\n');
     let approvalSmsSent = false;
     let approvalSmsError = null;

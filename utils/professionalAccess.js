@@ -27,38 +27,26 @@ const buildVisibilityScope = (user, cityScope, tableAlias = 'pa') => {
     params.push(supervisorId);
 
     cte = `
-      WITH has_explicit_scope AS (
-        SELECT EXISTS (
-          SELECT 1 FROM user_city_access WHERE user_id = $1
-          UNION ALL
-          SELECT 1 FROM user_zone_access WHERE user_id = $1
-          UNION ALL
-          SELECT 1 FROM user_kothi_access WHERE user_id = $1
-        ) AS enabled
-      ),
-      assigned_kothis AS (
+      WITH assigned_kothis AS (
         SELECT ward_id FROM user_kothi_access WHERE user_id = $1
         UNION
         SELECT ward_id
         FROM supervisor_kothi
         WHERE supervisor_id = $1
-          AND NOT (SELECT enabled FROM has_explicit_scope)
         UNION
         -- Legacy fallback: some old supervisor_ward rows stored sector_id instead of ward_id.
-        -- Expand those legacy sector mappings into actual kothi ward_ids only when explicit RBAC scope is absent.
+        -- Expand those legacy sector mappings into actual kothi ward_ids
         SELECT w.ward_id
         FROM supervisor_ward sw_legacy
         LEFT JOIN wards w_direct ON w_direct.ward_id = sw_legacy.ward_id
         JOIN wards w ON w.sector_id = sw_legacy.ward_id
         WHERE sw_legacy.supervisor_id = $1
           AND w_direct.ward_id IS NULL
-          AND NOT (SELECT enabled FROM has_explicit_scope)
       ),
       assigned_wards AS (
         SELECT ward_id
         FROM supervisor_ward
         WHERE supervisor_id = $1
-          AND NOT (SELECT enabled FROM has_explicit_scope)
           AND EXISTS (
             SELECT 1
             FROM wards w_real
@@ -76,8 +64,7 @@ const buildVisibilityScope = (user, cityScope, tableAlias = 'pa') => {
         UNION
         SELECT ward_id
         FROM assigned_kothis
-        WHERE NOT (SELECT enabled FROM has_explicit_scope)
-          AND EXISTS (
+        WHERE EXISTS (
             SELECT 1
             FROM wards w_child
             WHERE w_child.ward_id = assigned_kothis.ward_id
