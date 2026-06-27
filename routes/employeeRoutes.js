@@ -114,7 +114,7 @@ router.get(
   }
 });
 
-// 🟢 Insert or update an employee (idempotent)
+// 🟢 Insert an employee
 router.post("/", async (req, res) => {
   const { name, emp_code, phone, ward_id, designation_id } = req.body;
 
@@ -122,21 +122,14 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "emp_code is required" });
   }
 
-  const upsertEmployeeQuery = `
+  const insertEmployeeQuery = `
     INSERT INTO employee (emp_code, name, phone, ward_id, designation_id, aadhar_no)
     VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT (emp_code)
-    DO UPDATE SET
-      name = EXCLUDED.name,
-      phone = EXCLUDED.phone,
-      ward_id = EXCLUDED.ward_id,
-      designation_id = EXCLUDED.designation_id,
-      aadhar_no = EXCLUDED.aadhar_no
     RETURNING *;
   `;
 
   try {
-    const result = await pool.query(upsertEmployeeQuery, [
+    const result = await pool.query(insertEmployeeQuery, [
       emp_code,
       name,
       phone,
@@ -148,6 +141,7 @@ router.post("/", async (req, res) => {
   } catch (error) {
     if (error.code === "23505") {
       return res.status(409).json({
+        error: "Employee already exists with this code",
         message: "Employee already exists",
         emp_code,
       });

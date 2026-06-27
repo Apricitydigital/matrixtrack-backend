@@ -164,8 +164,9 @@ router.post("/check-duplicate", async (req, res) => {
       emailExists = emailCheck.rowCount > 0;
     }
     if (emp_code) {
-      const empCodeCheck = await pool.query("SELECT user_id FROM users WHERE emp_code = $1 LIMIT 1", [emp_code.trim()]);
-      empCodeExists = empCodeCheck.rowCount > 0;
+      const empCodeCheckUsers = await pool.query("SELECT user_id FROM users WHERE emp_code = $1 LIMIT 1", [emp_code.trim()]);
+      const empCodeCheckEmployees = await pool.query("SELECT emp_id FROM employee WHERE emp_code = $1 LIMIT 1", [emp_code.trim()]);
+      empCodeExists = empCodeCheckUsers.rowCount > 0 || empCodeCheckEmployees.rowCount > 0;
     }
     if (phone) {
       const phoneCheck = await pool.query("SELECT user_id FROM users WHERE phone = $1 LIMIT 1", [phone.trim()]);
@@ -198,29 +199,25 @@ router.post("/register", async (req, res) => {
     const result = await pool.query(
       `INSERT INTO users (name, emp_code, email, phone, role, password_hash)
        VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT DO NOTHING
        RETURNING user_id, name, role`,
       [name, emp_code, email, phone, role, hashedPassword]
     );
 
-    if (result.rowCount === 0) {
-      console.warn("Record exists, skipping");
-      const existing = await pool.query(
-        "SELECT user_id, name, role FROM users WHERE email = $1 OR emp_code = $2 LIMIT 1",
-        [email, emp_code]
-      );
-      return res.status(200).json({
-        message: "Record exists, skipping",
-        user: existing.rows[0] || null,
-      });
-    }
-
     res.status(201).json({ message: "User registered", user: result.rows[0] });
   } catch (error) {
     if (error.code === "23505") {
-      console.warn("Record exists, skipping");
-      return res.status(200).json({ message: "Record exists, skipping" });
+      if (error.constraint === "users_email_key") {
+        return res.status(400).json({ error: "Email address already registered." });
+      }
+      if (error.constraint === "users_emp_code_key") {
+        return res.status(400).json({ error: "Employee code already exists." });
+      }
+      if (error.constraint === "users_phone_key") {
+        return res.status(400).json({ error: "Phone number already registered." });
+      }
+      return res.status(400).json({ error: "Duplicate value violates unique credentials check." });
     }
+    console.error("Registration failed error:", error);
     res.status(500).json({ error: "Registration failed" });
   }
 });
