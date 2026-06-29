@@ -9,6 +9,7 @@ const { attachKothiScope } = require("../../middleware/kothiScope");
 const { buildPublicFaceUrl } = require("../../utils/faceImage");
 const { isBackblazeUrl } = require("../../utils/backblaze");
 const { ensureSelfAttendanceSupport } = require("../../utils/selfAttendance");
+const { fetchUserKothiAccess } = require("../../utils/userKothiAccess");
 const fs = require("fs");
 
 const logError = (label, error) => {
@@ -326,9 +327,29 @@ const fetchSupervisorSummary = async (
   endDate,
   options = {}
 ) => {
-  const { zoneIds = [], kothiIds = [] } = options;
-  const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
-  const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
+  let { zoneIds = [], kothiIds = [] } = options;
+  let hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
+  let hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
+
+  // Resolve scope for the supervisor if no filters are active
+  if (userId && !hasZoneFilter && !hasKothiFilter) {
+    try {
+      const scope = await fetchUserKothiAccess(userId, {
+        allowZoneFallback: true,
+        allowCityFallback: false,
+      });
+      if (Array.isArray(scope.ids) && scope.ids.length > 0) {
+        kothiIds = scope.ids;
+        hasKothiFilter = true;
+      } else {
+        // If the supervisor has no assignments, return empty summary directly
+        console.log(`[DEBUG] fetchSupervisorSummary: supervisor ${userId} has no assigned wards. Returning empty.`);
+        return EMPTY_SUMMARY;
+      }
+    } catch (scopeError) {
+      console.error("Error resolving supervisor scope in fetchSupervisorSummary:", scopeError);
+    }
+  }
 
   const baseFilters = [];
   const params = [];
@@ -336,18 +357,6 @@ const fetchSupervisorSummary = async (
   if (cityId) {
     params.push(cityId);
     baseFilters.push(`c.city_id = $${params.length}`);
-  }
-
-  if (userId && !hasZoneFilter && !hasKothiFilter) {
-    // Fallback to user-linked wards/zones to avoid city-wide expansion
-    params.push(userId);
-    const userParam = params.length;
-    baseFilters.push(
-      `(sw.supervisor_id = $${userParam} OR
-        w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $${userParam}) OR
-        w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $${userParam}) OR
-        w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $${userParam}))`
-    );
   }
 
   if (hasZoneFilter) {
@@ -376,7 +385,6 @@ const fetchSupervisorSummary = async (
       JOIN wards w ON e.ward_id = w.ward_id
       JOIN zones z ON w.zone_id = z.zone_id
       JOIN cities c ON z.city_id = c.city_id
-      LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
       ${whereClause}
     ),
     attendance_status AS (
@@ -516,9 +524,35 @@ const fetchSupervisorEmployees = async (
   endDate,
   options = {}
 ) => {
-  const { zoneIds = [], kothiIds = [], allowCityFallback = false } = options;
-  const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
-  const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
+  let { zoneIds = [], kothiIds = [], allowCityFallback = false } = options;
+  let hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
+  let hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
+
+  // Resolve scope for the supervisor if no filters are active and user is not admin
+  if (userId && !allowCityFallback && !hasZoneFilter && !hasKothiFilter) {
+    try {
+      const scope = await fetchUserKothiAccess(userId, {
+        allowZoneFallback: true,
+        allowCityFallback: false,
+      });
+      if (Array.isArray(scope.ids) && scope.ids.length > 0) {
+        kothiIds = scope.ids;
+        hasKothiFilter = true;
+      } else {
+        // If the supervisor has no assignments, return empty list directly
+        console.log(`[DEBUG] fetchSupervisorEmployees: supervisor ${userId} has no assigned wards. Returning empty.`);
+        return [];
+      }
+    } catch (scopeError) {
+      console.error("Error resolving supervisor scope in fetchSupervisorEmployees:", scopeError);
+    }
+  }
+
+  // If no zone/kothi filter is active and we are not allowing city fallback
+  if (!allowCityFallback && !hasZoneFilter && !hasKothiFilter) {
+    return [];
+  }
+
   await ensureSelfAttendanceSupport();
   const params = [
     userId ?? null,
@@ -560,28 +594,10 @@ const fetchSupervisorEmployees = async (
       LEFT JOIN designation d ON e.designation_id = d.designation_id
       LEFT JOIN department dept ON d.department_id = dept.department_id
       WHERE ($4::int IS NULL OR c.city_id = $4::int)
+        AND ($1::int IS NULL OR $1::int IS NOT NULL)
+        AND ($5::boolean IS NULL OR $5::boolean IS NOT NULL)
         ${zoneFilterSql}
         ${kothiFilterSql}
-        AND (
-          $1::int IS NULL
-          OR $5::boolean = true
-          OR EXISTS (
-            SELECT 1 FROM supervisor_ward sw
-            WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1::int
-          )
-          OR EXISTS (
-            SELECT 1 FROM user_kothi_access uk
-            WHERE uk.ward_id = e.ward_id AND uk.user_id = $1::int
-          )
-          OR EXISTS (
-            SELECT 1 FROM supervisor_kothi sk
-            WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1::int
-          )
-          OR EXISTS (
-            SELECT 1 FROM user_zone_access uz
-            WHERE uz.zone_id = w.zone_id AND uz.user_id = $1::int
-          )
-        )
     ),
     attendance_summary AS (
       SELECT
@@ -675,9 +691,34 @@ const fetchCitySummary = async (
   endDate,
   options = {}
 ) => {
-  const { zoneIds = [], kothiIds = [] } = options;
-  const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
-  const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
+  let { zoneIds = [], kothiIds = [], isAdmin = false } = options;
+  let hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
+  let hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
+
+  // Resolve scope for the supervisor if no filters are active and user is not admin
+  if (userId && !isAdmin && !hasZoneFilter && !hasKothiFilter) {
+    try {
+      const scope = await fetchUserKothiAccess(userId, {
+        allowZoneFallback: true,
+        allowCityFallback: false,
+      });
+      if (Array.isArray(scope.ids) && scope.ids.length > 0) {
+        kothiIds = scope.ids;
+        hasKothiFilter = true;
+      } else {
+        // If the supervisor has no assignments, return empty summary directly
+        console.log(`[DEBUG] fetchCitySummary: supervisor ${userId} has no assigned wards. Returning empty.`);
+        return [];
+      }
+    } catch (scopeError) {
+      console.error("Error resolving supervisor scope in fetchCitySummary:", scopeError);
+    }
+  }
+
+  // If no zone/kothi filter is active and we are not admin
+  if (!isAdmin && !hasZoneFilter && !hasKothiFilter) {
+    return [];
+  }
 
   const query = `
     WITH employee_city AS (
@@ -689,14 +730,8 @@ const fetchCitySummary = async (
       JOIN wards w ON e.ward_id = w.ward_id
       JOIN zones z ON w.zone_id = z.zone_id
       JOIN cities c ON z.city_id = c.city_id
-      LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
-      WHERE ($1::int IS NULL OR 
-             sw.supervisor_id = $1::int OR 
-             w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $1) OR
-             w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1) OR
-             w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1)
-            )
-        AND ($4::int IS NULL OR c.city_id = $4::int)
+      WHERE ($4::int IS NULL OR c.city_id = $4::int)
+        AND ($1::int IS NULL OR $1::int IS NOT NULL)
         ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
         ${hasKothiFilter ? `AND w.ward_id = ANY($${hasZoneFilter ? 6 : 5}::int[])` : ""}
     ),
@@ -763,13 +798,10 @@ const fetchZoneSummary = async (
   endDate,
   options = {}
 ) => {
-  const { zoneIds = [], kothiIds = [] } = options;
-  const hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
-  const hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
+  let { zoneIds = [], kothiIds = [], isAdmin = false } = options;
+  let hasZoneFilter = Array.isArray(zoneIds) && zoneIds.length > 0;
+  let hasKothiFilter = Array.isArray(kothiIds) && kothiIds.length > 0;
 
-  const cityFallbackClause = options.isAdmin
-    ? "OR z.city_id IN (SELECT city_id FROM user_city_access WHERE user_id = $1)"
-    : "";
   const query = `
     WITH employee_zone AS (
       SELECT DISTINCT
@@ -780,15 +812,8 @@ const fetchZoneSummary = async (
       JOIN wards w ON e.ward_id = w.ward_id
       JOIN zones z ON w.zone_id = z.zone_id
       JOIN cities c ON z.city_id = c.city_id
-      LEFT JOIN supervisor_ward sw ON e.ward_id = sw.ward_id
-      WHERE ($1::int IS NULL OR 
-             sw.supervisor_id = $1::int OR 
-             w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $1) OR
-             w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $1) OR
-             w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $1)
-             ${cityFallbackClause}
-            )
-        AND ($4::int IS NULL OR c.city_id = $4::int)
+      WHERE ($4::int IS NULL OR c.city_id = $4::int)
+        AND ($1::int IS NULL OR $1::int IS NOT NULL)
         ${hasZoneFilter ? "AND z.zone_id = ANY($5::int[])" : ""}
         ${hasKothiFilter ? `AND w.ward_id = ANY($${hasZoneFilter ? 6 : 5}::int[])` : ""}
     ),
