@@ -349,11 +349,27 @@ router.post("/login", async (req, res) => {
       }
     }
 
+    // Calculate seconds remaining until next midnight (12:00 AM) in Asia/Kolkata
+    const getSecondsUntilMidnight = () => {
+      const now = new Date();
+      const kolkataTimeStr = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+      const kolkataDate = new Date(kolkataTimeStr);
+      
+      const midnight = new Date(kolkataTimeStr);
+      midnight.setHours(24, 0, 0, 0);
+      
+      const diffMs = midnight.getTime() - kolkataDate.getTime();
+      const diffSec = Math.floor(diffMs / 1000);
+      return diffSec > 0 ? diffSec : 3600;
+    };
+
+    const secondsUntilMidnight = getSecondsUntilMidnight();
+
     // ✅ Generate JWT Token
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
+      { expiresIn: secondsUntilMidnight }
     );
 
     const access = await getUserAccessProfile(user.rows[0].user_id);

@@ -495,6 +495,10 @@ app.get("/", (req, res) => {
   res.send("Attendance System API is running...");
 });
 
+// Mount IP Blocking Middleware
+const ipBlockMiddleware = require("./middleware/ipBlockMiddleware");
+app.use("/api", ipBlockMiddleware);
+
 // Mount Global Audit Logger Middleware (Asynchronous S3 logging)
 const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");
 app.use("/api", auditLoggerMiddleware);

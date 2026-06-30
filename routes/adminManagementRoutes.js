@@ -342,4 +342,102 @@ router.post("/log-action", async (req, res) => {
   res.json({ success: true, message: "Custom action logged" });
 });
 
+// Get list of blocked IPs
+router.get("/blocked-ips", async (req, res) => {
+  try {
+    // Only admins can view blocked IPs
+    const userRole = req.user?.role;
+    if (!userRole || userRole.toLowerCase() !== "admin") {
+      return res.status(403).json({ error: "Access denied. Admin role required." });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT b.ip_address, b.reason, b.blocked_at, u.name as blocked_by_name 
+       FROM blocked_ips b 
+       LEFT JOIN users u ON b.blocked_by = u.user_id 
+       ORDER BY b.blocked_at DESC`
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error("Error fetching blocked IPs:", error);
+    res.status(500).json({ error: "Failed to fetch blocked IPs" });
+  }
+});
+
+// Helper function to check if caller has IP blocking permissions
+const checkIpBlockPermission = async (userId) => {
+  const { rows } = await pool.query(
+    "SELECT email, role, permissions FROM users WHERE user_id = $1 AND is_deleted = FALSE",
+    [userId]
+  );
+  if (rows.length === 0) return false;
+  const user = rows[0];
+  if (user.email === "admin@gmail.com") return true; // Super admin always allowed
+  if (user.role?.toLowerCase() === "admin") {
+    if (user.permissions && user.permissions.role_type === "super_admin") return true;
+    if (user.permissions && user.permissions.actions && user.permissions.actions.can_block_ip === true) {
+      return true;
+    }
+  }
+  return false;
+};
+
+// Block an IP address
+router.post("/block-ip", async (req, res) => {
+  try {
+    const hasPerm = await checkIpBlockPermission(req.user.user_id);
+    if (!hasPerm) {
+      return res.status(403).json({ error: "Access denied. You do not have permission to block IPs." });
+    }
+
+    const { ip, reason } = req.body;
+    if (!ip) {
+      return res.status(400).json({ error: "IP address is required" });
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO blocked_ips (ip_address, blocked_by, reason) 
+       VALUES ($1, $2, $3) 
+       ON CONFLICT (ip_address) 
+       DO UPDATE SET blocked_by = EXCLUDED.blocked_by, reason = EXCLUDED.reason, blocked_at = NOW() 
+       RETURNING *`,
+      [ip, req.user.user_id, reason || null]
+    );
+
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    console.error("Error blocking IP:", error);
+    res.status(500).json({ error: "Failed to block IP" });
+  }
+});
+
+// Unblock an IP address
+router.delete("/block-ip/:ip", async (req, res) => {
+  try {
+    const hasPerm = await checkIpBlockPermission(req.user.user_id);
+    if (!hasPerm) {
+      return res.status(403).json({ error: "Access denied. You do not have permission to unblock IPs." });
+    }
+
+    const { ip } = req.params;
+    if (!ip) {
+      return res.status(400).json({ error: "IP address is required" });
+    }
+
+    const { rowCount } = await pool.query(
+      "DELETE FROM blocked_ips WHERE ip_address = $1",
+      [ip]
+    );
+
+    if (rowCount === 0) {
+      return res.status(404).json({ error: "IP address not found in blocked list" });
+    }
+
+    res.json({ success: true, message: "IP address unblocked successfully" });
+  } catch (error) {
+    console.error("Error unblocking IP:", error);
+    res.status(500).json({ error: "Failed to unblock IP" });
+  }
+});
+
 module.exports = router;

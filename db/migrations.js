@@ -222,6 +222,17 @@ async function runMigrations() {
       console.log("[Migration] ✅ Default transfer key 'jasikey' seeded.");
     }
 
+    // Add blocked_ips table for IP blocking feature
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS blocked_ips (
+        ip_address VARCHAR(45) PRIMARY KEY,
+        blocked_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
+        reason TEXT,
+        blocked_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    console.log("[Migration] ✅ blocked_ips table ready.");
+
     console.log("[Migration] ✅ All migrations complete.");
   } catch (err) {
     // Non-fatal: log and continue
