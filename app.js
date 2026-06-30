@@ -499,6 +499,22 @@ app.get("/", (req, res) => {
 const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");
 app.use("/api", auditLoggerMiddleware);
 
+// Biometric Proxy Route
+const axios = require("axios");
+app.get("/api/biometric-proxy", async (req, res) => {
+  try {
+    console.log("[Biometric Proxy] Fetching from source API...");
+    const response = await axios.get("https://biometric.humanmatrix.online/all", {
+      timeout: 30000 // 30s timeout
+    });
+    console.log(`[Biometric Proxy] Success! Fetched ${response.data?.records?.length || 0} records.`);
+    res.json(response.data);
+  } catch (error) {
+    console.error("[Biometric Proxy] Error fetching:", error.message);
+    res.status(500).json({ error: "Failed to fetch biometric data from source" });
+  }
+});
+
 // Auth Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/otp", otpRoutes);
