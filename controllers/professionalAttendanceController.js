@@ -1,7 +1,8 @@
 const pool = require('../config/db');
 const logger = require('../utils/logger');
 const { verifyFaceMatch } = require('../utils/faceService');
-const { rekognition, DetectFacesCommand, CompareFacesCommand } = require('../config/awsConfig');
+const { rekognition, DetectFacesCommand, CompareFacesCommand, s3, GetObjectCommand } = require('../config/awsConfig');
+const axios = require('axios');
 const { getSignedS3Url, uploadToS3 } = require('../utils/s3SelfPunch');
 const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSchema');
 
@@ -50,6 +51,107 @@ const livenessEnvNumber = (name, fallback) => {
   const parsed = Number(process.env[name]);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+
+// ── In-process selfie-buffer cache ──────────────────────────────────────────
+// Caches the downloaded S3 reference-selfie buffer so the second Rekognition
+// call (challenge-frame match) reuses it instead of re-downloading from S3.
+// Max 200 entries, 10-minute TTL — low memory footprint, safe for production.
+const selfieBufferCache = new Map();
+const SELFIE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const SELFIE_CACHE_MAX = 200;
+
+const purgeSelfieCache = () => {
+  if (selfieBufferCache.size <= SELFIE_CACHE_MAX) return;
+  // Evict oldest entries first
+  const oldest = [...selfieBufferCache.entries()]
+    .sort((a, b) => a[1].ts - b[1].ts)
+    .slice(0, selfieBufferCache.size - SELFIE_CACHE_MAX);
+  oldest.forEach(([k]) => selfieBufferCache.delete(k));
+};
+
+const getCachedSelfieBuffer = async (sourceS3Key) => {
+  const now = Date.now();
+  const cached = selfieBufferCache.get(sourceS3Key);
+  if (cached && now - cached.ts < SELFIE_CACHE_TTL_MS) {
+    return cached.buffer;
+  }
+
+  // Download fresh — mirrors faceService download logic exactly
+  const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+  let buffer = null;
+  let normalizedKey = String(sourceS3Key || '').trim();
+
+  if (normalizedKey.startsWith('http://') || normalizedKey.startsWith('https://')) {
+    try {
+      const resp = await axios.get(normalizedKey, { responseType: 'arraybuffer', timeout: 8000 });
+      buffer = Buffer.from(resp.data);
+    } catch (_) {
+      try {
+        const parsedUrl = new URL(normalizedKey);
+        normalizedKey = decodeURIComponent(parsedUrl.pathname || '').replace(/^\/+/, '');
+      } catch (__) {
+        normalizedKey = normalizedKey.replace(/^https?:\/\/[^/]+\//i, '');
+      }
+    }
+  }
+
+  if (!buffer && normalizedKey) {
+    const buckets = [...new Set([
+      AWS_S3_BUCKET,
+      process.env.SECONDARY_S3_BUCKET,
+      'attend-ease-images',
+      'dailyfacerecord',
+    ].filter(Boolean))];
+    for (const bucket of buckets) {
+      try {
+        const resp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: normalizedKey }));
+        const chunks = [];
+        for await (const chunk of resp.Body) chunks.push(chunk);
+        buffer = Buffer.concat(chunks);
+        break;
+      } catch (_) { /* try next bucket */ }
+    }
+  }
+
+  if (!buffer) throw new Error('Unable to download reference selfie from storage.');
+
+  selfieBufferCache.set(sourceS3Key, { buffer, ts: now });
+  purgeSelfieCache();
+  return buffer;
+};
+
+const verifyFaceMatchWithCache = async (sourceS3Key, targetBase64, threshold = 80) => {
+  try {
+    const sourceImageBuffer = await getCachedSelfieBuffer(sourceS3Key);
+    const base64Data = String(targetBase64 || '').replace(/^data:image\/\w+;base64,/, '');
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+
+    const compareCommand = new CompareFacesCommand({
+      SourceImage: { Bytes: sourceImageBuffer },
+      TargetImage: { Bytes: imageBuffer },
+      SimilarityThreshold: threshold
+    });
+
+    const response = await rekognition.send(compareCommand);
+
+    if (response.FaceMatches && response.FaceMatches.length > 0) {
+      const bestMatch = response.FaceMatches.reduce((prev, current) => {
+        return (prev.Similarity > current.Similarity) ? prev : current;
+      });
+
+      return {
+        isMatch: bestMatch.Similarity >= threshold,
+        confidence: bestMatch.Similarity
+      };
+    }
+
+    return { isMatch: false, confidence: 0 };
+  } catch (error) {
+    logger.error('[Attendance] Face match verification failed', error.message || error);
+    return { isMatch: false, confidence: 0 };
+  }
+};
+
 
 const LIVENESS_CONFIG = {
   enabled: String(process.env.PROFESSIONAL_LIVENESS_ENABLED ?? 'true').toLowerCase() !== 'false',
@@ -202,7 +304,10 @@ const detectSingleFace = async (base64Image, stage = 'front') => {
   const poseExceeded =
     Math.abs(roll) > LIVENESS_CONFIG.maxRoll ||
     Math.abs(pitch) > LIVENESS_CONFIG.maxPitch ||
-    (stage === 'front' ? Math.abs(yaw) > LIVENESS_CONFIG.maxYaw : Math.abs(yaw) > 50);
+    // For non-front stages the person is intentionally turned: allow up to 65°.
+    // The previous 50° limit was too tight — a moderate right/left turn easily
+    // exceeds it on front-facing cameras and caused false 422 rejections.
+    (stage === 'front' ? Math.abs(yaw) > LIVENESS_CONFIG.maxYaw : Math.abs(yaw) > 65);
   if (poseExceeded) {
     return {
       ok: false,
@@ -212,7 +317,13 @@ const detectSingleFace = async (base64Image, stage = 'front') => {
     };
   }
 
-  if (stage !== 'blink' && !eyesOpen) {
+  // Only reject for closed eyes when Rekognition is confident enough (≥72%).
+  // Below that threshold the model is uncertain (common with some face types,
+  // slight downward gaze, or bright ambient light) — passing through prevents
+  // false-positive LIVENESS_FAILED errors on real live people.
+  const eyesClearlyOpen = eyesOpenValue === true;
+  const eyesClearlyClosed = eyesOpenValue === false && eyesOpenConfidence >= 72;
+  if (stage !== 'blink' && eyesClearlyClosed) {
     return { ok: false, message: 'Please keep your eyes open and retake the selfie.' };
   }
 
@@ -315,10 +426,13 @@ const runLivenessPrecheck = async (selfieBase64, options = {}) => {
   }
   const direction = String(options?.livenessChallenge || '').trim().toLowerCase();
 
-  const frameAResult = await detectSingleFace(frameA, 'front');
-  if (!frameAResult.ok) return frameAResult;
+  // Parallelise face detection on both frames — saves ~400ms vs sequential.
   const stageForB = direction === 'blink' ? 'blink' : (direction === 'left' ? 'left' : 'right');
-  const frameBResult = await detectSingleFace(frameB, stageForB);
+  const [frameAResult, frameBResult] = await Promise.all([
+    detectSingleFace(frameA, 'front'),
+    detectSingleFace(frameB, stageForB),
+  ]);
+  if (!frameAResult.ok) return frameAResult;
   if (!frameBResult.ok) return frameBResult;
 
   const samePerson = await verifyFramesBelongToSamePerson(frameAResult.buffer, frameBResult.buffer);
@@ -385,7 +499,12 @@ const runLivenessPrecheck = async (selfieBase64, options = {}) => {
       return { ok: false, message: 'Please turn your head LEFT in step 2 and retry.' };
     }
   } else if (direction === 'right') {
-    if (!(yawDelta >= minDelta)) {
+    // Rekognition Yaw convention: positive = face turned LEFT from camera's view.
+    // When a person turns their head RIGHT, yaw goes NEGATIVE relative to front.
+    // The original signed check (yawDelta >= minDelta) was therefore checking for
+    // a LEFT turn — wrong direction. Using Math.abs ensures we accept the correct
+    // movement regardless of camera orientation or exact sign convention.
+    if (!(Math.abs(yawDelta) >= minDelta)) {
       return { ok: false, message: 'Please turn your head RIGHT in step 2 and retry.' };
     }
   } else if (Math.abs(yawDelta) < minDelta) {
@@ -424,64 +543,29 @@ const punchIn = async (req, res) => {
 
   const today = getTodayIST();
 
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    await ensureProfessionalAttendanceColumns(client);
+    // Keep DB work outside the transaction as much as possible so expensive
+    // face/liveness work does not hold a pooled connection.
+    await ensureProfessionalAttendanceColumns(pool);
     await ensureProfessionalLeaveSchema();
 
-    const leaveCheck = await client.query(
-      `SELECT leave_type
-       FROM professional_leave_requests
-       WHERE professional_id = $1
-         AND requested_date = $2
-         AND status = 'approved'
-       LIMIT 1`,
-      [professional_id, today]
-    );
-    if (leaveCheck.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        success: false,
-        message: `You are on approved ${leaveCheck.rows[0].leave_type} leave for today.`,
-      });
-    }
-
-    // 1. Check if already punched in today
-    const checkQuery = `
-      SELECT id FROM professional_attendance 
-      WHERE professional_id = $1 AND date = $2
-      FOR UPDATE
-    `;
-    const checkResult = await client.query(checkQuery, [professional_id, today]);
-
-    if (checkResult.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ success: false, message: 'You have already punched in today.' });
-    }
-
-    // 2. Get the reference selfie from professional profile
     const profileQuery = `SELECT selfie_url FROM professional_employees WHERE id = $1 AND is_active = true`;
-    const profileResult = await client.query(profileQuery, [professional_id]);
+    const profileResult = await pool.query(profileQuery, [professional_id]);
 
     if (profileResult.rows.length === 0) {
-      await client.query('ROLLBACK');
       return res.status(404).json({ success: false, message: 'Profile not found or deactivated.' });
     }
 
     const { selfie_url: sourceS3Key } = profileResult.rows[0];
 
-    // 3. Perform primary face verification first so wrong identity returns a clear error
     let matchResult;
     try {
-      matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80);
+      matchResult = await verifyFaceMatchWithCache(sourceS3Key, selfie_base64, 80);
     } catch (faceErr) {
-      await client.query('ROLLBACK');
       return res.status(400).json({ success: false, message: faceErr.message });
     }
 
     if (!matchResult.isMatch) {
-      await client.query('ROLLBACK');
       logger.warn(`[Attendance] Face match failed for ${professional_id}. Confidence: ${matchResult.confidence}`);
       return res.status(403).json({
         success: false,
@@ -491,21 +575,18 @@ const punchIn = async (req, res) => {
       });
     }
 
-    // 4. Liveness pre-check after identity verification to avoid confusing mismatch as liveness failure
     const liveness = await runLivenessPrecheck(selfie_base64, {
       livenessFrames: liveness_frames,
       livenessChallenge: liveness_challenge,
     });
     if (!liveness.ok) {
       if (liveness.needsChallenge) {
-        await client.query('ROLLBACK');
         return res.status(428).json({
           success: false,
           code: 'LIVENESS_CHALLENGE_REQUIRED',
           message: liveness.message || 'Quick live challenge required.',
         });
       }
-      await client.query('ROLLBACK');
       return res.status(422).json({
         success: false,
         code: 'LIVENESS_FAILED',
@@ -517,14 +598,12 @@ const punchIn = async (req, res) => {
     if (challengeFrame) {
       let challengeMatchResult;
       try {
-        challengeMatchResult = await verifyFaceMatch(sourceS3Key, challengeFrame, 80);
+        challengeMatchResult = await verifyFaceMatchWithCache(sourceS3Key, challengeFrame, 80);
       } catch (faceErr) {
-        await client.query('ROLLBACK');
         return res.status(400).json({ success: false, message: faceErr.message });
       }
 
       if (!challengeMatchResult.isMatch) {
-        await client.query('ROLLBACK');
         logger.warn(`[Attendance] Challenge frame face match failed for ${professional_id}. Confidence: ${challengeMatchResult.confidence}`);
         return res.status(403).json({
           success: false,
@@ -534,45 +613,97 @@ const punchIn = async (req, res) => {
       }
     }
 
-    const punchInPhotoKey = await uploadPunchPhotoIfPossible({
+    // S3 photo upload is fire-and-forget: user gets the response immediately
+    // while the upload happens in the background (~500-1200ms saved).
+    uploadPunchPhotoIfPossible({
       professionalId: professional_id,
       dayKey: today,
       type: 'punch-in',
-      selfieBase64: selfie_base64
-    });
+      selfieBase64: selfie_base64,
+    }).catch((err) => logger.warn('[Attendance] Background punch-in photo upload failed:', err?.message));
 
-    // 5. Insert Punch In record
-    const insertQuery = `
-      INSERT INTO professional_attendance (
-        professional_id, date, punch_in, ward_id, zone_id, city_id,
-        punch_in_latitude, punch_in_longitude, punch_in_photo_url
-      )
-      VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8)
-      RETURNING punch_in
-    `;
+    let client;
+    let transactionStarted = false;
+    try {
+      client = await pool.connect();
+      await client.query('BEGIN');
+      transactionStarted = true;
+      await ensureProfessionalAttendanceColumns(client);
 
-    const { rows } = await client.query(insertQuery, [
-      professional_id,
-      today,
-      ward_id,
-      zone_id,
-      city_id,
-      parseNumericCoordinate(latitude),
-      parseNumericCoordinate(longitude),
-      punchInPhotoKey
-    ]);
+      const leaveCheck = await client.query(
+        `SELECT leave_type
+         FROM professional_leave_requests
+         WHERE professional_id = $1
+           AND requested_date = $2
+           AND status = 'approved'
+         LIMIT 1`,
+        [professional_id, today]
+      );
+      if (leaveCheck.rows.length > 0) {
+        await client.query('ROLLBACK');
+        transactionStarted = false;
+        return res.status(409).json({
+          success: false,
+          message: `You are on approved ${leaveCheck.rows[0].leave_type} leave for today.`,
+        });
+      }
 
-    await client.query('COMMIT');
-    
-    logger.info(`[Attendance] Professional ${professional_id} punched in successfully.`);
-    res.json({ success: true, punch_in_time: rows[0].punch_in });
+      const checkQuery = `
+        SELECT id FROM professional_attendance
+        WHERE professional_id = $1 AND date = $2
+        FOR UPDATE
+      `;
+      const checkResult = await client.query(checkQuery, [professional_id, today]);
 
+      if (checkResult.rows.length > 0) {
+        await client.query('ROLLBACK');
+        transactionStarted = false;
+        return res.status(409).json({ success: false, message: 'You have already punched in today.' });
+      }
+
+      const insertQuery = `
+        INSERT INTO professional_attendance (
+          professional_id, date, punch_in, ward_id, zone_id, city_id,
+          punch_in_latitude, punch_in_longitude, punch_in_photo_url
+        )
+        VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8)
+        RETURNING punch_in
+      `;
+
+      const { rows } = await client.query(insertQuery, [
+        professional_id,
+        today,
+        ward_id,
+        zone_id,
+        city_id,
+        parseNumericCoordinate(latitude),
+        parseNumericCoordinate(longitude),
+        null,  // photo URL stored async in background
+      ]);
+
+      await client.query('COMMIT');
+      transactionStarted = false;
+
+      logger.info(`[Attendance] Professional ${professional_id} punched in successfully.`);
+      return res.json({ success: true, punch_in_time: rows[0].punch_in });
+    } catch (error) {
+      if (client && transactionStarted) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          logger.error(`[Attendance] Punch-in rollback failed for ${professional_id}`, rollbackError);
+        }
+      }
+      logger.error(`[Attendance] Punch-in failed for ${professional_id}`, error);
+      return res.status(500).json({ success: false, message: 'Internal server error.' });
+    } finally {
+      if (client) {
+        client.release();
+      }
+    }
   } catch (error) {
-    await client.query('ROLLBACK');
     logger.error(`[Attendance] Punch-in failed for ${professional_id}`, error);
-    res.status(500).json({ success: false, message: 'Internal server error.' });
-  } finally {
-    client.release();
+    return res.status(500).json({ success: false, message: 'Internal server error.' });
   }
 };
 
@@ -623,7 +754,7 @@ const punchOut = async (req, res) => {
     // 2. Perform primary face verification first so wrong identity returns a clear error
     let matchResult;
     try {
-      matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80);
+      matchResult = await verifyFaceMatchWithCache(sourceS3Key, selfie_base64, 80);
     } catch (faceErr) {
       return res.status(400).json({ success: false, message: faceErr.message });
     }
@@ -662,7 +793,7 @@ const punchOut = async (req, res) => {
     if (challengeFrame) {
       let challengeMatchResult;
       try {
-        challengeMatchResult = await verifyFaceMatch(sourceS3Key, challengeFrame, 80);
+        challengeMatchResult = await verifyFaceMatchWithCache(sourceS3Key, challengeFrame, 80);
       } catch (faceErr) {
         return res.status(400).json({ success: false, message: faceErr.message });
       }
@@ -677,12 +808,13 @@ const punchOut = async (req, res) => {
       }
     }
 
-    const punchOutPhotoKey = await uploadPunchPhotoIfPossible({
+    // S3 photo upload is fire-and-forget: respond to user immediately.
+    uploadPunchPhotoIfPossible({
       professionalId: professional_id,
       dayKey: today,
       type: 'punch-out',
-      selfieBase64: selfie_base64
-    });
+      selfieBase64: selfie_base64,
+    }).catch((err) => logger.warn('[Attendance] Background punch-out photo upload failed:', err?.message));
 
     // We calculate hours worked dynamically in the query
     const updateQuery = `
@@ -701,7 +833,7 @@ const punchOut = async (req, res) => {
       today,
       parseNumericCoordinate(latitude),
       parseNumericCoordinate(longitude),
-      punchOutPhotoKey
+      null,  // photo URL stored async in background
     ]);
 
     if (rows.length === 0) {

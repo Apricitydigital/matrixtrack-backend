@@ -41,7 +41,8 @@ const normalizeIndianMobile = (raw = '') => {
  *
  * Checks both professional_employees AND users (supervisor/admin) tables.
  * Returns userType: 'professional' | 'supervisor'
- * If both identities are present on same mobile, prefer supervisor OTP flow.
+ * If both identities are present on same mobile, return a conflict so
+ * the app can stop the flow and ask the user to contact admin.
  */
 const sendOtp = async (req, res) => {
   const { mobile } = req.body;
@@ -84,20 +85,16 @@ const sendOtp = async (req, res) => {
     }
 
     // ΓöÇΓöÇ BOTH found on same mobile ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    // To avoid login dead-end, prefer supervisor OTP flow.
+    // This is an account conflict: do not issue any OTP because the app
+    // would otherwise receive a supervisor token and then hit professional
+    // routes, causing an immediate forced logout.
     if (hasProfessional && hasSupervisor) {
-      const supervisor = supResult.rows[0];
-      const otp = generateOtp();
-      const expiresAt = Date.now() + OTP_TTL_MS;
-      otpStore.set(normalizedMobile, { otp, expiresAt, attempts: 0, userType: 'supervisor', supervisorId: supervisor.user_id });
-
-      await _sendOtpSms(normalizedMobile, otp, 'supervisor_otp_login');
-
-      return res.json({
-        success: true,
-        userType: 'supervisor',
-        message: `OTP sent to +91-XXXXXX${normalizedMobile.slice(-4)}`,
-        name: supervisor.name,
+      otpStore.delete(normalizedMobile);
+      return res.status(409).json({
+        success: false,
+        userType: 'both',
+        message:
+          'This mobile number is linked to both Professional and Supervisor accounts. Please contact App Admin.',
       });
     }
 
