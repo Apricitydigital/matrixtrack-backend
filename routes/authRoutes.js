@@ -1,6 +1,7 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const pool = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware"); // ✅ Import middleware
 const { fetchUserCityAccess } = require("../utils/userCityAccess");
@@ -372,6 +373,20 @@ router.post("/login", async (req, res) => {
       { expiresIn: secondsUntilMidnight }
     );
 
+    // ✅ Record active session
+    try {
+      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
+      const deviceInfo = req.headers["user-agent"] || "unknown";
+      await pool.query(
+        `INSERT INTO active_sessions (user_id, token_hash, ip_address, device, logged_in_at)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        [user.rows[0].user_id, tokenHash, clientIp, deviceInfo]
+      );
+    } catch (sessionErr) {
+      console.error("Warning: Failed to record session:", sessionErr.message);
+    }
+
     const access = await getUserAccessProfile(user.rows[0].user_id);
 
     const primaryRole =
@@ -489,7 +504,22 @@ router.post("/supervisor-login", async (req, res) => {
 });
 
 // ✅ Logout User
-router.post("/logout", (req, res) => {
+router.post("/logout", async (req, res) => {
+  // Revoke session in active_sessions table
+  try {
+    const bearer = req.header("Authorization") || "";
+    const headerToken = bearer.startsWith("Bearer ") ? bearer.split(" ")[1] : null;
+    const token = req.cookies?.token || headerToken;
+    if (token) {
+      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+      await pool.query(
+        `UPDATE active_sessions SET is_revoked = TRUE, revoked_at = NOW() WHERE token_hash = $1 AND is_revoked = FALSE`,
+        [tokenHash]
+      );
+    }
+  } catch (err) {
+    console.error("Warning: Failed to revoke session on logout:", err.message);
+  }
   res.clearCookie("token");
   res.json({ message: "Logged out successfully" });
 });

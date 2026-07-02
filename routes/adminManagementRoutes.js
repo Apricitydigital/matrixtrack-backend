@@ -77,34 +77,62 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { permissions, name, phone, emp_code } = req.body;
+    const { permissions, name, phone, emp_code, password } = req.body;
 
     // Safety: never allow changing core details of super admin via this route
     const targetCheck = await pool.query("SELECT email FROM users WHERE user_id = $1", [id]);
+    if (targetCheck.rows.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
     const targetEmail = targetCheck.rows[0]?.email;
-    if (targetEmail === SUPER_ADMIN_EMAIL) {
-      // Allow name/phone update but NEVER touch permissions of super admin
-      const { rows } = await pool.query(
-        `UPDATE users 
-         SET name = COALESCE($1, name),
-             phone = COALESCE($2, phone)
-         WHERE user_id = $3 AND role = 'admin'
-         RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`,
-        [name, phone, id]
-      );
-      return res.json(rows[0]);
+
+    let queryText = "";
+    let queryParams = [];
+
+    if (password && password.trim() !== "") {
+      const salt = await bcrypt.genSalt(10);
+      const password_hash = await bcrypt.hash(password, salt);
+
+      if (targetEmail === SUPER_ADMIN_EMAIL) {
+        queryText = `UPDATE users 
+                     SET name = COALESCE($1, name),
+                         phone = COALESCE($2, phone),
+                         password_hash = $3
+                     WHERE user_id = $4 AND role = 'admin'
+                     RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`;
+        queryParams = [name, phone, password_hash, id];
+      } else {
+        queryText = `UPDATE users 
+                     SET permissions = COALESCE($1, permissions),
+                         name = COALESCE($2, name),
+                         phone = COALESCE($3, phone),
+                         emp_code = COALESCE($4, emp_code),
+                         password_hash = $5
+                     WHERE user_id = $6 AND role = 'admin'
+                     RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`;
+        queryParams = [permissions, name, phone, emp_code && emp_code.trim() !== "" ? emp_code.trim() : null, password_hash, id];
+      }
+    } else {
+      if (targetEmail === SUPER_ADMIN_EMAIL) {
+        queryText = `UPDATE users 
+                     SET name = COALESCE($1, name),
+                         phone = COALESCE($2, phone)
+                     WHERE user_id = $3 AND role = 'admin'
+                     RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`;
+        queryParams = [name, phone, id];
+      } else {
+        queryText = `UPDATE users 
+                     SET permissions = COALESCE($1, permissions),
+                         name = COALESCE($2, name),
+                         phone = COALESCE($3, phone),
+                         emp_code = COALESCE($4, emp_code)
+                     WHERE user_id = $5 AND role = 'admin'
+                     RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`;
+        queryParams = [permissions, name, phone, emp_code && emp_code.trim() !== "" ? emp_code.trim() : null, id];
+      }
     }
 
-    const { rows } = await pool.query(
-      `UPDATE users 
-       SET permissions = COALESCE($1, permissions),
-           name = COALESCE($2, name),
-           phone = COALESCE($3, phone),
-           emp_code = COALESCE($4, emp_code)
-       WHERE user_id = $5 AND role = 'admin'
-       RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`,
-      [permissions, name, phone, emp_code && emp_code.trim() !== "" ? emp_code.trim() : null, id]
-    );
+    const { rows } = await pool.query(queryText, queryParams);
 
     if (rows.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -437,6 +465,122 @@ router.delete("/block-ip/:ip", async (req, res) => {
   } catch (error) {
     console.error("Error unblocking IP:", error);
     res.status(500).json({ error: "Failed to unblock IP" });
+  }
+});
+
+// ══════════════════════════════════════════════════
+// FORCE LOGOUT / ACTIVE SESSIONS ENDPOINTS
+// ══════════════════════════════════════════════════
+
+// Middleware to check super admin
+const requireSuperAdmin = (req, res, next) => {
+  // We identify super admin by email or a specific role/permission if available
+  // Fallback: check if they have super admin rights, here we use email based on previous context
+  if (req.user?.email === SUPER_ADMIN_EMAIL || req.user?.role === 'super_admin' || req.user?.customPermissions?.role_type === 'super_admin') {
+     next();
+  } else {
+     // If not explicitly super admin by role, but email is admin@gmail.com, allow
+     // To be safe, we'll fetch from db to confirm if needed, or rely on token.
+     // For now, let's just query the db to be absolutely sure since this is a sensitive action.
+     pool.query("SELECT email, role, permissions FROM users WHERE user_id = $1", [req.user.user_id])
+       .then(result => {
+          const u = result.rows[0];
+          if (u && (u.email === SUPER_ADMIN_EMAIL || u.role === 'super_admin' || u.permissions?.role_type === 'super_admin')) {
+             next();
+          } else {
+             res.status(403).json({ error: "Access denied. Super Admin role required for this action." });
+          }
+       })
+       .catch(err => {
+          console.error("Super admin check error:", err);
+          res.status(500).json({ error: "Internal server error during authorization check." });
+       });
+  }
+};
+
+// GET /api/admin-management/active-sessions
+router.get("/active-sessions", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT 
+         s.id as session_id,
+         s.user_id,
+         s.ip_address,
+         s.device,
+         s.logged_in_at,
+         u.name as admin_name,
+         u.email as admin_email,
+         u.role as admin_role
+       FROM active_sessions s
+       JOIN users u ON s.user_id = u.user_id
+       WHERE s.is_revoked = FALSE
+       ORDER BY s.logged_in_at DESC`
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error("Error fetching active sessions:", error);
+    res.status(500).json({ error: "Failed to fetch active sessions" });
+  }
+});
+
+// POST /api/admin-management/force-logout/:sessionId
+router.post("/force-logout/:sessionId", requireSuperAdmin, async (req, res) => {
+  const { sessionId } = req.params;
+  try {
+    // Get session info for audit log before deleting
+    const sessionCheck = await pool.query(
+      `SELECT s.user_id, u.name, u.email 
+       FROM active_sessions s 
+       JOIN users u ON s.user_id = u.user_id 
+       WHERE s.id = $1 AND s.is_revoked = FALSE`,
+      [sessionId]
+    );
+
+    if (sessionCheck.rows.length === 0) {
+      return res.status(404).json({ error: "Active session not found or already revoked." });
+    }
+
+    const targetUser = sessionCheck.rows[0];
+
+    // Prevent super admin from force logging out themselves
+    if (targetUser.user_id === req.user.user_id) {
+       return res.status(400).json({ error: "You cannot force logout your own session here." });
+    }
+    
+    // Cannot force logout another super admin (optional security measure, but good practice)
+    if (targetUser.email === SUPER_ADMIN_EMAIL) {
+       return res.status(403).json({ error: "Cannot force logout the primary Super Admin." });
+    }
+
+    // Revoke the session
+    await pool.query(
+      `UPDATE active_sessions 
+       SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() 
+       WHERE id = $2`,
+      [req.user.user_id, sessionId]
+    );
+
+    // Add to audit log (assuming audit_logs table exists and handles this)
+    try {
+        const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
+        await pool.query(
+          `INSERT INTO activity_logs (user_id, action, details, ip_address, created_at)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          [
+            req.user.user_id,
+            "FORCE_LOGOUT",
+            `Force logged out admin ${targetUser.name} (${targetUser.email})`,
+            clientIp
+          ]
+        );
+    } catch(auditErr) {
+        console.error("Warning: Failed to log force logout to activity_logs:", auditErr.message);
+    }
+
+    res.json({ message: "Session terminated successfully." });
+  } catch (error) {
+    console.error("Error force logging out session:", error);
+    res.status(500).json({ error: "Failed to force logout session" });
   }
 });
 
