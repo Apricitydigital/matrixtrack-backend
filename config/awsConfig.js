@@ -1,4 +1,8 @@
 // config/awsConfig.js
+require("dotenv").config();
+if (process.env.AWS_SESSION_TOKEN === "" || process.env.AWS_SESSION_TOKEN === "undefined") {
+  delete process.env.AWS_SESSION_TOKEN;
+}
 const {
   RekognitionClient,
   IndexFacesCommand,
