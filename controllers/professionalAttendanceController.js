@@ -521,7 +521,16 @@ const uploadPunchPhotoIfPossible = async ({ professionalId, dayKey, type, selfie
     const buffer = Buffer.from(cleanBase64, 'base64');
     if (!buffer.length) return null;
     const key = `professional-attendance/${professionalId}/${dayKey}/${type}-${Date.now()}.jpg`;
-    return await uploadToS3(buffer, key, 'image/jpeg');
+    const s3Url = await uploadToS3(buffer, key, 'image/jpeg');
+
+    // Update database asynchronously once uploaded
+    const column = type === 'punch-in' ? 'punch_in_photo_url' : 'punch_out_photo_url';
+    await pool.query(
+      `UPDATE professional_attendance SET ${column} = $1 WHERE professional_id = $2 AND date = $3`,
+      [s3Url, professionalId, dayKey]
+    );
+
+    return s3Url;
   } catch (error) {
     logger.warn(`[Attendance] Failed to upload ${type} photo for ${professionalId}: ${error.message}`);
     return null;
