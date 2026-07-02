@@ -5,10 +5,13 @@ const cookieParser = require("cookie-parser");
 const path = require("path");
 const cron = require("node-cron");
 const { runAutoPunchOut } = require("./utils/autoPunchOutScheduler");
+const { runProfessionalPunchInReminder } = require("./utils/professionalPunchInReminder");
 const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const http = require("http");
+const socketio = require("./utils/socket");
 
 
 process.on("unhandledRejection", (reason) => {
@@ -62,12 +65,26 @@ const otpRoutes = require("./routes/otpRoutes");
 
 const app = express();
 
+const resolveTrustProxy = (rawValue) => {
+  const normalized = String(rawValue ?? "").trim().toLowerCase();
+  if (!normalized) return 1; // Default: one reverse proxy hop (nginx/load balancer)
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  const numeric = Number(normalized);
+  if (Number.isInteger(numeric) && numeric >= 0) return numeric;
+  return rawValue; // Allow values like "loopback, linklocal, uniquelocal"
+};
+const trustProxyValue = resolveTrustProxy(process.env.EXPRESS_TRUST_PROXY);
+app.set("trust proxy", trustProxyValue);
+console.log(`[HTTP] trust proxy = ${JSON.stringify(trustProxyValue)}`);
+
 // Middleware
 app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.url}`);
   next();
 });
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
+app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 const defaultOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
@@ -89,6 +106,11 @@ const defaultOrigins = [
   "http://10.205.83.56:19000",
   "https://portal.matrixtrack.in",
   "https://api.matrixtrack.in",
+  "https://uat.matrixtrack.in",
+  "https://matrixtrack-uat.onrender.com",
+  "http://192.168.1.39:3000",
+  "http://192.168.1.39:8081",
+  "http://192.168.1.39:19000",
 ];
 
 const parseOrigins = (value) =>
@@ -123,16 +145,18 @@ if (AUTO_HEAL_CRON_ENABLED && isPrimaryCronInstance) {
 app.use(
   cors({
     origin: (origin, callback) => {
+      console.log("Request Origin =>", origin);
+
       if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-        return;
+        return callback(null, true);
       }
-      callback(new Error("Not allowed by CORS"));
+
+      console.log("Blocked Origin =>", origin);
+      return callback(null, true); // TEMPORARY FOR DEBUG
     },
     credentials: true,
   })
 );
-
 app.use(cookieParser());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
@@ -162,6 +186,7 @@ const markSentTodayWeekly = (key) => {
 const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
 // const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
+
 const { sendDailyBulletinWhatsAppNew } = require("./utils/MT Daily Bulletin SWM pune");
 
 const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
@@ -383,7 +408,109 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
     }
   );
 
+  // =========================================================================
+  // 📢 NEW DAILY BULLETIN REPORT (v2) - TRIGGERS TWICE DAILY AT 7:00 PM & 11:59 PM IST
+  // PMC SWM Pune — Sends city-wide + zone-wise WhatsApp bulletin
+  // Lock IDs: 812352 (7pm), 812353 (11:59pm) — unique, never reuse
+  // =========================================================================
+  // const LAST_RUN_FILE_DAILY_V2 = path.join(__dirname, "whatsapp_report_daily_v2_last_run.txt");
+  // const hasSentTodayDailyV2 = (key) => {
+  //   try {
+  //     const stored = fs.readFileSync(LAST_RUN_FILE_DAILY_V2, "utf8").trim();
+  //     return stored === key;
+  //   } catch (err) {
+  //     return false;
+  //   }
+  // };
+  // const markSentTodayDailyV2 = (key) => {
+  //   try {
+  //     fs.writeFileSync(LAST_RUN_FILE_DAILY_V2, key, "utf8");
+  //   } catch (err) {
+  //     console.error("Unable to record Daily V2 WhatsApp send date:", err.message);
+  //   }
+  // };
+
+  // // Helper to trigger SWM daily bulletin report (reused for both 7pm & 11:59pm)
+  // const triggerDailyBulletinNew = async (triggerName, lockId) => {
+  //   console.log(`[WhatsApp Daily V2 Cron] Daily V2 bulletin report triggered for ${triggerName}`);
+  //   const client = await pool.connect();
+  //   let lockAcquired = false;
+  //   try {
+  //     const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [lockId]);
+  //     lockAcquired = Boolean(rows[0]?.locked);
+  //     if (!lockAcquired) {
+  //       console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Another instance is handling send; skipping.`);
+  //       return;
+  //     }
+
+  //     const runKey = `${todayKey()}-${triggerName}`;
+  //     if (hasSentTodayDailyV2(runKey)) {
+  //       console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Already sent today for ${triggerName}, skipping.`);
+  //       return;
+  //     }
+
+  //     // 📝 EDIT RECIPIENT PHONE NUMBERS HERE:
+  //     const recipientsV2 = [
+  //       "918827232995", // Admin 1
+  //       "919111899909", // Admin 2
+  //       "919131042937", // Admin 3
+  //       "918349733213", // Admin 4
+  //     ];
+
+  //     try {
+  //       const { reportData } = await sendDailyBulletinWhatsAppNew({
+  //         phoneNumber: recipientsV2,
+  //         date: todayKey(),
+  //       });
+  //       console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Sent PMC SWM V2 Daily Bulletin in bulk to:`, recipientsV2.join(", "), 'for date:', reportData.date);
+  //     } catch (error) {
+  //       console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Failed bulk send V2:`, error.message);
+  //     }
+
+  //     markSentTodayDailyV2(runKey);
+
+  //     await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+  //     lockAcquired = false;
+  //   } catch (err) {
+  //     console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Cron error:`, err.message);
+  //   } finally {
+  //     if (lockAcquired) {
+  //       await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+  //     }
+  //     client.release();
+  //   }
+  // };
+
+  // // ⏰ Trigger 1: 7:00 PM IST
+  // cron.schedule(
+  //   "00 19 * * *",
+  //   async () => {
+  //     await triggerDailyBulletinNew("7pm", 812352);
+  //   },
+  //   {
+  //     timezone: "Asia/Kolkata",
+  //   }
+  // );
+
+  // ⏰ Trigger 2: 11:59 PM IST
+  cron.schedule(
+    "59 23 * * *",
+    async () => {
+      await triggerDailyBulletinNew("1159pm", 812353);
+    },
+    {
+      timezone: "Asia/Kolkata",
+    }
+  );
+
   // =============================================
+  // =============================================
+  // Below: Other crons (Supervisor, AutoPunchOut)
+  // =============================================
+  // =============================================
+
+  // =============================================
+
   // Supervisor Daily Report Cron (8:00 PM IST)
   // ISOLATED: own lock ID (812347), own tracking file
   // Recipients: defined inside msg91SupervisorDailyReport.js
@@ -451,43 +578,65 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
 
 // =======================
 // ⏰ AUTO PUNCH-OUT CRON
-// Runs at the top of every hour.
-// Keeps re-running for 10 minutes (every 30s) to catch all eligible employees.
+// Runs once daily at 9:00 PM IST.
 // Set AUTO_PUNCHOUT_CRON_ENABLED=false in .env to disable.
 // =======================
 const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "false";
-const AUTO_PUNCHOUT_CRON_EXPR = process.env.AUTO_PUNCHOUT_CRON_EXPR || "0 * * * *";
+const AUTO_PUNCHOUT_CRON_EXPR = "0 21 * * *";
+const PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED =
+  process.env.PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED !== "false";
+const PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR =
+  process.env.PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR || "0 10 * * *";
 
 if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     AUTO_PUNCHOUT_CRON_EXPR,
     async () => {
-      console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
-
-
-
-      const WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-      const INTERVAL_MS = 30 * 1000;    // every 30 seconds
-      const startTime = Date.now();
-
-      // Run immediately on trigger
+      console.log("[AutoPunchOut Cron] ⏰ Daily 9:00 PM trigger started.");
       await runAutoPunchOut();
-
-      // Then repeat every 30s for 10 minutes
-      const intervalId = setInterval(async () => {
-        if (Date.now() - startTime >= WINDOW_MS) {
-          clearInterval(intervalId);
-          console.log("[AutoPunchOut Cron] ✅ 10-minute window complete. Stopping.");
-          return;
-        }
-        await runAutoPunchOut();
-      }, INTERVAL_MS);
     },
     { timezone: "Asia/Kolkata" }
   );
-  console.log(`[AutoPunchOut Cron] ✅ Registered — schedule: "${AUTO_PUNCHOUT_CRON_EXPR}", runs for 10 minutes.`);
+  console.log(`[AutoPunchOut Cron] ✅ Registered — schedule: "${AUTO_PUNCHOUT_CRON_EXPR}" (9:00 PM IST).`);
 } else {
   console.log("[AutoPunchOut Cron] ⏭ Disabled or non-primary instance — skipping.");
+}
+
+if (PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED && isPrimaryCronInstance) {
+  cron.schedule(
+    PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR,
+    async () => {
+      const client = await pool.connect();
+      let lockAcquired = false;
+      const REMINDER_LOCK_ID = 812351;
+      try {
+        const { rows } = await client.query(
+          "SELECT pg_try_advisory_lock($1) AS locked",
+          [REMINDER_LOCK_ID]
+        );
+        lockAcquired = Boolean(rows[0]?.locked);
+        if (!lockAcquired) {
+          console.log("[ProfessionalReminderCron] Another instance is running; skipping.");
+          return;
+        }
+
+        await runProfessionalPunchInReminder();
+      } catch (error) {
+        console.error("[ProfessionalReminderCron] Cron error:", error.message);
+      } finally {
+        if (lockAcquired) {
+          await client.query("SELECT pg_advisory_unlock($1)", [REMINDER_LOCK_ID]);
+        }
+        client.release();
+      }
+    },
+    { timezone: "Asia/Kolkata" }
+  );
+  console.log(
+    `[ProfessionalReminderCron] ✅ Registered — schedule: "${PROFESSIONAL_PUNCH_IN_REMINDER_CRON_EXPR}" (IST).`
+  );
+} else {
+  console.log("[ProfessionalReminderCron] ⏭ Disabled or non-primary instance — skipping.");
 }
 
 // General API Route
@@ -500,6 +649,37 @@ const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");
 app.use("/api", auditLoggerMiddleware);
 
 // Auth Routes
+app.post("/api/auth/check-duplicate", async (req, res) => {
+  const { email, emp_code, phone, aadhar_number } = req.body;
+  try {
+    let emailExists = false;
+    let empCodeExists = false;
+    let phoneExists = false;
+    let aadharExists = false;
+
+    if (email) {
+      const emailCheck = await pool.query("SELECT user_id FROM users WHERE email = $1 LIMIT 1", [email.trim().toLowerCase()]);
+      emailExists = emailCheck.rowCount > 0;
+    }
+    if (emp_code) {
+      const empCodeCheck = await pool.query("SELECT user_id FROM users WHERE emp_code = $1 LIMIT 1", [emp_code.trim()]);
+      empCodeExists = empCodeCheck.rowCount > 0;
+    }
+    if (phone) {
+      const phoneCheck = await pool.query("SELECT user_id FROM users WHERE phone = $1 LIMIT 1", [phone.trim()]);
+      phoneExists = phoneCheck.rowCount > 0;
+    }
+    if (aadhar_number) {
+      const aadharCheck = await pool.query("SELECT user_id FROM users WHERE aadhar_number = $1 LIMIT 1", [aadhar_number.trim()]);
+      aadharExists = aadharCheck.rowCount > 0;
+    }
+
+    res.json({ emailExists, empCodeExists, phoneExists, aadharExists });
+  } catch (error) {
+    console.error("Duplicate check error:", error);
+    res.status(500).json({ error: "Check failed" });
+  }
+});
 app.use("/api/auth", authRoutes);
 app.use("/api/otp", otpRoutes);
 
@@ -515,6 +695,10 @@ app.use("/api/supervisor-photo", supervisorPhotoRoutes);
 // Start Server
 const PORT = process.env.PORT || 5000;
 
+// Create HTTP server and initialize Socket.io
+const server = http.createServer(app);
+socketio.init(server);
+
 // Run migrations before starting the server
 runMigrations().then(() => {
   return ensureCronRunsTable();
@@ -526,3 +710,5 @@ runMigrations().then(() => {
   console.error("Fatal: Migrations failed on startup", err);
   process.exit(1);
 });
+
+
