@@ -25,7 +25,7 @@ router.use(requireAdmin);
 router.get("/", async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT user_id, name, emp_code, email, phone, role, permissions, created_at 
+      `SELECT user_id, name, emp_code, email, phone, role, permissions, custom_login_policy, custom_max_devices, created_at 
        FROM users 
        WHERE role = 'admin' AND is_deleted = FALSE
        ORDER BY created_at DESC`
@@ -40,7 +40,7 @@ router.get("/", async (req, res) => {
 // Create a new admin
 router.post("/", async (req, res) => {
   try {
-    const { name, email, password, phone, permissions, emp_code } = req.body;
+    const { name, email, password, phone, permissions, emp_code, custom_login_policy, custom_max_devices } = req.body;
 
     // Simple validation
     if (!name || !email || !password) {
@@ -57,10 +57,10 @@ router.post("/", async (req, res) => {
       : ("ADM-" + Date.now().toString().slice(-6));
 
     const { rows } = await pool.query(
-      `INSERT INTO users (name, emp_code, email, phone, role, password_hash, permissions)
-       VALUES ($1, $2, $3, $4, 'admin', $5, $6)
-       RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`,
-      [name, empCode, email, phone || null, password_hash, permissions || null]
+      `INSERT INTO users (name, emp_code, email, phone, role, password_hash, permissions, custom_login_policy, custom_max_devices)
+       VALUES ($1, $2, $3, $4, 'admin', $5, $6, $7, $8)
+       RETURNING user_id, name, emp_code, email, phone, role, permissions, custom_login_policy, custom_max_devices, created_at`,
+      [name, empCode, email, phone || null, password_hash, permissions || null, custom_login_policy || null, custom_max_devices || null]
     );
 
     res.status(201).json(rows[0]);
@@ -77,7 +77,7 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { permissions, name, phone, emp_code, password } = req.body;
+    const { permissions, name, phone, emp_code, password, custom_login_policy, custom_max_devices } = req.body;
 
     // Safety: never allow changing core details of super admin via this route
     const targetCheck = await pool.query("SELECT email FROM users WHERE user_id = $1", [id]);
@@ -99,7 +99,7 @@ router.put("/:id", async (req, res) => {
                          phone = COALESCE($2, phone),
                          password_hash = $3
                      WHERE user_id = $4 AND role = 'admin'
-                     RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`;
+                     RETURNING user_id, name, emp_code, email, phone, role, permissions, custom_login_policy, custom_max_devices, created_at`;
         queryParams = [name, phone, password_hash, id];
       } else {
         queryText = `UPDATE users 
@@ -107,10 +107,12 @@ router.put("/:id", async (req, res) => {
                          name = COALESCE($2, name),
                          phone = COALESCE($3, phone),
                          emp_code = COALESCE($4, emp_code),
-                         password_hash = $5
-                     WHERE user_id = $6 AND role = 'admin'
-                     RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`;
-        queryParams = [permissions, name, phone, emp_code && emp_code.trim() !== "" ? emp_code.trim() : null, password_hash, id];
+                         password_hash = $5,
+                         custom_login_policy = $6,
+                         custom_max_devices = $7
+                     WHERE user_id = $8 AND role = 'admin'
+                     RETURNING user_id, name, emp_code, email, phone, role, permissions, custom_login_policy, custom_max_devices, created_at`;
+        queryParams = [permissions, name, phone, emp_code && emp_code.trim() !== "" ? emp_code.trim() : null, password_hash, custom_login_policy || null, custom_max_devices || null, id];
       }
     } else {
       if (targetEmail === SUPER_ADMIN_EMAIL) {
@@ -118,17 +120,19 @@ router.put("/:id", async (req, res) => {
                      SET name = COALESCE($1, name),
                          phone = COALESCE($2, phone)
                      WHERE user_id = $3 AND role = 'admin'
-                     RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`;
+                     RETURNING user_id, name, emp_code, email, phone, role, permissions, custom_login_policy, custom_max_devices, created_at`;
         queryParams = [name, phone, id];
       } else {
         queryText = `UPDATE users 
                      SET permissions = COALESCE($1, permissions),
                          name = COALESCE($2, name),
                          phone = COALESCE($3, phone),
-                         emp_code = COALESCE($4, emp_code)
-                     WHERE user_id = $5 AND role = 'admin'
-                     RETURNING user_id, name, emp_code, email, phone, role, permissions, created_at`;
-        queryParams = [permissions, name, phone, emp_code && emp_code.trim() !== "" ? emp_code.trim() : null, id];
+                         emp_code = COALESCE($4, emp_code),
+                         custom_login_policy = $5,
+                         custom_max_devices = $6
+                     WHERE user_id = $7 AND role = 'admin'
+                     RETURNING user_id, name, emp_code, email, phone, role, permissions, custom_login_policy, custom_max_devices, created_at`;
+        queryParams = [permissions, name, phone, emp_code && emp_code.trim() !== "" ? emp_code.trim() : null, custom_login_policy || null, custom_max_devices || null, id];
       }
     }
 

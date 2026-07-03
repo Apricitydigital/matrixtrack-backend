@@ -319,6 +319,44 @@ router.put("/update", async (req, res) => {
   }
 });
 
+// Helper function to check session limits
+async function enforceSessionLimits(user) {
+  const { user_id: userId, role, custom_login_policy, custom_max_devices } = user;
+  if (role !== 'admin' && role !== 'supervisor') return null; 
+
+  try {
+    let mode = custom_login_policy;
+    let maxDevices = custom_max_devices;
+
+    if (!mode) {
+      const settingsRes = await pool.query("SELECT * FROM security_settings WHERE id = 1");
+      if (settingsRes.rows.length === 0) return null; 
+      const settings = settingsRes.rows[0];
+
+      mode = role === 'admin' ? settings.admin_login_mode : settings.supervisor_login_mode;
+      maxDevices = role === 'admin' ? settings.admin_max_devices : settings.supervisor_max_devices;
+    }
+
+    const activeRes = await pool.query(
+      "SELECT COUNT(*) FROM active_sessions WHERE user_id = $1 AND is_revoked = FALSE",
+      [userId]
+    );
+    const activeCount = parseInt(activeRes.rows[0].count, 10);
+
+    const isSingle = mode === 'single' || mode === 'strict_single';
+
+    if (isSingle && activeCount >= 1) {
+      return "Already logged in elsewhere. Please logout from the other device first.";
+    }
+    if (!isSingle && activeCount >= (maxDevices || 10)) {
+      return "Maximum device limit reached. Please logout from an existing device.";
+    }
+  } catch (err) {
+    console.error("Error enforcing session limits:", err);
+  }
+  return null;
+}
+
 // ✅ Login User (Web App - All Roles)
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
@@ -348,6 +386,35 @@ router.post("/login", async (req, res) => {
       if (perms && perms.is_active === false) {
         return res.status(403).json({ error: "Your account has been deactivated. Please contact the super admin." });
       }
+    }
+
+    // ✅ Enforce Strict Session Limits
+    if (!isSuperAdmin) {
+      const limitError = await enforceSessionLimits(user.rows[0]);
+      if (limitError) {
+        return res.status(403).json({ error: limitError });
+      }
+    }
+
+    // ✅ 2FA Logic for Admin Role
+    if (user.rows[0].role === 'admin') {
+      const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 digit OTP
+      const expiry = new Date(Date.now() + 5 * 60000); // 5 minutes
+      
+      await pool.query(
+        "UPDATE users SET login_otp = $1, login_otp_expiry = $2 WHERE user_id = $3",
+        [otp, expiry, user.rows[0].user_id]
+      );
+
+      const { sendOTPEmail } = require('../utils/emailService');
+      console.log(`[2FA OTP GENERATED for ${user.rows[0].email}]: ${otp}`); // For easy testing
+      await sendOTPEmail(user.rows[0].email, otp);
+
+      return res.json({
+        status: "pending_2fa",
+        message: "OTP sent to your email. Please verify to login.",
+        email: user.rows[0].email
+      });
     }
 
     // Calculate seconds remaining until next midnight (12:00 AM) in Asia/Kolkata
@@ -503,6 +570,95 @@ router.post("/supervisor-login", async (req, res) => {
   }
 });
 
+// ✅ Verify OTP for Admin Login
+router.post("/verify-login-otp", async (req, res) => {
+  const { email, otp } = req.body;
+
+  try {
+    const user = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+
+    if (user.rows.length === 0)
+      return res.status(400).json({ error: "Invalid request" });
+
+    const userData = user.rows[0];
+
+    if (!userData.login_otp || userData.login_otp !== otp) {
+      return res.status(400).json({ error: "Invalid OTP" });
+    }
+
+    if (new Date(userData.login_otp_expiry) < new Date()) {
+      return res.status(400).json({ error: "OTP has expired" });
+    }
+
+    // Clear OTP
+    await pool.query(
+      "UPDATE users SET login_otp = NULL, login_otp_expiry = NULL WHERE user_id = $1",
+      [userData.user_id]
+    );
+
+    // ✅ Replicate token generation and session recording
+    const getSecondsUntilMidnight = () => {
+      const now = new Date();
+      const kolkataTimeStr = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+      const kolkataDate = new Date(kolkataTimeStr);
+      const midnight = new Date(kolkataTimeStr);
+      midnight.setHours(24, 0, 0, 0);
+      const diffMs = midnight.getTime() - kolkataDate.getTime();
+      const diffSec = Math.floor(diffMs / 1000);
+      return diffSec > 0 ? diffSec : 3600;
+    };
+
+    const token = jwt.sign(
+      { user_id: userData.user_id, role: userData.role },
+      process.env.JWT_SECRET,
+      { expiresIn: getSecondsUntilMidnight() }
+    );
+
+    try {
+      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
+      const deviceInfo = req.headers["user-agent"] || "unknown";
+      await pool.query(
+        `INSERT INTO active_sessions (user_id, token_hash, ip_address, device, logged_in_at)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        [userData.user_id, tokenHash, clientIp, deviceInfo]
+      );
+    } catch (sessionErr) {
+      console.error("Warning: Failed to record session:", sessionErr.message);
+    }
+
+    const access = await getUserAccessProfile(userData.user_id);
+    const primaryRole = access.roles?.[0]?.name || userData.role || "user";
+
+    res.cookie("token", token, {
+      httpOnly: true,
+      maxAge: JWT_COOKIE_MAX_AGE_MS,
+    });
+    
+    const allowedCities = await computeAllowedCities(userData, access);
+    const uiPermissions = buildUiPermissions(access);
+
+    res.json({
+      status: "success",
+      message: "Login successful",
+      token,
+      user: {
+        id: userData.user_id,
+        name: userData.name,
+        email: userData.email,
+        role: primaryRole,
+        permissions: uiPermissions,
+        scope: userData.scope,
+        allowedCities: allowedCities,
+      },
+    });
+
+  } catch (error) {
+    console.error("OTP verification error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // ✅ Logout User
 router.post("/logout", async (req, res) => {
   // Revoke session in active_sessions table
@@ -600,3 +756,76 @@ router.post("/create-admin", async (req, res) => {
 });
 
 module.exports = router;
+
+// ==========================================
+// SECURITY SETTINGS & SESSION LIMITS
+// ==========================================
+
+// ✅ GET Security Settings
+router.get("/security-settings", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM security_settings WHERE id = 1");
+    if (result.rows.length === 0) {
+      return res.json({
+        admin_login_mode: 'multiple', admin_max_devices: 10,
+        supervisor_login_mode: 'multiple', supervisor_max_devices: 10
+      });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch security settings" });
+  }
+});
+
+// ✅ POST Security Settings (Admin only)
+router.post("/security-settings", authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden" });
+  
+  const { admin_login_mode, admin_max_devices, supervisor_login_mode, supervisor_max_devices } = req.body;
+  try {
+    await pool.query(
+      `UPDATE security_settings 
+       SET admin_login_mode = $1, admin_max_devices = $2, 
+           supervisor_login_mode = $3, supervisor_max_devices = $4,
+           updated_at = NOW()
+       WHERE id = 1`,
+      [admin_login_mode, admin_max_devices, supervisor_login_mode, supervisor_max_devices]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update security settings" });
+  }
+});
+
+// ✅ GET Active Sessions
+router.get("/active-sessions", authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.query; 
+    let query = "SELECT id, ip_address, device, logged_in_at, last_active_at FROM active_sessions WHERE user_id = $1 AND is_revoked = FALSE ORDER BY logged_in_at DESC";
+    let params = [req.user.user_id];
+    
+    if (req.user.role === 'admin' && userId) {
+        params = [userId];
+    }
+    
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch active sessions" });
+  }
+});
+
+// ✅ POST Revoke Session
+router.post("/revoke-session", authenticateToken, async (req, res) => {
+  const { id } = req.body;
+  try {
+    if (req.user.role === 'admin') {
+       await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2", [req.user.user_id, id]);
+    } else {
+       await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2 AND user_id = $3", [req.user.user_id, id, req.user.user_id]);
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to revoke session" });
+  }
+});
