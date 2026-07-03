@@ -50,18 +50,18 @@ const buildSnsMessageAttributes = (context = 'general') => {
       StringValue: process.env.AWS_SNS_SENDER_ID
     };
   }
-  if (process.env.AWS_SNS_ENTITY_ID) {
-    attributes['AWS.MM.SMS.EntityId'] = {
-      DataType: 'String',
-      StringValue: process.env.AWS_SNS_ENTITY_ID
-    };
-  }
   const templateId = resolveTemplateIdForContext(context);
   if (templateId) {
     attributes['AWS.MM.SMS.TemplateId'] = {
       DataType: 'String',
       StringValue: templateId
     };
+    if (process.env.AWS_SNS_ENTITY_ID) {
+      attributes['AWS.MM.SMS.EntityId'] = {
+        DataType: 'String',
+        StringValue: process.env.AWS_SNS_ENTITY_ID
+      };
+    }
   }
   return attributes;
 };
@@ -91,17 +91,18 @@ const sendSms = async ({ phone, message, context = 'general' }) => {
     });
     return result;
   } catch (error) {
-    // Fallback for OTP: retry once without TemplateId if DLT template mapping is misconfigured.
-    const hasTemplateId = Boolean(params?.MessageAttributes?.['AWS.MM.SMS.TemplateId']);
-    if (isOtpContext(context) && hasTemplateId) {
+    // Fallback for OTP: retry once without DLT attributes if original publish failed.
+    if (isOtpContext(context)) {
       try {
         const retryParams = {
           ...params,
           MessageAttributes: { ...params.MessageAttributes }
         };
         delete retryParams.MessageAttributes['AWS.MM.SMS.TemplateId'];
+        delete retryParams.MessageAttributes['AWS.MM.SMS.EntityId'];
+        delete retryParams.MessageAttributes['AWS.SNS.SMS.SenderID'];
         const retryResult = await sns.publish(retryParams).promise();
-        logger.warn('[SMS] AWS SNS publish fallback succeeded without TemplateId', {
+        logger.warn('[SMS] AWS SNS publish fallback succeeded without DLT attributes', {
           context,
           phone: destination,
           originalError: error.message,
