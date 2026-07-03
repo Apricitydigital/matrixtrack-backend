@@ -250,6 +250,8 @@ const mapRowsToWards = (rows) => {
       department: row.department_name,
       supervisor_name: row.supervisor_name,
       attendance_status: row.attendance_status,
+      leave_type: row.leave_type || null,
+      leaveType: row.leave_type || null,
       days_present: Number(row.days_present ?? 0),
       days_marked: Number(row.days_marked ?? 0),
       face_embedding: row.face_embedding,
@@ -368,6 +370,7 @@ const fetchSupervisorSummary = async (
       SELECT
         se.emp_id,
         MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
+        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
       FROM scoped_employees se
@@ -379,6 +382,7 @@ const fetchSupervisorSummary = async (
     SELECT
       (SELECT COUNT(*) FROM scoped_employees) AS total_employees,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 THEN 1 ELSE 0 END), 0) AS present,
+      COALESCE(SUM(CASE WHEN has_mid_shift = 1 THEN 1 ELSE 0 END), 0) AS mid_shift_punch_in,
       COALESCE(SUM(CASE WHEN has_leave = 1 THEN 1 ELSE 0 END), 0) AS on_leave,
       COALESCE(SUM(CASE WHEN has_punch_out = 1 THEN 1 ELSE 0 END), 0) AS fully_marked,
       COALESCE(SUM(CASE WHEN has_punch_in = 1 AND has_punch_out = 0 THEN 1 ELSE 0 END), 0) AS in_progress,
@@ -397,6 +401,7 @@ const fetchSupervisorSummary = async (
   const totalEmployees = Number(row.total_employees) || 0;
   const present = Number(row.present) || 0;
   const onLeave = Number(row.on_leave) || 0;
+  const midShiftPunchIn = Number(row.mid_shift_punch_in) || 0;
   const fullyMarked = Number(row.fully_marked) || 0;
   const inProgress = Number(row.in_progress) || 0;
   const notMarked = Number(row.not_marked) || 0;
@@ -411,6 +416,7 @@ const fetchSupervisorSummary = async (
     marked: present,
     fullyMarked,
     inProgress,
+    midShiftPunchIn,
     onLeave,
     notMarked,
     attendanceRate,
@@ -504,6 +510,7 @@ const fetchSupervisorEmployees = async (
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
         MAX(a.mid_shift_punch_in_time) FILTER (WHERE a.mid_shift_punch_in_time IS NOT NULL) AS mid_shift_punch_in_time,
         MAX(a.punch_out_time) FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,
+        MAX(a.leave_type) FILTER (WHERE a.leave_type IS NOT NULL) AS leave_type,
         MAX(
           CASE
             WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
@@ -556,7 +563,8 @@ const fetchSupervisorEmployees = async (
         EXTRACT(EPOCH FROM (summary.punch_out_time AT TIME ZONE 'Asia/Kolkata')),
         EXTRACT(EPOCH FROM summary.mid_shift_punch_in_time),
         EXTRACT(EPOCH FROM (summary.punch_in_time AT TIME ZONE 'Asia/Kolkata'))
-      ) AS last_punch_epoch
+      ) AS last_punch_epoch,
+      summary.leave_type
     FROM scoped_employees se
     LEFT JOIN attendance_summary summary ON summary.emp_id = se.emp_id
     ORDER BY se.emp_id, se.ward_id, se.employee_name;
@@ -1263,6 +1271,119 @@ router.post("/", async (req, res) => {
   } catch (error) {
     console.error("Error fetching employee data: ", error);
     logError("wards-post", error);
+    res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
+// ── Attendance Trend ────────────────────────────────────────────────────────
+// Returns daily present / absent / leave counts for the given date range.
+router.post("/attendance-trend", async (req, res) => {
+  const { user_id, city_id, startDate: startDateRaw, endDate: endDateRaw } = req.body;
+  const { userId, valid } = normalizeUserIdInput(user_id);
+  const { cityId, valid: cityValid } = normalizeCityIdInput(city_id);
+
+  if (!valid) return res.status(400).json({ success: false, error: "Invalid user ID" });
+  if (!cityValid) return res.status(400).json({ success: false, error: "Invalid city ID" });
+
+  const requestingUser = req.user;
+  const isAdmin = requestingUser?.role === "admin";
+  const effectiveUserId = isAdmin ? userId : requestingUser?.user_id;
+
+  const { cityId: scopedCityId, allowed } = enforceCityScope(req, cityId ?? null);
+  if (!allowed) return res.status(403).json({ success: false, error: "Forbidden" });
+
+  const allowedZoneIds = resolveZoneScope(req);
+  const allowedKothiIds = resolveKothiScope(req);
+  const zoneIds = allowedZoneIds;
+  const kothiIds = allowedKothiIds;
+
+  const hasScope = isAdmin || zoneIds.length > 0 || kothiIds.length > 0 || effectiveUserId;
+  if (!hasScope) {
+    return res.json({ success: true, data: [] });
+  }
+
+  try {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const { startDate, endDate } = resolveDateRange(startDateRaw || todayIso, endDateRaw || todayIso);
+
+    const baseFilters = [];
+    const params = [];
+
+    if (scopedCityId) {
+      params.push(scopedCityId);
+      baseFilters.push(`c.city_id = $${params.length}`);
+    }
+
+    if (effectiveUserId && !isAdmin && zoneIds.length === 0 && kothiIds.length === 0) {
+      params.push(effectiveUserId);
+      const p = params.length;
+      baseFilters.push(
+        `(sw.supervisor_id = $${p} OR
+          w.ward_id IN (SELECT ward_id FROM user_kothi_access WHERE user_id = $${p}) OR
+          w.ward_id IN (SELECT ward_id FROM supervisor_kothi WHERE supervisor_id = $${p}) OR
+          w.zone_id IN (SELECT zone_id FROM user_zone_access WHERE user_id = $${p}))`
+      );
+    }
+
+    if (zoneIds.length > 0) {
+      params.push(zoneIds);
+      baseFilters.push(`z.zone_id = ANY($${params.length}::int[])`);
+    }
+
+    if (kothiIds.length > 0) {
+      params.push(kothiIds);
+      baseFilters.push(`w.ward_id = ANY($${params.length}::int[])`);
+    }
+
+    const whereClause = baseFilters.length > 0 ? `WHERE ${baseFilters.join(" AND ")}` : "";
+    const startParam = params.length + 1;
+    const endParam = params.length + 2;
+    params.push(startDate, endDate);
+
+    const trendQuery = `
+      WITH scoped_employees AS (
+        SELECT DISTINCT e.emp_id
+        FROM employee e
+        JOIN wards w ON e.ward_id = w.ward_id
+        JOIN zones z ON w.zone_id = z.zone_id
+        JOIN cities c ON z.city_id = c.city_id
+        LEFT JOIN supervisor_ward sw ON w.ward_id = sw.ward_id
+        ${whereClause}
+      ),
+      date_series AS (
+        SELECT generate_series(
+          $${startParam}::date,
+          $${endParam}::date,
+          '1 day'::interval
+        )::date AS day
+      )
+      SELECT
+        ds.day AS date,
+        COUNT(DISTINCT se.emp_id) AS total,
+        COUNT(DISTINCT CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN se.emp_id END) AS present,
+        COUNT(DISTINCT CASE WHEN a.leave_type IS NOT NULL THEN se.emp_id END) AS leave,
+        COUNT(DISTINCT CASE WHEN a.punch_in_time IS NULL AND a.mid_shift_punch_in_time IS NULL AND a.leave_type IS NULL THEN se.emp_id END) AS absent
+      FROM date_series ds
+      CROSS JOIN scoped_employees se
+      LEFT JOIN attendance a
+        ON a.emp_id = se.emp_id AND a.date::date = ds.day
+      GROUP BY ds.day
+      ORDER BY ds.day ASC;
+    `;
+
+    const result = await pool.query(trendQuery, params);
+    const data = result.rows.map((row) => ({
+      date: row.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row.date).slice(0, 10),
+      total: Number(row.total) || 0,
+      present: Number(row.present) || 0,
+      leave: Number(row.leave) || 0,
+      absent: Number(row.absent) || 0,
+    }));
+
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error("Error fetching attendance trend:", error);
+    logError("attendance-trend", error);
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });

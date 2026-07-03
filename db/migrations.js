@@ -1,6 +1,6 @@
 /**
- * Migration: Add auto_punched_out column to attendance table
- * Run once on startup - safe to run multiple times (uses IF NOT EXISTS logic).
+ * Migration Runner — runs on every startup.
+ * All migrations use IF NOT EXISTS / ADD COLUMN IF NOT EXISTS and are idempotent.
  */
 
 const pool = require("../config/db");
@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const { ensureProfessionalLeaveSchema } = require("../utils/professionalLeaveSchema");
 const { ensureProfessionalPushSchema } = require("../utils/professionalPushService");
+const { ensureRbacSchema } = require("../utils/rbacSetup");
 
 async function runMigrations() {
   const client = await pool.connect();
@@ -136,11 +137,53 @@ async function runMigrations() {
     `);
     console.log("[Migration] Leave allocation tables ready.");
 
+    // ── Soft Delete columns on users table ──────────────────────────────────
+    console.log("[Migration] Running Admin Soft Delete migration...");
+    const softDeleteSqlPath = path.join(__dirname, "migrations", "20260623_soft_delete_admins.sql");
+    if (fs.existsSync(softDeleteSqlPath)) {
+      const softDeleteSql = fs.readFileSync(softDeleteSqlPath, "utf8");
+      await client.query(softDeleteSql);
+      console.log("[Migration] Admin soft delete columns ready.");
+    } else {
+      console.warn("[Migration] Soft delete SQL file not found at:", softDeleteSqlPath);
+    }
+
+    // ── Supervisor Transfer History table ────────────────────────────────────
+    console.log("[Migration] Running Supervisor Transfer History migration...");
+    const supTransferSqlPath = path.join(__dirname, "migrations", "20260526_supervisor_migration_history.sql");
+    if (fs.existsSync(supTransferSqlPath)) {
+      const supTransferSql = fs.readFileSync(supTransferSqlPath, "utf8");
+      await client.query(supTransferSql);
+      console.log("[Migration] Supervisor Transfer History table ready.");
+    } else {
+      console.warn("[Migration] Supervisor Transfer History SQL file not found at:", supTransferSqlPath);
+    }
+
+    // ── Attendance time schema alignment ─────────────────────────────────────
+    console.log("[Migration] Running Attendance time schema alignment...");
+    const attendTimeSqlPath = path.join(__dirname, "migrations", "20260528_attendance_time_schema_alignment.sql");
+    if (fs.existsSync(attendTimeSqlPath)) {
+      const attendTimeSql = fs.readFileSync(attendTimeSqlPath, "utf8");
+      await client.query(attendTimeSql);
+      console.log("[Migration] Attendance time schema alignment ready.");
+    } else {
+      console.warn("[Migration] Attendance time schema alignment SQL not found at:", attendTimeSqlPath);
+    }
+
     console.log("[Migration] All migrations complete.");
   } catch (err) {
     console.error("[Migration] Migration error (non-fatal):", err.message);
   } finally {
     client.release();
+  }
+
+  // ── RBAC Schema & Permissions Seeding ───────────────────────────────────────
+  // Runs outside the client block since ensureRbacSchema manages its own connection.
+  try {
+    await ensureRbacSchema();
+    console.log("[Migration] RBAC schema and permissions seeded.");
+  } catch (rbacErr) {
+    console.error("[Migration] RBAC seeding error (non-fatal):", rbacErr.message);
   }
 }
 
