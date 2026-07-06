@@ -519,6 +519,18 @@ async function resolveEmployeeFromFaceIdentifiers({
     return text || null;
   };
 
+  const tryResolveByEmpIdOnly = async (empIdStr) => {
+    const normalized = normalizeText(empIdStr);
+    if (!normalized) return null;
+    const numericEmpId = normalizeId(normalized);
+    if (numericEmpId === null) return null;
+    const { rows } = await pool.query(
+      `SELECT emp_id, emp_code, name, face_embedding FROM employee WHERE emp_id = $1 LIMIT 1`,
+      [numericEmpId]
+    );
+    return rows.length ? rows[0] : null;
+  };
+
   const tryResolveByIdentifier = async (identifier) => {
     const normalized = normalizeText(identifier);
     if (!normalized) {
@@ -561,7 +573,7 @@ async function resolveEmployeeFromFaceIdentifiers({
   }
 
   if (!employeeRecord && matchedExternalId !== null) {
-    employeeRecord = await tryResolveByIdentifier(matchedExternalId);
+    employeeRecord = await tryResolveByEmpIdOnly(matchedExternalId);
   }
 
   if (!employeeRecord && requestedEmpId !== null) {
