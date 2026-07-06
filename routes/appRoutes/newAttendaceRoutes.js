@@ -1438,10 +1438,27 @@ async function fetchSupervisorFaceEmbeddings(supervisorId, wardId) {
     `
       SELECT DISTINCT e.emp_id, e.emp_code, e.name, e.face_embedding
         FROM employee e
-        JOIN supervisor_ward sw ON sw.ward_id = e.ward_id
-       WHERE sw.supervisor_id = $1
+        LEFT JOIN wards w ON e.ward_id = w.ward_id
+       WHERE e.face_embedding IS NOT NULL
          AND ($2::int IS NULL OR e.ward_id = $2::int)
-         AND e.face_embedding IS NOT NULL
+         AND (
+           EXISTS (
+             SELECT 1 FROM supervisor_ward sw
+             WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_kothi_access uk
+             WHERE uk.ward_id = e.ward_id AND uk.user_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM supervisor_kothi sk
+             WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_zone_access uz
+             WHERE uz.zone_id = w.zone_id AND uz.user_id = $1
+           )
+         )
     `,
     [supervisorId, wardId]
   );
@@ -2243,8 +2260,25 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           if (supervisorId) {
             const rosterCheck = await pool.query(
               `SELECT 1 FROM employee e
-               JOIN supervisor_ward sw ON sw.ward_id = e.ward_id
-               WHERE e.emp_id = $1 AND sw.supervisor_id = $2 LIMIT 1`,
+               LEFT JOIN wards w ON e.ward_id = w.ward_id
+               WHERE e.emp_id = $1 AND (
+                 EXISTS (
+                   SELECT 1 FROM supervisor_ward sw
+                   WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $2
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM user_kothi_access uk
+                   WHERE uk.ward_id = e.ward_id AND uk.user_id = $2
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM supervisor_kothi sk
+                   WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $2
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM user_zone_access uz
+                   WHERE uz.zone_id = w.zone_id AND uz.user_id = $2
+                 )
+               ) LIMIT 1`,
               [employeeRecord.emp_id, supervisorId]
             );
             if (rosterCheck.rowCount === 0) {
@@ -2512,24 +2546,49 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           error: "Identity Mismatch",
           details: `Face does not match ${employeeRecord.name}.`,
         });
+      } else if (!fallback?.employee) {
+        return res.status(403).json({
+          error: "Face not recognized",
+          details: "The captured face does not match the enrolled face.",
+          suggestion: "Ensure good lighting and try again, or re-enroll face."
+        });
       }
     } else if (!matchedFace) {
       // Face not found in collection — instruct supervisor to re-enroll
       console.log(`[face-attendance] Individual: no collection match for emp_id=${requestedEmpId}. Fallback disabled.`);
-    }
+      
+      // Attempt a cheap direct 1:1 comparison with the selected employee
+      let directMatchPassed = false;
+      try {
+        const selectedFaceBuffer = await loadFaceBuffer(
+          employeeRecord.face_embedding,
+          employeeRecord.emp_id,
+          employeeRecord.emp_code
+        );
+        if (selectedFaceBuffer) {
+          const directMatch = await rekognition.send(
+            new CompareFacesCommand({
+              SourceImage: { Bytes: selectedFaceBuffer },
+              TargetImage: { Bytes: normalizedCaptureBuffer },
+              SimilarityThreshold: Math.max(88, Math.min(matchThreshold, 95)),
+            })
+          );
+          const directSimilarity = directMatch?.FaceMatches?.[0]?.Similarity ?? 0;
+          if (directSimilarity >= Math.max(88, Math.min(matchThreshold, 95))) {
+            directMatchPassed = true;
+          }
+        }
+      } catch (err) {
+        console.warn("Direct match fallback error:", err.message);
+      }
 
-    if (!employeeRecord) {
-      return res.status(403).json({
-        error: "No matching employee found",
-        suggestion: "Use manual attendance if face recognition fails",
-      });
-    }
-
-    if (!employeeRecord) {
-      return res.status(404).json({
-        error: "Employee not registered in system",
-        solution: "Register face first via /store-face",
-      });
+      if (!directMatchPassed) {
+        return res.status(403).json({
+          error: "Face not recognized",
+          details: "The captured face does not match the enrolled face.",
+          suggestion: "Ensure good lighting and try again, or re-enroll face."
+        });
+      }
     }
 
     const empId = employeeRecord.emp_id;
@@ -3340,10 +3399,26 @@ router.post("/mark-leave", authenticate, async (req, res) => {
     if (role !== "admin") {
       const wardCheck = await pool.query(
         `SELECT 1
-         FROM supervisor_ward sw
-         JOIN employee e ON e.ward_id = sw.ward_id
-         WHERE sw.supervisor_id = $1 AND e.emp_id = $2
-         LIMIT 1`,
+         FROM employee e
+         LEFT JOIN wards w ON e.ward_id = w.ward_id
+         WHERE e.emp_id = $2 AND (
+           EXISTS (
+             SELECT 1 FROM supervisor_ward sw
+             WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_kothi_access uk
+             WHERE uk.ward_id = e.ward_id AND uk.user_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM supervisor_kothi sk
+             WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_zone_access uz
+             WHERE uz.zone_id = w.zone_id AND uz.user_id = $1
+           )
+         ) LIMIT 1`,
         [user.user_id, empId]
       );
       if (wardCheck.rowCount === 0) {
@@ -3432,10 +3507,26 @@ router.post("/unmark-leave", authenticate, async (req, res) => {
     if (role !== "admin") {
       const wardCheck = await pool.query(
         `SELECT 1
-         FROM supervisor_ward sw
-         JOIN employee e ON e.ward_id = sw.ward_id
-         WHERE sw.supervisor_id = $1 AND e.emp_id = $2
-         LIMIT 1`,
+         FROM employee e
+         LEFT JOIN wards w ON e.ward_id = w.ward_id
+         WHERE e.emp_id = $2 AND (
+           EXISTS (
+             SELECT 1 FROM supervisor_ward sw
+             WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_kothi_access uk
+             WHERE uk.ward_id = e.ward_id AND uk.user_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM supervisor_kothi sk
+             WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_zone_access uz
+             WHERE uz.zone_id = w.zone_id AND uz.user_id = $1
+           )
+         ) LIMIT 1`,
         [user.user_id, empId]
       );
       if (wardCheck.rowCount === 0) {
