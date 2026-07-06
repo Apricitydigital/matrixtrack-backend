@@ -170,8 +170,8 @@ const detectSingleFace = async (base64Image, stage = 'front') => {
   const eyesOpen = face?.EyesOpen?.Value !== false;
   const eyesOpenValue = face?.EyesOpen?.Value;
   const eyesOpenConfidence = Number(face?.EyesOpen?.Confidence ?? 0);
-  const faceOccluded = face?.FaceOccluded?.Value === true;
-  const sunglasses = face?.Sunglasses?.Value === true;
+  const faceOccluded = face?.FaceOccluded?.Value === true && (face?.FaceOccluded?.Confidence ?? 0) > 85;
+  const sunglasses = face?.Sunglasses?.Value === true && (face?.Sunglasses?.Confidence ?? 0) > 85;
 
   if (
     brightness < LIVENESS_CONFIG.minBrightness ||
@@ -253,6 +253,9 @@ const runLivenessPrecheck = async (selfieBase64, options = {}) => {
   }
 
   const parsedFrames = parseLivenessFrames(options?.livenessFrames);
+  if (parsedFrames.length === 1 && selfieBase64) {
+    parsedFrames.unshift(selfieBase64);
+  }
   const primaryResult = await detectSingleFace(selfieBase64, 'front');
   if (!primaryResult.ok) {
     return primaryResult;
@@ -353,21 +356,21 @@ const runLivenessPrecheck = async (selfieBase64, options = {}) => {
     const yawDeltaRight = yawB - yawA;
     const yawDeltaLeft = yawC - yawB;
 
-    if (!(yawDeltaRight >= minDelta)) {
+    if (Math.abs(yawDeltaRight) < minDelta) {
       return { ok: false, message: 'Please turn your head RIGHT in step 2 and retry.' };
     }
-    if (!(yawDeltaLeft <= -minDelta)) {
+    if (Math.abs(yawDeltaLeft) < minDelta) {
       return { ok: false, message: 'Please turn your head LEFT in final step and retry.' };
     }
     return { ok: true };
   }
 
   if (direction === 'left') {
-    if (!(yawDelta <= -minDelta)) {
+    if (Math.abs(yawDelta) < minDelta) {
       return { ok: false, message: 'Please turn your head LEFT in step 2 and retry.' };
     }
   } else if (direction === 'right') {
-    if (!(yawDelta >= minDelta)) {
+    if (Math.abs(yawDelta) < minDelta) {
       return { ok: false, message: 'Please turn your head RIGHT in step 2 and retry.' };
     }
   } else if (Math.abs(yawDelta) < minDelta) {
