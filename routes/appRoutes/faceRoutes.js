@@ -122,14 +122,30 @@ async function fetchSupervisorFaceGallery(supervisorId, wardId) {
              z.zone_name,
              c.city_name
         FROM employee e
-        JOIN supervisor_ward sw ON sw.ward_id = e.ward_id
         LEFT JOIN wards w ON e.ward_id = w.ward_id
         LEFT JOIN zones z ON w.zone_id = z.zone_id
         LEFT JOIN cities c ON z.city_id = c.city_id
-       WHERE sw.supervisor_id = $1
+       WHERE (e.face_embedding IS NOT NULL OR e.face_id IS NOT NULL)
          AND ($2::int IS NULL OR w.ward_id = $2::int)
-         AND (e.face_embedding IS NOT NULL OR e.face_id IS NOT NULL)
-       ORDER BY e.emp_id
+         AND (
+           EXISTS (
+             SELECT 1 FROM supervisor_ward sw
+             WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_kothi_access uk
+             WHERE uk.ward_id = e.ward_id AND uk.user_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM supervisor_kothi sk
+             WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_zone_access uz
+             WHERE uz.zone_id = w.zone_id AND uz.user_id = $1
+           )
+         )
+        ORDER BY e.emp_id
     `,
     [supervisorId, wardId]
   );

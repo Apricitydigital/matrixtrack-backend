@@ -1438,10 +1438,27 @@ async function fetchSupervisorFaceEmbeddings(supervisorId, wardId) {
     `
       SELECT DISTINCT e.emp_id, e.emp_code, e.name, e.face_embedding
         FROM employee e
-        JOIN supervisor_ward sw ON sw.ward_id = e.ward_id
-       WHERE sw.supervisor_id = $1
+        LEFT JOIN wards w ON e.ward_id = w.ward_id
+       WHERE e.face_embedding IS NOT NULL
          AND ($2::int IS NULL OR e.ward_id = $2::int)
-         AND e.face_embedding IS NOT NULL
+         AND (
+           EXISTS (
+             SELECT 1 FROM supervisor_ward sw
+             WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_kothi_access uk
+             WHERE uk.ward_id = e.ward_id AND uk.user_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM supervisor_kothi sk
+             WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_zone_access uz
+             WHERE uz.zone_id = w.zone_id AND uz.user_id = $1
+           )
+         )
     `,
     [supervisorId, wardId]
   );
@@ -2243,8 +2260,25 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           if (supervisorId) {
             const rosterCheck = await pool.query(
               `SELECT 1 FROM employee e
-               JOIN supervisor_ward sw ON sw.ward_id = e.ward_id
-               WHERE e.emp_id = $1 AND sw.supervisor_id = $2 LIMIT 1`,
+               LEFT JOIN wards w ON e.ward_id = w.ward_id
+               WHERE e.emp_id = $1 AND (
+                 EXISTS (
+                   SELECT 1 FROM supervisor_ward sw
+                   WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $2
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM user_kothi_access uk
+                   WHERE uk.ward_id = e.ward_id AND uk.user_id = $2
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM supervisor_kothi sk
+                   WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $2
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM user_zone_access uz
+                   WHERE uz.zone_id = w.zone_id AND uz.user_id = $2
+                 )
+               ) LIMIT 1`,
               [employeeRecord.emp_id, supervisorId]
             );
             if (rosterCheck.rowCount === 0) {
@@ -3365,10 +3399,26 @@ router.post("/mark-leave", authenticate, async (req, res) => {
     if (role !== "admin") {
       const wardCheck = await pool.query(
         `SELECT 1
-         FROM supervisor_ward sw
-         JOIN employee e ON e.ward_id = sw.ward_id
-         WHERE sw.supervisor_id = $1 AND e.emp_id = $2
-         LIMIT 1`,
+         FROM employee e
+         LEFT JOIN wards w ON e.ward_id = w.ward_id
+         WHERE e.emp_id = $2 AND (
+           EXISTS (
+             SELECT 1 FROM supervisor_ward sw
+             WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_kothi_access uk
+             WHERE uk.ward_id = e.ward_id AND uk.user_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM supervisor_kothi sk
+             WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_zone_access uz
+             WHERE uz.zone_id = w.zone_id AND uz.user_id = $1
+           )
+         ) LIMIT 1`,
         [user.user_id, empId]
       );
       if (wardCheck.rowCount === 0) {
@@ -3457,10 +3507,26 @@ router.post("/unmark-leave", authenticate, async (req, res) => {
     if (role !== "admin") {
       const wardCheck = await pool.query(
         `SELECT 1
-         FROM supervisor_ward sw
-         JOIN employee e ON e.ward_id = sw.ward_id
-         WHERE sw.supervisor_id = $1 AND e.emp_id = $2
-         LIMIT 1`,
+         FROM employee e
+         LEFT JOIN wards w ON e.ward_id = w.ward_id
+         WHERE e.emp_id = $2 AND (
+           EXISTS (
+             SELECT 1 FROM supervisor_ward sw
+             WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_kothi_access uk
+             WHERE uk.ward_id = e.ward_id AND uk.user_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM supervisor_kothi sk
+             WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_zone_access uz
+             WHERE uz.zone_id = w.zone_id AND uz.user_id = $1
+           )
+         ) LIMIT 1`,
         [user.user_id, empId]
       );
       if (wardCheck.rowCount === 0) {
