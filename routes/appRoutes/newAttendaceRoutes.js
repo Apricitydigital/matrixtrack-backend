@@ -568,20 +568,6 @@ async function resolveEmployeeFromFaceIdentifiers({
     employeeRecord = await tryResolveByIdentifier(requestedEmpId);
   }
 
-  if (employeeRecord && faceId) {
-    try {
-      await pool.query(
-        `UPDATE employee
-           SET face_id = $1
-         WHERE emp_id = $2
-           AND (face_id IS NULL OR face_id <> $1)`,
-        [faceId, employeeRecord.emp_id]
-      );
-    } catch (error) {
-      console.error("resolveEmployeeFromFaceIdentifiers:update face_id failed", error);
-    }
-  }
-
   return employeeRecord;
 }
 
