@@ -5,6 +5,10 @@
 
 const pool = require("../config/db");
 const bcrypt = require("bcryptjs");
+const fs = require("fs");
+const path = require("path");
+const { ensureProfessionalLeaveSchema } = require("../utils/professionalLeaveSchema");
+const { ensureProfessionalPushSchema } = require("../utils/professionalPushService");
 
 async function runMigrations() {
   const client = await pool.connect();
