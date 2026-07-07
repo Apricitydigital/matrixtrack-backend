@@ -238,6 +238,57 @@ const withTransaction = async (callback) => {
   }
 };
 
+const normalizeIntArray = (values = []) => {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0)
+    .filter((value) => {
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+};
+
+const normalizeLocationAccess = async (
+  { allowedCities, allowedZones, allowedKothis },
+  client = pool
+) => {
+  const cityIds = normalizeIntArray(allowedCities);
+  let zoneIds = normalizeIntArray(allowedZones);
+  let kothiIds = normalizeIntArray(allowedKothis);
+
+  if (cityIds.length === 0) {
+    return { cityIds: [], zoneIds: [], kothiIds: [] };
+  }
+
+  if (zoneIds.length > 0) {
+    const zoneResult = await client.query(
+      `SELECT zone_id
+       FROM zones
+       WHERE zone_id = ANY($1::int[])
+         AND city_id = ANY($2::int[])`,
+      [zoneIds, cityIds]
+    );
+    zoneIds = normalizeIntArray(zoneResult.rows.map((row) => row.zone_id));
+  }
+
+  if (zoneIds.length === 0) {
+    kothiIds = [];
+  } else if (kothiIds.length > 0) {
+    const kothiResult = await client.query(
+      `SELECT ward_id
+       FROM wards
+       WHERE ward_id = ANY($1::int[])
+         AND zone_id = ANY($2::int[])`,
+      [kothiIds, zoneIds]
+    );
+    kothiIds = normalizeIntArray(kothiResult.rows.map((row) => row.ward_id));
+  }
+
+  return { cityIds, zoneIds, kothiIds };
+};
+
 // Permission routes
 router.get("/permissions", authenticate, assertAdminOrPermission, fetchPermissions);
 
@@ -530,6 +581,11 @@ router.post("/users", authenticate, assertAdminOrPermission, async (req, res) =>
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
+    const normalizedLocationAccess = await normalizeLocationAccess({
+      allowedCities,
+      allowedZones,
+      allowedKothis,
+    });
 
     const userResult = await pool.query(
       `
@@ -578,17 +634,21 @@ router.post("/users", authenticate, assertAdminOrPermission, async (req, res) =>
       await syncUserPermissions(userId, normalizedPermissions, req.user?.user_id);
     }
 
-    if (Array.isArray(allowedCities)) {
-      await syncUserCityAccess(userId, allowedCities, req.user?.user_id);
-    }
-
-    if (Array.isArray(allowedZones)) {
-      await syncUserZoneAccess(userId, allowedZones, req.user?.user_id);
-    }
-
-    if (Array.isArray(allowedKothis)) {
-      await syncUserKothiAccess(userId, allowedKothis, req.user?.user_id);
-    }
+    await syncUserCityAccess(
+      userId,
+      normalizedLocationAccess.cityIds,
+      req.user?.user_id
+    );
+    await syncUserZoneAccess(
+      userId,
+      normalizedLocationAccess.zoneIds,
+      req.user?.user_id
+    );
+    await syncUserKothiAccess(
+      userId,
+      normalizedLocationAccess.kothiIds,
+      req.user?.user_id
+    );
 
     invalidateZoneAccessCache();
     invalidateKothiAccessCache();
@@ -630,6 +690,11 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
 
   try {
     await withTransaction(async (client) => {
+      const normalizedLocationAccess = await normalizeLocationAccess(
+        { allowedCities, allowedZones, allowedKothis },
+        client
+      );
+
       if (password) {
         const hashed = await bcrypt.hash(password, 10);
         await client.query(
@@ -688,32 +753,24 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
         );
       }
 
-      if (Array.isArray(allowedCities)) {
-        await syncUserCityAccess(
-          userId,
-          allowedCities,
-          req.user?.user_id,
-          client
-        );
-      }
-
-      if (Array.isArray(allowedZones)) {
-        await syncUserZoneAccess(
-          userId,
-          allowedZones,
-          req.user?.user_id,
-          client
-        );
-      }
-
-      if (Array.isArray(allowedKothis)) {
-        await syncUserKothiAccess(
-          userId,
-          allowedKothis,
-          req.user?.user_id,
-          client
-        );
-      }
+      await syncUserCityAccess(
+        userId,
+        normalizedLocationAccess.cityIds,
+        req.user?.user_id,
+        client
+      );
+      await syncUserZoneAccess(
+        userId,
+        normalizedLocationAccess.zoneIds,
+        req.user?.user_id,
+        client
+      );
+      await syncUserKothiAccess(
+        userId,
+        normalizedLocationAccess.kothiIds,
+        req.user?.user_id,
+        client
+      );
     });
 
     invalidateZoneAccessCache();
