@@ -637,19 +637,25 @@ router.post("/verify-login-otp", async (req, res) => {
     
     const allowedCities = await computeAllowedCities(userData, access);
     const uiPermissions = buildUiPermissions(access);
+    const employeeProfile = await fetchEmployeeProfile(userData.emp_code);
 
     res.json({
       status: "success",
       message: "Login successful",
       token,
       user: {
-        id: userData.user_id,
+        user_id: userData.user_id,
         name: userData.name,
         email: userData.email,
         role: primaryRole,
-        permissions: uiPermissions,
-        scope: userData.scope,
-        allowedCities: allowedCities,
+        roles: access.roles,
+        permissions: access.permissions,
+        customPermissions: userData.permissions,
+        emp_code: userData.emp_code,
+        phone: userData.phone,
+        allowedCities,
+        uiPermissions,
+        employee: employeeProfile,
       },
     });
 
