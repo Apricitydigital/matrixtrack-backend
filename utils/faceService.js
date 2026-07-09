@@ -6,6 +6,7 @@ const {
 } = require('../config/awsConfig');
 const axios = require('axios');
 const logger = require('./logger');
+const { sendTrackedRekognition, getIstDateKey } = require('./cityTrafficCost');
 
 const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
 
@@ -24,7 +25,7 @@ async function streamToBuffer(stream) {
  * @param {number} threshold - Minimum similarity threshold (0-100)
  * @returns {Promise<{ isMatch: boolean, confidence: number }>}
  */
-async function verifyFaceMatch(sourceS3Key, targetBase64, threshold = 80) {
+async function verifyFaceMatch(sourceS3Key, targetBase64, threshold = 80, tracking = {}) {
   if (!AWS_S3_BUCKET) {
     logger.warn('[FaceService] AWS S3 bucket not configured. Bypassing face match (dev mode only).');
     // If not configured, we might reject or allow depending on environment.
@@ -84,7 +85,13 @@ async function verifyFaceMatch(sourceS3Key, targetBase64, threshold = 80) {
       SimilarityThreshold: threshold
     });
 
-    const response = await rekognition.send(compareCommand);
+    const response = await sendTrackedRekognition({
+      client: rekognition,
+      command: compareCommand,
+      cityId: tracking.cityId || null,
+      source: tracking.source || 'professional_punch_in',
+      metricDate: tracking.metricDate || getIstDateKey(),
+    });
 
     if (response.FaceMatches && response.FaceMatches.length > 0) {
       // Find the highest similarity match

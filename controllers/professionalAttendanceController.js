@@ -4,6 +4,7 @@ const { verifyFaceMatch } = require('../utils/faceService');
 const { rekognition, DetectFacesCommand, CompareFacesCommand } = require('../config/awsConfig');
 const { getSignedS3Url, uploadToS3 } = require('../utils/s3SelfPunch');
 const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSchema');
+const { sendTrackedRekognition, trackCityTraffic } = require('../utils/cityTrafficCost');
 
 let attendanceColumnsEnsured = false;
 
@@ -120,7 +121,7 @@ const pickPrimaryFace = (faces = []) => {
   }, null);
 };
 
-const detectSingleFace = async (base64Image, stage = 'front') => {
+const detectSingleFace = async (base64Image, stage = 'front', tracking = {}) => {
   const imageBuffer = decodeBase64Image(base64Image);
   if (!imageBuffer.length) {
     return { ok: false, message: 'Invalid selfie image provided.' };
@@ -128,12 +129,16 @@ const detectSingleFace = async (base64Image, stage = 'front') => {
 
   let detectResult;
   try {
-    detectResult = await rekognition.send(
-      new DetectFacesCommand({
+    detectResult = await sendTrackedRekognition({
+      client: rekognition,
+      command: new DetectFacesCommand({
         Image: { Bytes: imageBuffer },
         Attributes: ['ALL'],
-      })
-    );
+      }),
+      cityId: tracking.cityId || null,
+      source: tracking.source || 'professional_punch_in',
+      metricDate: tracking.metricDate || getTodayIST(),
+    });
   } catch (error) {
     logger.error('[Attendance] Liveness pre-check failed', error.message || error);
     return { ok: false, message: 'Liveness service unavailable. Please try again.' };
@@ -219,15 +224,19 @@ const detectSingleFace = async (base64Image, stage = 'front') => {
   };
 };
 
-const verifyFramesBelongToSamePerson = async (sourceBuffer, targetBuffer) => {
+const verifyFramesBelongToSamePerson = async (sourceBuffer, targetBuffer, tracking = {}) => {
   try {
-    const response = await rekognition.send(
-      new CompareFacesCommand({
+    const response = await sendTrackedRekognition({
+      client: rekognition,
+      command: new CompareFacesCommand({
         SourceImage: { Bytes: sourceBuffer },
         TargetImage: { Bytes: targetBuffer },
         SimilarityThreshold: LIVENESS_CONFIG.minFrameSimilarity,
-      })
-    );
+      }),
+      cityId: tracking.cityId || null,
+      source: tracking.source || 'professional_punch_in',
+      metricDate: tracking.metricDate || getTodayIST(),
+    });
 
     if (!response?.FaceMatches?.length) {
       return { ok: false, similarity: 0 };
@@ -256,7 +265,7 @@ const runLivenessPrecheck = async (selfieBase64, options = {}) => {
   if (parsedFrames.length === 1 && selfieBase64) {
     parsedFrames.unshift(selfieBase64);
   }
-  const primaryResult = await detectSingleFace(selfieBase64, 'front');
+  const primaryResult = await detectSingleFace(selfieBase64, 'front', options);
   if (!primaryResult.ok) {
     return primaryResult;
   }
@@ -300,13 +309,13 @@ const runLivenessPrecheck = async (selfieBase64, options = {}) => {
   }
   const direction = String(options?.livenessChallenge || '').trim().toLowerCase();
 
-  const frameAResult = await detectSingleFace(frameA, 'front');
+  const frameAResult = await detectSingleFace(frameA, 'front', options);
   if (!frameAResult.ok) return frameAResult;
   const stageForB = direction === 'blink' ? 'blink' : (direction === 'left' ? 'left' : 'right');
-  const frameBResult = await detectSingleFace(frameB, stageForB);
+  const frameBResult = await detectSingleFace(frameB, stageForB, options);
   if (!frameBResult.ok) return frameBResult;
 
-  const samePerson = await verifyFramesBelongToSamePerson(frameAResult.buffer, frameBResult.buffer);
+  const samePerson = await verifyFramesBelongToSamePerson(frameAResult.buffer, frameBResult.buffer, options);
   if (!samePerson.ok) {
     return {
       ok: false,
@@ -341,10 +350,10 @@ const runLivenessPrecheck = async (selfieBase64, options = {}) => {
       };
     }
 
-    const frameCResult = await detectSingleFace(frameC, 'left');
+    const frameCResult = await detectSingleFace(frameC, 'left', options);
     if (!frameCResult.ok) return frameCResult;
 
-    const samePersonBC = await verifyFramesBelongToSamePerson(frameBResult.buffer, frameCResult.buffer);
+    const samePersonBC = await verifyFramesBelongToSamePerson(frameBResult.buffer, frameCResult.buffer, options);
     if (!samePersonBC.ok) {
       return {
         ok: false,
@@ -449,6 +458,9 @@ const punchIn = async (req, res) => {
     const liveness = await runLivenessPrecheck(selfie_base64, {
       livenessFrames: liveness_frames,
       livenessChallenge: liveness_challenge,
+      cityId: city_id,
+      source: 'professional_punch_in',
+      metricDate: today,
     });
     if (!liveness.ok) {
       if (liveness.needsChallenge) {
@@ -481,7 +493,7 @@ const punchIn = async (req, res) => {
     // 4. Perform Face Verification
     let matchResult;
     try {
-      matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80);
+      matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80, { cityId: city_id, source: 'professional_punch_in', metricDate: today });
     } catch (faceErr) {
       await client.query('ROLLBACK');
       return res.status(400).json({ success: false, message: faceErr.message });
@@ -501,7 +513,7 @@ const punchIn = async (req, res) => {
     if (challengeFrame) {
       let challengeMatchResult;
       try {
-        challengeMatchResult = await verifyFaceMatch(sourceS3Key, challengeFrame, 80);
+        challengeMatchResult = await verifyFaceMatch(sourceS3Key, challengeFrame, 80, { cityId: city_id, source: 'professional_punch_in', metricDate: today });
       } catch (faceErr) {
         await client.query('ROLLBACK');
         return res.status(400).json({ success: false, message: faceErr.message });
@@ -549,6 +561,18 @@ const punchIn = async (req, res) => {
     await client.query('COMMIT');
     
     logger.info(`[Attendance] Professional ${professional_id} punched in successfully.`);
+
+    try {
+      await trackCityTraffic({
+        source: 'professional_punch_in',
+        metricDate: today,
+        requestCityId: city_id,
+        entries: [{ cityId: city_id, requestCount: 0, attendanceCount: 1, successCount: 0, failureCount: 0 }],
+      });
+    } catch (trafficError) {
+      logger.warn(`[CityTrafficCost] Failed to track professional punch-in for ${professional_id}: ${trafficError.message}`);
+    }
+
     res.json({ success: true, punch_in_time: rows[0].punch_in });
 
   } catch (error) {
@@ -566,7 +590,7 @@ const punchIn = async (req, res) => {
  * @access  Private (Professional)
  */
 const punchOut = async (req, res) => {
-  const { professional_id } = req.professional;
+  const { professional_id, city_id } = req.professional;
   const { selfie_base64, latitude, longitude, liveness_frames, liveness_challenge } = req.body;
   const today = getTodayIST();
 
@@ -598,6 +622,9 @@ const punchOut = async (req, res) => {
     const liveness = await runLivenessPrecheck(selfie_base64, {
       livenessFrames: liveness_frames,
       livenessChallenge: liveness_challenge,
+      cityId: city_id,
+      source: 'professional_punch_out',
+      metricDate: today,
     });
     if (!liveness.ok) {
       if (liveness.needsChallenge) {
@@ -627,7 +654,7 @@ const punchOut = async (req, res) => {
     // 3. Perform Face Verification before punch out
     let matchResult;
     try {
-      matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80);
+      matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80, { cityId: city_id, source: 'professional_punch_out', metricDate: today });
     } catch (faceErr) {
       return res.status(400).json({ success: false, message: faceErr.message });
     }
@@ -645,7 +672,7 @@ const punchOut = async (req, res) => {
     if (challengeFrame) {
       let challengeMatchResult;
       try {
-        challengeMatchResult = await verifyFaceMatch(sourceS3Key, challengeFrame, 80);
+        challengeMatchResult = await verifyFaceMatch(sourceS3Key, challengeFrame, 80, { cityId: city_id, source: 'professional_punch_out', metricDate: today });
       } catch (faceErr) {
         return res.status(400).json({ success: false, message: faceErr.message });
       }
@@ -695,6 +722,25 @@ const punchOut = async (req, res) => {
     }
 
     logger.info(`[Attendance] Professional ${professional_id} punched out successfully.`);
+
+    try {
+      const cityResult = await pool.query(
+        `SELECT city_id FROM professional_attendance WHERE professional_id = $1 AND date = $2 LIMIT 1`,
+        [professional_id, today]
+      );
+      const trackedCityId = Number(cityResult.rows[0]?.city_id || 0);
+      if (trackedCityId > 0) {
+        await trackCityTraffic({
+          source: 'professional_punch_out',
+          metricDate: today,
+          requestCityId: trackedCityId,
+          entries: [{ cityId: trackedCityId, requestCount: 0, attendanceCount: 1, successCount: 0, failureCount: 0 }],
+        });
+      }
+    } catch (trafficError) {
+      logger.warn(`[CityTrafficCost] Failed to track professional punch-out for ${professional_id}: ${trafficError.message}`);
+    }
+
     res.json({ 
       success: true, 
       punch_out_time: rows[0].punch_out,
@@ -829,12 +875,12 @@ const getMonthlyAttendance = async (req, res) => {
         let displayHours = '-';
 
         if (record.punch_in && record.punch_out) {
-          // Fully completed session — use stored hours_worked
+          // Fully completed session ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â use stored hours_worked
           hours = record.hours_worked != null ? parseFloat(record.hours_worked) : 0;
           status = hours >= 4 ? 'present' : 'half-day';
           displayHours = hours.toFixed(2);
         } else if (record.punch_in && !record.punch_out) {
-          // Punched in but no punch-out — counts as present, hours shown as '-'
+          // Punched in but no punch-out ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â counts as present, hours shown as '-'
           status = 'present';
           displayHours = '-'; // Don't show live working time if punch-out not done
         }
