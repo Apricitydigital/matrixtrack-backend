@@ -7,7 +7,7 @@ const authenticateUser = require("../middleware/authMiddleware");
 // ╔══════════════════════════════════════════════════╗
 // ║  SUPER ADMIN — NEVER DELETE OR BLOCK THIS EMAIL  ║
 // ╚══════════════════════════════════════════════════╝
-const SUPER_ADMIN_EMAIL = "admin@gmail.com";
+const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
 
 // Middleware to check admin role
 const requireAdmin = (req, res, next) => {
@@ -404,7 +404,7 @@ const checkIpBlockPermission = async (userId) => {
   );
   if (rows.length === 0) return false;
   const user = rows[0];
-  if (user.email === "admin@gmail.com") return true; // Super admin always allowed
+  if (user.email === SUPER_ADMIN_EMAIL) return true; // Super admin always allowed
   if (user.role?.toLowerCase() === "admin") {
     if (user.permissions && user.permissions.role_type === "super_admin") return true;
     if (user.permissions && user.permissions.actions && user.permissions.actions.can_block_ip === true) {

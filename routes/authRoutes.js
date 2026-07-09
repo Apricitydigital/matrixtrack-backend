@@ -14,6 +14,7 @@ const router = express.Router();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "45d";
 const JWT_COOKIE_MAX_AGE_MS =
   Number(process.env.JWT_COOKIE_MAX_AGE_MS) || 45 * 24 * 60 * 60 * 1000;
+const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
 
 const getUserAccessProfile = async (userId) => {
   const rolesQuery = `
@@ -372,8 +373,8 @@ router.post("/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.rows[0].password_hash);
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
-    // ✅ Super admin bypass — admin@gmail.com can ALWAYS login
-    const isSuperAdmin = user.rows[0].email === 'admin@gmail.com';
+    // ✅ Super admin bypass — SUPER_ADMIN_EMAIL can ALWAYS login
+    const isSuperAdmin = user.rows[0].email === SUPER_ADMIN_EMAIL;
 
     // ✅ Block soft-deleted accounts (except super admin)
     if (!isSuperAdmin && user.rows[0].is_deleted === true) {
