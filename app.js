@@ -1,4 +1,5 @@
 require("dotenv").config();
+const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
@@ -9,6 +10,7 @@ const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const socketUtil = require("./utils/socket");
 
 
 process.on("unhandledRejection", (reason) => {
@@ -59,15 +61,20 @@ const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
 const supervisorAadharRoutes = require("./routes/supervisorAadharRoutes");
 const supervisorPhotoRoutes = require("./routes/supervisorPhotoRoutes");
 const otpRoutes = require("./routes/otpRoutes");
+const compression = require("compression");
 
 const app = express();
 
 // Middleware
+app.use(compression());
 app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.url}`);
   next();
 });
-app.use(express.json());
+// PROD SAFETY: 2 MB JSON limit. 8 MB was too large — allowed clients to bypass
+// multer's file-size cap by encoding images as base64 in JSON body.
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 const defaultOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
@@ -495,6 +502,10 @@ app.get("/", (req, res) => {
   res.send("Attendance System API is running...");
 });
 
+// Mount IP Blocking Middleware
+const ipBlockMiddleware = require("./middleware/ipBlockMiddleware");
+app.use("/api", ipBlockMiddleware);
+
 // Mount Global Audit Logger Middleware (Asynchronous S3 logging)
 const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");
 app.use("/api", auditLoggerMiddleware);
@@ -530,12 +541,15 @@ app.use("/api/supervisor-photo", supervisorPhotoRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 5000;
+const httpServer = http.createServer(app);
 
 // Run migrations before starting the server
 runMigrations().then(() => {
   return ensureCronRunsTable();
 }).then(() => {
-  app.listen(PORT, "0.0.0.0", () => {
+  // Initialize socket.io on the HTTP server
+  socketUtil.init(httpServer);
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
 }).catch(err => {

@@ -45,6 +45,41 @@ const resetFaceCaches = () => {
   FOUND_FACE_CACHE.clear();
 };
 
+const rssToMb = (rss) => Number((rss / (1024 * 1024)).toFixed(1));
+
+const createRouteMetrics = (route, req) => ({
+  route,
+  startedAt: Date.now(),
+  imageBytes:
+    req?.file?.size ||
+    req?.file?.buffer?.length ||
+    req?.file?.transforms?.[0]?.size ||
+    0,
+  facesDetected: 0,
+  fallbackCandidates: 0,
+  rekognitionCalls: 0,
+  rssBeforeMb: rssToMb(process.memoryUsage().rss),
+});
+
+const finalizeRouteMetrics = (metrics) => {
+  if (!metrics) {
+    return;
+  }
+
+  const durationMs = Date.now() - metrics.startedAt;
+  const rssAfterMb = rssToMb(process.memoryUsage().rss);
+  console.log(
+    '[perf] route=' + metrics.route +
+      ' durationMs=' + durationMs +
+      ' imageBytes=' + metrics.imageBytes +
+      ' facesDetected=' + metrics.facesDetected +
+      ' fallbackCandidates=' + metrics.fallbackCandidates +
+      ' rekognitionCalls=' + metrics.rekognitionCalls +
+      ' rssBeforeMb=' + metrics.rssBeforeMb +
+      ' rssAfterMb=' + rssAfterMb
+  );
+};
+
 // ðŸ”€ Admin utility: clear face caches on demand (no data is deleted)
 router.post("/clear-cache", (req, res) => {
   const missingSize = MISSING_FACE_CACHE.size;
@@ -122,14 +157,30 @@ async function fetchSupervisorFaceGallery(supervisorId, wardId) {
              z.zone_name,
              c.city_name
         FROM employee e
-        JOIN supervisor_ward sw ON sw.ward_id = e.ward_id
         LEFT JOIN wards w ON e.ward_id = w.ward_id
         LEFT JOIN zones z ON w.zone_id = z.zone_id
         LEFT JOIN cities c ON z.city_id = c.city_id
-       WHERE sw.supervisor_id = $1
+       WHERE (e.face_embedding IS NOT NULL OR e.face_id IS NOT NULL)
          AND ($2::int IS NULL OR w.ward_id = $2::int)
-         AND (e.face_embedding IS NOT NULL OR e.face_id IS NOT NULL)
-       ORDER BY e.emp_id
+         AND (
+           EXISTS (
+             SELECT 1 FROM supervisor_ward sw
+             WHERE sw.ward_id = e.ward_id AND sw.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_kothi_access uk
+             WHERE uk.ward_id = e.ward_id AND uk.user_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM supervisor_kothi sk
+             WHERE sk.ward_id = e.ward_id AND sk.supervisor_id = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM user_zone_access uz
+             WHERE uz.zone_id = w.zone_id AND uz.user_id = $1
+           )
+         )
+        ORDER BY e.emp_id
     `,
     [supervisorId, wardId]
   );
@@ -723,8 +774,10 @@ router.post("/reindex-targeted", async (req, res) => {
 router.get("/gallery", async (req, res) => {
   // Never let an HTTP cache serve a stale gallery list
   res.set("Cache-Control", "no-store");
-  // Treat gallery refresh as a cache flush to avoid stale/mismatched thumbs
-  resetFaceCaches();
+  // PROD SAFETY: Do NOT flush face caches on every gallery load.
+  // Previously resetFaceCaches() here defeated FOUND_FACE_CACHE and MISSING_FACE_CACHE,
+  // causing every subsequent /image/:id to re-do S3 prefix scans and sharp recompress.
+  // Use the dedicated POST /clear-cache endpoint to flush caches explicitly when needed.
 
   const supervisorId = resolveSupervisorIdFromQuery(req.query);
   const wardId = normalizeId(req.query?.ward_id ?? req.query?.wardId ?? null);
@@ -844,6 +897,7 @@ router.get("/gallery", async (req, res) => {
 });
 
 router.get("/image/:employeeId", async (req, res) => {
+  const routeMetrics = createRouteMetrics("face-image", req);
   try {
     const employeeId = normalizeId(req.params.employeeId);
 
@@ -885,7 +939,7 @@ router.get("/image/:employeeId", async (req, res) => {
       res.set({
         "Content-Type": imageResponse.headers["content-type"] || "image/jpeg",
         "Content-Disposition": `inline; filename="${path.basename(name) || defaultName}"`,
-        "Cache-Control": "no-store",
+        "Cache-Control": "private, max-age=60",
       });
 
       // 🖼 Compression Proxy using Sharp
@@ -925,7 +979,7 @@ router.get("/image/:employeeId", async (req, res) => {
           res.set({
             "Content-Type": "image/jpeg",
             "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
-            "Cache-Control": "no-store",
+            "Cache-Control": "private, max-age=60",
           });
 
           return stream.pipe(transformer).pipe(res);
@@ -960,7 +1014,7 @@ router.get("/image/:employeeId", async (req, res) => {
         res.set({
           "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(reference.key) || defaultName}"`,
-          "Cache-Control": "no-store",
+          "Cache-Control": "private, max-age=60",
         });
 
         return imageResponse.data.pipe(transformer).pipe(res);
@@ -1068,7 +1122,7 @@ router.get("/image/:employeeId", async (req, res) => {
         res.set({
           "Content-Type": "image/jpeg",
           "Content-Disposition": `inline; filename="${path.basename(objectKey) || defaultName}"`,
-          "Cache-Control": "no-store",
+          "Cache-Control": "private, max-age=60",
         });
 
         return stream.pipe(transformer).pipe(res);
@@ -1123,7 +1177,7 @@ router.get("/image/:employeeId", async (req, res) => {
           res.set({
             "Content-Type": contentType || "image/jpeg",
             "Content-Disposition": `inline; filename="${path.basename(objectKeyFromUrl) || defaultName}"`,
-            "Cache-Control": "no-store",
+            "Cache-Control": "private, max-age=60",
           });
 
           return stream.pipe(transformer).pipe(res);
@@ -1151,17 +1205,22 @@ router.get("/image/:employeeId", async (req, res) => {
     return res.status(404).json({ error: "Face image not found" });
   } catch (error) {
     console.error("Face image streaming error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    return res.status(500).json({ error: "Internal Server Error" });
+  } finally {
+    finalizeRouteMetrics(routeMetrics);
   }
 });
 
 router.post("/store-face", upload.single("image"), async (req, res) => {
+  const routeMetrics = createRouteMetrics("store-face", req);
   let objectKey = null;
+  let normalizedUserId = null;
+  let normalizedEmpId = null;
   try {
     const { userId: rawUserId, emp_id: rawEmpId, employeeId: rawEmployeeId } = req.body;
 
-    const normalizedUserId = normalizeId(rawUserId);
-    const normalizedEmpId = normalizeId(rawEmpId ?? rawEmployeeId);
+    normalizedUserId = normalizeId(rawUserId);
+    normalizedEmpId = normalizeId(rawEmpId ?? rawEmployeeId);
 
     if (normalizedUserId === null && normalizedEmpId === null) {
       return res.status(400).json({
@@ -1240,6 +1299,7 @@ router.post("/store-face", upload.single("image"), async (req, res) => {
       if (_collectionId && employeeRecord.face_id) {
         try {
           await ensureCollectionExists(_collectionId);
+          routeMetrics.rekognitionCalls += 1;
           await rekognition.send(
             new DeleteFacesCommand({
               CollectionId: _collectionId,
@@ -1316,6 +1376,7 @@ router.post("/store-face", upload.single("image"), async (req, res) => {
     };
 
     const command = new IndexFacesCommand(rekognitionParams);
+    routeMetrics.rekognitionCalls += 1;
     const rekognitionResponse = await rekognition.send(command);
 
     if (
@@ -1389,10 +1450,12 @@ router.post("/store-face", upload.single("image"), async (req, res) => {
       FOUND_FACE_CACHE.delete(normalizedEmpId);
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       error: "Error processing face data",
       details: error.message,
     });
+  } finally {
+    finalizeRouteMetrics(routeMetrics);
   }
 });
 
@@ -1615,3 +1678,6 @@ router.delete("/:employeeId", async (req, res) => {
 });
 
 module.exports = router;
+
+
+

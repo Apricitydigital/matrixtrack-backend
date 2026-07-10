@@ -7,12 +7,15 @@ const pool = new Pool({
   database: process.env.DB_NAME,
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
-  ssl: { rejectUnauthorized: false }, // Required for RDS connections
-  max: Number(process.env.DB_POOL_MAX || 15), // Max DB connections (prevents starvation)
-  min: 5,                             // Keep a minimum of 5 connections alive
-  connectionTimeoutMillis: 15000,     // Wait max 15s for a free connection
-  idleTimeoutMillis: 30000,           // Close idle connections after 30s
-  statement_timeout: 30000,           // Kill any query running > 30s
+  ssl: { rejectUnauthorized: false },
+  max: Number(process.env.DB_POOL_MAX || 30),
+  min: Number(process.env.DB_POOL_MIN || 2),
+  connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS || 30000),
+  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 10000),
+  statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS || 30000),
+  query_timeout: Number(process.env.DB_QUERY_TIMEOUT_MS || 30000),
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
 });
 
 module.exports = pool;

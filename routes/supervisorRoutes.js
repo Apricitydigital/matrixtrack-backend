@@ -151,7 +151,13 @@ router.get(
         SELECT 
           COALESCE(c.city_name, 'All Cities') AS city_name,
           COUNT(DISTINCT sw.supervisor_id) AS supervisor_count
-        FROM supervisor_ward sw
+        FROM (
+          SELECT supervisor_id, ward_id FROM supervisor_ward
+          UNION
+          SELECT user_id AS supervisor_id, ward_id FROM user_kothi_access
+          UNION
+          SELECT supervisor_id, ward_id FROM supervisor_kothi
+        ) sw
         JOIN wards w ON sw.ward_id = w.ward_id
         JOIN zones z ON w.zone_id = z.zone_id
         JOIN cities c ON z.city_id = c.city_id
@@ -210,7 +216,13 @@ router.get(
           STRING_AGG(DISTINCT z.zone_name, ', ') AS zones,
           STRING_AGG(DISTINCT w.ward_name, ', ') AS kothis,
           COUNT(DISTINCT e.emp_id) AS total_employee_count
-        FROM supervisor_ward sw
+        FROM (
+          SELECT supervisor_id, ward_id FROM supervisor_ward
+          UNION
+          SELECT user_id AS supervisor_id, ward_id FROM user_kothi_access
+          UNION
+          SELECT supervisor_id, ward_id FROM supervisor_kothi
+        ) sw
         JOIN users u ON sw.supervisor_id = u.user_id
         JOIN wards w ON sw.ward_id = w.ward_id
         JOIN zones z ON w.zone_id = z.zone_id
