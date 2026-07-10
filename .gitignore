@@ -12,9 +12,17 @@ logs/audit/
 check_*.js
 run_query.js
 
-
-#test files
+# test files
 test_*.js
 supervisor_errors.log
-scratch/dry_run_group_punch.js
+
+# scratch / temporary debug files - ignore entire folder
+scratch/
+
+# server output files
+server.out
+server.log
+
+# migration helper scripts
+migrate-active-sessions.js
 
