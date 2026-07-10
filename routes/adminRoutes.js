@@ -7,7 +7,7 @@ const {
   createAttendanceDownloadHandler,
 } = require("../utils/attendanceReportDownload");
 const { attachCityScope } = require("../middleware/cityScope");
-const { syncUserKothiAccess } = require("../utils/userKothiAccess");
+const { syncUserKothiAccess, invalidateKothiAccessCache } = require("../utils/userKothiAccess");
 const { syncUserZoneAccess } = require("../utils/userZoneAccess");
 const { syncUserCityAccess } = require("../utils/userCityAccess");
 const { getSystemHealthSnapshot } = require("../utils/systemHealth");
@@ -978,6 +978,7 @@ router.put("/supervisors/:id/assignments", async (req, res) => {
     }
 
     await client.query('COMMIT');
+    invalidateKothiAccessCache();
     res.json({ message: "Ward assignments updated successfully" });
   } catch (error) {
     if (client) await client.query('ROLLBACK');

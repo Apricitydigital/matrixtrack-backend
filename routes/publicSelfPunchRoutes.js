@@ -1,5 +1,5 @@
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const { upload, handleMulterError, submitRequest } = require('../controllers/selfPunchController');
 
 const router = express.Router();
@@ -11,11 +11,12 @@ const submitLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 40,
   keyGenerator: (req) => {
+    const ipKey = ipKeyGenerator(req.ip || req.ipAddress || '');
     const mobile = normalizeMobile(req.body?.mobile);
     if (mobile.length === 10) {
-      return `${req.ip}:${mobile}`;
+      return `${ipKey}:${mobile}`;
     }
-    return req.ip;
+    return ipKey;
   },
   message: {
     success: false,

@@ -1,10 +1,21 @@
 const {
   rekognition,
-  CompareFacesCommand
+  CompareFacesCommand,
+  s3,
+  GetObjectCommand
 } = require('../config/awsConfig');
+const axios = require('axios');
 const logger = require('./logger');
 
 const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
+
+async function streamToBuffer(stream) {
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
 
 /**
  * Compares a live selfie (base64) against an existing S3 object.
@@ -22,19 +33,45 @@ async function verifyFaceMatch(sourceS3Key, targetBase64, threshold = 80) {
   }
 
   try {
-    // Accept either S3 object key or full S3 URL stored in DB.
+    let sourceImageBuffer = null;
     let normalizedSourceKey = String(sourceS3Key || '').trim();
+
+    // 1. If it's a full URL (S3, Backblaze, etc.), try downloading directly via HTTP
     if (normalizedSourceKey.startsWith('http://') || normalizedSourceKey.startsWith('https://')) {
       try {
-        const parsedUrl = new URL(normalizedSourceKey);
-        normalizedSourceKey = decodeURIComponent(parsedUrl.pathname || '').replace(/^\/+/, '');
-      } catch (_) {
-        normalizedSourceKey = normalizedSourceKey.replace(/^https?:\/\/[^/]+\//i, '');
+        const resp = await axios.get(normalizedSourceKey, { responseType: 'arraybuffer' });
+        sourceImageBuffer = Buffer.from(resp.data);
+      } catch (err) {
+        // Fallback: extract the key from the URL and try S3 directly
+        try {
+          const parsedUrl = new URL(normalizedSourceKey);
+          normalizedSourceKey = decodeURIComponent(parsedUrl.pathname || '').replace(/^\/+/, '');
+        } catch (_) {
+          normalizedSourceKey = normalizedSourceKey.replace(/^https?:\/\/[^/]+\//i, '');
+        }
       }
     }
 
-    if (!normalizedSourceKey) {
-      throw new Error('Stored reference selfie is missing.');
+    // 2. If HTTP download failed or it's just a raw key, fetch from S3
+    if (!sourceImageBuffer && normalizedSourceKey) {
+       const buckets = [...new Set([
+         AWS_S3_BUCKET, 
+         process.env.SECONDARY_S3_BUCKET, 
+         "attend-ease-images", 
+         "dailyfacerecord"
+       ].filter(Boolean))];
+       
+       for (const bucket of buckets) {
+         try {
+           const resp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: normalizedSourceKey }));
+           sourceImageBuffer = await streamToBuffer(resp.Body);
+           break;
+         } catch(e) {}
+       }
+    }
+
+    if (!sourceImageBuffer) {
+      throw new Error('Unable to download reference selfie from storage.');
     }
 
     // Strip base64 metadata if present (e.g., "data:image/jpeg;base64,")
@@ -42,15 +79,8 @@ async function verifyFaceMatch(sourceS3Key, targetBase64, threshold = 80) {
     const imageBuffer = Buffer.from(base64Data, 'base64');
 
     const compareCommand = new CompareFacesCommand({
-      SourceImage: {
-        S3Object: {
-          Bucket: AWS_S3_BUCKET,
-          Name: normalizedSourceKey
-        }
-      },
-      TargetImage: {
-        Bytes: imageBuffer
-      },
+      SourceImage: { Bytes: sourceImageBuffer },
+      TargetImage: { Bytes: imageBuffer },
       SimilarityThreshold: threshold
     });
 
