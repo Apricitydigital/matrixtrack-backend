@@ -8,7 +8,7 @@ const {
 } = require("../utils/cityTrafficCost");
 
 const router = express.Router();
-const SUPER_ADMIN_EMAIL = "admin@gmail.com";
+const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
 
 const requireAdmin = (req, res, next) => {
   const userRole = String(req.user?.role || "").toLowerCase();
