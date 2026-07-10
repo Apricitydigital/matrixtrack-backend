@@ -1140,3 +1140,133 @@
     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
     at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
     at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-06T09:06:36.734Z] wards-post: error: canceling statement due to statement timeout
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:683:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1611:22
+[2026-07-08T03:19:58.225Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:19:58.519Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:19:58.764Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:19:59.465Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:20:04.283Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:20:04.548Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:20:05.598Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:20:05.679Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:20:11.513Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:20:13.809Z] wards-post: error: column reference "leave_type" is ambiguous
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:662:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1575:22
+[2026-07-08T03:25:13.878Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:660:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1573:22
+[2026-07-08T03:25:14.015Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:660:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1573:22
+[2026-07-08T03:25:14.183Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:660:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1573:22
+[2026-07-08T03:25:14.439Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:660:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1573:22
+[2026-07-08T03:25:19.797Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:660:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1573:22
+[2026-07-08T03:25:21.261Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:660:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1573:22
+[2026-07-08T03:25:24.247Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:660:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1573:22
+[2026-07-08T03:27:08.077Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1572:22
+[2026-07-08T03:27:08.322Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1572:22
+[2026-07-08T03:27:08.339Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1572:22
+[2026-07-08T03:27:08.553Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1572:22
+[2026-07-08T03:28:45.889Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1572:22
+[2026-07-08T03:28:45.937Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1572:22
+[2026-07-08T03:28:46.091Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1572:22
+[2026-07-08T03:28:46.412Z] wards-post: error: column summary.has_mid_shift_punch_in does not exist
+    at G:\Matrix-Track\Matrix\matrixtrack-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async fetchSupervisorEmployees (G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:659:18)
+    at async G:\Matrix-Track\Matrix\matrixtrack-backend\routes\appRoutes\supervisorsWard.js:1572:22

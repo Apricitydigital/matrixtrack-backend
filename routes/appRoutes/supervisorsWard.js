@@ -385,8 +385,7 @@ const fetchSupervisorSummary = async (
         MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
         MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in,
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
-        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
-        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out
       FROM scoped_employees se
       LEFT JOIN attendance a
         ON a.emp_id = se.emp_id
@@ -586,15 +585,41 @@ const fetchSupervisorEmployees = async (
     attendance_summary AS (
       SELECT
         a.emp_id,
-        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_in,
-        MAX(CASE WHEN a.mid_shift_punch_in_time IS NOT NULL THEN 1 ELSE 0 END) AS has_mid_shift_punch_in,
-        MAX(CASE WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL) THEN 1 ELSE 0 END) AS has_punch_start,
-        MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
+       MAX(
+    CASE
+        WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
+        THEN 1
+        ELSE 0
+    END
+) AS has_punch_in,
+
+MAX(
+    CASE
+        WHEN a.mid_shift_punch_in_time IS NOT NULL
+        THEN 1
+        ELSE 0
+    END
+) AS has_mid_shift_punch_in,
+
+MAX(
+    CASE
+        WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
+        THEN 1
+        ELSE 0
+    END
+) AS has_punch_start,
+
+MAX(
+    CASE
+        WHEN a.leave_type IS NOT NULL
+        THEN 1
+        ELSE 0
+    END
+) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
         STRING_AGG(DISTINCT a.leave_type, ', ') AS leave_type,
         COUNT(DISTINCT a.date::date) FILTER (WHERE (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)) AS days_present,
         COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
-        MAX(a.leave_type) FILTER (WHERE a.leave_type IS NOT NULL) AS leave_type,
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
         MAX(a.mid_shift_punch_in_time) FILTER (WHERE a.mid_shift_punch_in_time IS NOT NULL) AS mid_shift_punch_in_time,
         MAX(a.punch_out_time) FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,
@@ -1672,7 +1697,7 @@ router.post("/attendance-trend", async (req, res) => {
 
   const { cityId: scopedCityId } = enforceCityScope(req, cityId ?? null);
   const { startDate, endDate } = resolveDateRange(startDateRaw, endDateRaw);
-  
+
   const effectiveUserId = isAdmin ? user_id : requestingUser?.user_id;
 
   const params = [startDate, endDate];
@@ -1681,7 +1706,7 @@ router.post("/attendance-trend", async (req, res) => {
     params.push(scopedCityId);
     filterClause += ` AND c.city_id = $${params.length}`;
   }
-  
+
   if (effectiveUserId) {
     params.push(effectiveUserId);
     filterClause += ` AND (
