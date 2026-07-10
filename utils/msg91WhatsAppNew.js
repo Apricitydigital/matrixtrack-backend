@@ -18,7 +18,7 @@ const getReportDates = () => {
   // Use YESTERDAY's date for the daily report
   const reportDate = new Date(istNow);
   reportDate.setDate(reportDate.getDate() - 1);
-
+ 
   const isoDate = reportDate.toISOString().slice(0, 10);
   const displayDate = reportDate.toLocaleDateString("en-IN", {
     day: "2-digit",

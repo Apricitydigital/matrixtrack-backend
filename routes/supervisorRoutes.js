@@ -89,7 +89,9 @@ router.get("/", requireCityScope(), async (req, res) => {
         LEFT JOIN sectors s ON w.sector_id = s.sector_id
         LEFT JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
         LEFT JOIN cities c ON z.city_id = c.city_id
-        WHERE u.role = 'supervisor'
+        WHERE
+u.role='supervisor'
+AND COALESCE(u.is_deleted,false)=false
         GROUP BY u.user_id, u.name, u.emp_code, u.email, u.phone, u.role
         ORDER BY u.name ASC
       `;
@@ -121,7 +123,9 @@ router.get("/", requireCityScope(), async (req, res) => {
         INNER JOIN sectors s ON w.sector_id = s.sector_id
         INNER JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
         INNER JOIN cities c ON z.city_id = c.city_id
-        WHERE u.role = 'supervisor'
+        WHERE
+u.role='supervisor'
+AND COALESCE(u.is_deleted,false)=false
           AND (c.city_id = $1::int OR EXISTS (
             SELECT 1 FROM user_city_access uca WHERE uca.user_id = u.user_id AND uca.city_id = $1::int
           ))
@@ -352,13 +356,140 @@ router.put("/:id", authenticate, async (req, res) => {
 });
 
 // ✅ Delete Supervisor
-router.delete("/:id", async (req, res) => {
+// router.delete("/:id", authenticate, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     await pool.query(
+//       `DELETE FROM users WHERE user_id = $1`,
+//       [id]
+//     );
+
+//     res.json({
+//       message: "Supervisor deleted successfully",
+//     });
+
+//   } catch (error) {
+//     console.error("Delete Supervisor Error:", error);
+//     res.status(500).json({
+//       error: error.message,
+//     });
+//   }
+// });
+router.delete("/:id", authenticate, async (req, res) => {
   const { id } = req.params;
+
   try {
-    await pool.query("DELETE FROM users WHERE user_id = $1", [id]);
-    res.json({ message: "Supervisor deleted successfully" });
+
+    await pool.query(
+      `
+      UPDATE users
+      SET
+          is_deleted = true,
+          deleted_at = NOW()
+      WHERE user_id = $1
+      `,
+      [id]
+    );
+
+    res.json({
+      message: "Supervisor deleted successfully",
+    });
+
   } catch (error) {
-    res.status(500).json({ error: "Server error" });
+    console.error("Delete Supervisor Error:", error);
+    res.status(500).json({
+      error: error.message,
+    });
   }
+});
+router.get("/deleted", async (req, res) => {
+
+  try {
+
+    const result = await pool.query(`
+      WITH all_assignments AS (
+        SELECT user_id, ward_id FROM user_kothi_access
+        UNION
+        SELECT supervisor_id AS user_id, ward_id FROM supervisor_kothi
+        UNION
+        SELECT supervisor_id AS user_id, ward_id FROM supervisor_ward
+      )
+
+      SELECT
+        u.user_id,
+        u.name,
+        u.emp_code,
+        u.email,
+        u.phone,
+        u.role,
+        STRING_AGG(DISTINCT c.city_name, ', ') AS city_name,
+        STRING_AGG(DISTINCT z.zone_name, ', ') AS zone_name,
+        STRING_AGG(DISTINCT s.sector_name, ', ') AS ward_group,
+        STRING_AGG(DISTINCT w.ward_name, ', ') AS kothi_name
+
+      FROM users u
+
+      LEFT JOIN all_assignments aa
+      ON u.user_id = aa.user_id
+
+      LEFT JOIN wards w
+      ON aa.ward_id = w.ward_id
+
+      LEFT JOIN sectors s
+      ON w.sector_id = s.sector_id
+
+      LEFT JOIN zones z
+      ON COALESCE(s.zone_id,w.zone_id)=z.zone_id
+
+      LEFT JOIN cities c
+      ON z.city_id=c.city_id
+
+      WHERE
+        u.role='supervisor'
+        AND COALESCE(u.is_deleted,false)=true
+
+      GROUP BY
+        u.user_id,
+        u.name,
+        u.emp_code,
+        u.email,
+        u.phone,
+        u.role
+
+      ORDER BY u.name
+
+    `);
+
+    res.json(result.rows);
+
+  } catch (err) {
+
+    console.log(err);
+
+    res.status(500).json({
+      error: "Server Error"
+    });
+
+  }
+
+});
+router.put("/restore/:id", async (req, res) => {
+
+  await pool.query(
+    `
+    UPDATE users
+    SET
+        is_deleted=false,
+        deleted_at=NULL
+    WHERE user_id=$1
+    `,
+    [req.params.id]
+  );
+
+  res.json({
+    success: true
+  });
+
 });
 module.exports = router;

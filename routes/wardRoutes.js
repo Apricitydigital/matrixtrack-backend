@@ -10,6 +10,22 @@ const {
 } = require("../middleware/cityScope");
 const { attachKothiScope, buildKothiFilterClause } = require("../middleware/kothiScope");
 
+const parseOptionalInt = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+const resolveSectorIdFromPayload = (payload = {}) =>
+  parseOptionalInt(
+    payload.sector_id ??
+      payload.sectorId ??
+      payload.parent_sector_id ??
+      payload.parentSectorId ??
+      payload.ward_id ??
+      payload.wardId
+  );
+
 // Get all wards with zone names
 // router.get("/", async (req, res) => {
 //   try {
@@ -123,7 +139,8 @@ router.post(
   authenticate,
   authorize("master", "manage"),
   async (req, res) => {
-    const { ward_name, zone_id, sector_id } = req.body;
+    const { ward_name, zone_id } = req.body;
+    const sector_id = resolveSectorIdFromPayload(req.body);
     if (!ward_name || !zone_id) {
       return res
         .status(400)
@@ -165,7 +182,8 @@ router.put(
   authorize("master", "manage"),
   async (req, res) => {
     const { id } = req.params;
-    const { ward_name, zone_id, sector_id } = req.body;
+    const { ward_name, zone_id } = req.body;
+    const sector_id = resolveSectorIdFromPayload(req.body);
 
     try {
       const result = await pool.query(
