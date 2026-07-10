@@ -483,7 +483,12 @@ const trackCityTraffic = async ({
       const sourceLabel = String(source).replace(/_/g, ' ');
       const logLine = `[${ts}] ${sourceLabel} in ${cityName} - Requests: ${entry.requestCount}, Attendance: ${entry.attendanceCount}\n`;
       try {
-        fs.appendFile(rawLogFilePath(metricDate), logLine, (appendErr) => {
+        const logPath = rawLogFilePath(metricDate);
+        const dirPath = path.dirname(logPath);
+        if (!fs.existsSync(dirPath)) {
+          fs.mkdirSync(dirPath, { recursive: true });
+        }
+        fs.appendFile(logPath, logLine, (appendErr) => {
           if (appendErr) {
             logger.error("Failed to append raw traffic log", appendErr);
           }
