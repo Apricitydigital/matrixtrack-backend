@@ -4,7 +4,7 @@ const { verifyFaceMatch } = require('../utils/faceService');
 const { rekognition, DetectFacesCommand, CompareFacesCommand } = require('../config/awsConfig');
 const { getSignedS3Url, uploadToS3 } = require('../utils/s3SelfPunch');
 const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSchema');
-const { sendTrackedRekognition, trackCityTraffic } = require('../utils/cityTrafficCost');
+const { sendTrackedRekognition, trackSuccessfulAttendanceEvent } = require('../utils/cityTrafficCost');
 
 let attendanceColumnsEnsured = false;
 
@@ -561,17 +561,12 @@ const punchIn = async (req, res) => {
     await client.query('COMMIT');
     
     logger.info(`[Attendance] Professional ${professional_id} punched in successfully.`);
-
-    try {
-      await trackCityTraffic({
-        source: 'professional_punch_in',
-        metricDate: today,
-        requestCityId: city_id,
-        entries: [{ cityId: city_id, requestCount: 0, attendanceCount: 1, successCount: 0, failureCount: 0 }],
-      });
-    } catch (trafficError) {
-      logger.warn(`[CityTrafficCost] Failed to track professional punch-in for ${professional_id}: ${trafficError.message}`);
-    }
+    trackSuccessfulAttendanceEvent({
+      cityId: city_id,
+      source: 'professional_punch_in',
+      metricDate: today,
+      attendanceCount: 1,
+    });
 
     res.json({ success: true, punch_in_time: rows[0].punch_in });
 
@@ -723,23 +718,12 @@ const punchOut = async (req, res) => {
 
     logger.info(`[Attendance] Professional ${professional_id} punched out successfully.`);
 
-    try {
-      const cityResult = await pool.query(
-        `SELECT city_id FROM professional_attendance WHERE professional_id = $1 AND date = $2 LIMIT 1`,
-        [professional_id, today]
-      );
-      const trackedCityId = Number(cityResult.rows[0]?.city_id || 0);
-      if (trackedCityId > 0) {
-        await trackCityTraffic({
-          source: 'professional_punch_out',
-          metricDate: today,
-          requestCityId: trackedCityId,
-          entries: [{ cityId: trackedCityId, requestCount: 0, attendanceCount: 1, successCount: 0, failureCount: 0 }],
-        });
-      }
-    } catch (trafficError) {
-      logger.warn(`[CityTrafficCost] Failed to track professional punch-out for ${professional_id}: ${trafficError.message}`);
-    }
+    trackSuccessfulAttendanceEvent({
+      cityId: city_id,
+      source: 'professional_punch_out',
+      metricDate: today,
+      attendanceCount: 1,
+    });
 
     res.json({ 
       success: true, 

@@ -1,6 +1,27 @@
 const pool = require("../config/db");
 const logger = require("./logger");
 const { s3, PutObjectCommand } = require("../config/awsConfig");
+const fs = require("fs");
+const path = require("path");
+
+const rawLogFilePath = (dateKey) => path.join(__dirname, "..", "logs", `city-traffic-raw-${dateKey}.log`);
+const cityNamesCache = new Map();
+const trackInBackground = (promise, label) => {
+  Promise.resolve(promise).catch((error) => {
+    logger.warn(`[CityTrafficCost] ${label} failed: ${error.message || error}`);
+  });
+};
+const getCityName = async (cityId) => {
+  if (cityNamesCache.has(cityId)) return cityNamesCache.get(cityId);
+  try {
+    const { rows } = await pool.query('SELECT city_name FROM cities WHERE city_id = $1 LIMIT 1', [cityId]);
+    if (rows[0]) {
+      cityNamesCache.set(cityId, rows[0].city_name);
+      return rows[0].city_name;
+    }
+  } catch (e) { }
+  return `City_${cityId}`;
+};
 
 const CITY_COST_BUCKET =
   process.env.AWS_CITY_COST_S3_BUCKET ||
@@ -181,7 +202,7 @@ const getEmployeeCityBreakdown = async (employeeIds = []) => {
 const getDailySummaryRows = async (metricDate) => {
   const { rows } = await pool.query(
     `SELECT
-       d.metric_date,
+       d.metric_date::text AS metric_date,
        d.city_id,
        c.city_name,
        d.source,
@@ -246,6 +267,24 @@ const syncDailySnapshotToS3 = async (metricDate) => {
     })
   );
 
+  const rawLogPath = rawLogFilePath(metricDate);
+  if (fs.existsSync(rawLogPath)) {
+    try {
+      const rawLogContent = fs.readFileSync(rawLogPath);
+      const rawKey = `${CITY_COST_PREFIX}/raw-logs/${metricDate}.log`;
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: CITY_COST_BUCKET,
+          Key: rawKey,
+          Body: rawLogContent,
+          ContentType: "text/plain",
+        })
+      );
+    } catch (rawErr) {
+      logger.error(`[CityTrafficCost] Failed to sync raw logs to S3: ${rawErr.message}`);
+    }
+  }
+
   await pool.query(
     `UPDATE city_daily_traffic_cost
      SET snapshot_s3_key = $2,
@@ -271,7 +310,7 @@ const flushTrafficBuffer = async () => {
 
   try {
     await ensureCityTrafficSchema();
-    
+
     const values = [];
     const valuePlaceholders = [];
     let index = 1;
@@ -293,27 +332,67 @@ const flushTrafficBuffer = async () => {
       index += 7;
     }
 
-    const query = `
-      INSERT INTO city_daily_traffic_cost (
-        metric_date,
-        city_id,
-        source,
-        request_count,
-        attendance_count,
-        success_count,
-        failure_count
-      )
-      VALUES ${valuePlaceholders.join(', ')}
-      ON CONFLICT (metric_date, city_id, source)
-      DO UPDATE SET
-        request_count = city_daily_traffic_cost.request_count + EXCLUDED.request_count,
-        attendance_count = city_daily_traffic_cost.attendance_count + EXCLUDED.attendance_count,
-        success_count = city_daily_traffic_cost.success_count + EXCLUDED.success_count,
-        failure_count = city_daily_traffic_cost.failure_count + EXCLUDED.failure_count,
-        updated_at = NOW()
-    `;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
 
-    await pool.query(query, values);
+      for (const key of keys) {
+        const entry = currentBuffer[key];
+        const updateResult = await client.query(
+          `UPDATE city_daily_traffic_cost
+           SET request_count = request_count + $4,
+               attendance_count = attendance_count + $5,
+               success_count = success_count + $6,
+               failure_count = failure_count + $7,
+               updated_at = NOW()
+           WHERE metric_date = $1::date
+             AND city_id = $2
+             AND source = $3`,
+          [
+            entry.metricDate,
+            entry.cityId,
+            entry.source,
+            entry.requestCount,
+            entry.attendanceCount,
+            entry.successCount,
+            entry.failureCount,
+          ]
+        );
+
+        if (!updateResult.rowCount) {
+          await client.query(
+            `INSERT INTO city_daily_traffic_cost (
+               metric_date,
+               city_id,
+               source,
+               request_count,
+               attendance_count,
+               success_count,
+               failure_count,
+               created_at,
+               updated_at
+             )
+             VALUES ($1::date, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
+            [
+              entry.metricDate,
+              entry.cityId,
+              entry.source,
+              entry.requestCount,
+              entry.attendanceCount,
+              entry.successCount,
+              entry.failureCount,
+            ]
+          );
+        }
+      }
+
+      await client.query("COMMIT");
+    } catch (writeError) {
+      await client.query("ROLLBACK");
+      throw writeError;
+    } finally {
+      client.release();
+    }
   } catch (error) {
     logger.error(`[CityTrafficCost] Failed to flush traffic buffer: ${error.message}`);
   }
@@ -328,6 +407,29 @@ process.on("beforeExit", () => {
   flushTrafficBuffer().catch((err) =>
     logger.error(`[CityTrafficCost] Process exit flush failed: ${err.message}`)
   );
+});
+
+const handleShutdown = async (signal) => {
+  logger.info(`[CityTrafficCost] Received ${signal}, flushing traffic buffer...`);
+  try {
+    await flushTrafficBuffer();
+  } catch (err) {
+    logger.error(`[CityTrafficCost] Shutdown flush failed: ${err.message}`);
+  }
+  process.exit(0);
+};
+
+process.on("SIGINT", () => handleShutdown("SIGINT"));
+process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+
+process.once("SIGUSR2", async () => {
+  logger.info("[CityTrafficCost] Received SIGUSR2, flushing traffic buffer...");
+  try {
+    await flushTrafficBuffer();
+  } catch (err) {
+    logger.error(`[CityTrafficCost] SIGUSR2 flush failed: ${err.message}`);
+  }
+  process.kill(process.pid, "SIGUSR2");
 });
 
 const debounceSyncDailySnapshotToS3 = (metricDate) => {
@@ -374,6 +476,22 @@ const trackCityTraffic = async ({
     trafficBuffer[key].attendanceCount += entry.attendanceCount;
     trafficBuffer[key].successCount += entry.successCount;
     trafficBuffer[key].failureCount += entry.failureCount;
+
+    // Log raw individual event
+    getCityName(entry.cityId).then((cityName) => {
+      const ts = new Date().toISOString();
+      const sourceLabel = String(source).replace(/_/g, ' ');
+      const logLine = `[${ts}] ${sourceLabel} in ${cityName} - Requests: ${entry.requestCount}, Attendance: ${entry.attendanceCount}\n`;
+      try {
+        fs.appendFile(rawLogFilePath(metricDate), logLine, (appendErr) => {
+          if (appendErr) {
+            logger.error("Failed to append raw traffic log", appendErr);
+          }
+        });
+      } catch (e) {
+        logger.error("Failed to append raw traffic log", e);
+      }
+    });
   }
 
   scheduleBufferFlush();
@@ -417,22 +535,54 @@ const sendTrackedRekognition = async ({
 }) => {
   try {
     const response = await client.send(command);
-    await trackRekognitionUsage({
+    trackInBackground(trackRekognitionUsage({
       cityId,
       source,
       metricDate,
       success: true,
-    });
+    }), `rekognition success tracking for ${source}`);
     return response;
   } catch (error) {
-    await trackRekognitionUsage({
+    trackInBackground(trackRekognitionUsage({
       cityId,
       source,
       metricDate,
       success: false,
-    });
+    }), `rekognition failure tracking for ${source}`);
     throw error;
   }
+};
+
+const trackSuccessfulAttendanceEvent = ({
+  cityId,
+  source,
+  metricDate = getIstDateKey(),
+  attendanceCount = 1,
+  syncSnapshot = true,
+}) => {
+  const normalizedCityId = Number(cityId);
+  const normalizedAttendanceCount = toPositiveInteger(attendanceCount);
+
+  if (!Number.isInteger(normalizedCityId) || normalizedCityId <= 0) return;
+  if (!normalizedAttendanceCount) return;
+
+  trackInBackground(
+    trackCityTraffic({
+      source,
+      metricDate,
+      syncSnapshot,
+      entries: [
+        {
+          cityId: normalizedCityId,
+          requestCount: 0,
+          attendanceCount: normalizedAttendanceCount,
+          successCount: 0,
+          failureCount: 0,
+        },
+      ],
+    }),
+    'successful attendance tracking for ' + source
+  );
 };
 
 const getCityBillingConfigs = async () => {
@@ -529,7 +679,7 @@ const getCityTrafficSummary = async ({ fromDate, toDate }) => {
 
   const { rows } = await pool.query(
     `SELECT
-       d.metric_date,
+       d.metric_date::text AS metric_date,
        d.city_id,
        c.city_name,
        d.source,
@@ -548,7 +698,8 @@ const getCityTrafficSummary = async ({ fromDate, toDate }) => {
          )::numeric,
          2
        ) AS total_cost_inr,
-       MAX(d.snapshot_s3_key) AS snapshot_s3_key
+       MAX(d.snapshot_s3_key) AS snapshot_s3_key,
+       MAX(d.updated_at) AS last_updated
      FROM city_daily_traffic_cost d
      JOIN cities c ON c.city_id = d.city_id
      LEFT JOIN city_billing_configs cfg ON cfg.city_id = d.city_id
@@ -562,7 +713,7 @@ const getCityTrafficSummary = async ({ fromDate, toDate }) => {
        cfg.billing_model,
        cfg.rate_per_request_inr,
        cfg.rate_per_attendance_inr
-     ORDER BY d.metric_date DESC, c.city_name ASC, d.source ASC`,
+     ORDER BY MAX(d.updated_at) DESC, c.city_name ASC, d.source ASC`,
     [startDate, endDate]
   );
 
@@ -668,5 +819,6 @@ module.exports = {
   syncDailySnapshotToS3,
   trackCityTraffic,
   trackRekognitionUsage,
+  trackSuccessfulAttendanceEvent,
   upsertCityBillingConfig,
 };
