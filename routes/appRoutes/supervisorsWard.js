@@ -384,7 +384,7 @@ const fetchSupervisorSummary = async (
       FROM scoped_employees se
       LEFT JOIN attendance a
         ON a.emp_id = se.emp_id
-       AND a.date::date BETWEEN $${startParam}::date AND $${endParam}::date
+       AND a.date BETWEEN $${startParam}::date AND $${endParam}::date
       GROUP BY se.emp_id
     )
     SELECT
@@ -562,8 +562,8 @@ const fetchSupervisorEmployees = async (
         MAX(CASE WHEN a.leave_type IS NOT NULL THEN 1 ELSE 0 END) AS has_leave,
         MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
         STRING_AGG(DISTINCT a.leave_type, ', ') AS leave_type,
-        COUNT(DISTINCT a.date::date) FILTER (WHERE (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)) AS days_present,
-        COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
+        COUNT(DISTINCT a.date) FILTER (WHERE (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)) AS days_present,
+        COUNT(DISTINCT a.date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
         MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
         MAX(a.mid_shift_punch_in_time) FILTER (WHERE a.mid_shift_punch_in_time IS NOT NULL) AS mid_shift_punch_in_time,
         MAX(a.punch_out_time) FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,
@@ -577,7 +577,7 @@ const fetchSupervisorEmployees = async (
         ) AS last_punch_time
       FROM attendance a
       JOIN scoped_employees se ON se.emp_id = a.emp_id
-      WHERE a.date::date BETWEEN $2::date AND $3::date
+      WHERE a.date BETWEEN $2::date AND $3::date
       GROUP BY a.emp_id
     )
     SELECT

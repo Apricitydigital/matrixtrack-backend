@@ -61,10 +61,12 @@ const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
 const supervisorAadharRoutes = require("./routes/supervisorAadharRoutes");
 const supervisorPhotoRoutes = require("./routes/supervisorPhotoRoutes");
 const otpRoutes = require("./routes/otpRoutes");
+const compression = require("compression");
 
 const app = express();
 
 // Middleware
+app.use(compression());
 app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.url}`);
   next();
