@@ -31,6 +31,7 @@ const publicSelfPunchRoutes = require("./publicSelfPunchRoutes");
 const supervisorSelfPunchRoutes = require("./supervisorSelfPunchRoutes");
 const professionalRoutes = require("./professionalRoutes");
 const professionalReportsRoutes = require("./professionalReportsRoutes");
+const cityCostRoutes = require("./cityCostRoutes");
 
 // Protected Route
 router.get("/protected", authenticateUser, (req, res) => {
@@ -68,6 +69,7 @@ router.use("/assignedWardRoutes", assignedWardRoutes);
 router.use("/assignedKothiRoutes", assignedKothiRoutes);
 router.use("/admin", adminRoutes);
 router.use("/admin-management", require("./adminManagementRoutes"));
+router.use("/admin-management/city-cost", cityCostRoutes);
 router.use("/rbac", rbacRoutes);
 router.use("/whatsapp", whatsappRoutes);
 router.use("/user", userRoutes);
