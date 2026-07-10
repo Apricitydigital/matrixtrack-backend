@@ -698,22 +698,18 @@ app.use("/api/supervisor-photo", supervisorPhotoRoutes);
 const PORT = process.env.PORT || 5000;
 const httpServer = http.createServer(app);
 
-// Create HTTP server and initialize Socket.io
-const server = http.createServer(app);
-socketio.init(server);
-
 // Run migrations before starting the server
-runMigrations().then(() => {
-  return ensureCronRunsTable();
-}).then(() => {
-  // Initialize socket.io on the HTTP server
-  socketUtil.init(httpServer);
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}).catch(err => {
-  console.error("Fatal: Migrations failed on startup", err);
-  process.exit(1);
-});
+runMigrations()
+  .then(() => ensureCronRunsTable())
+  .then(() => {
+    socketUtil.init(httpServer);
 
+    httpServer.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("Fatal: Migrations failed on startup", err);
+    process.exit(1);
+  });
 
