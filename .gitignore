@@ -5,11 +5,7 @@ node_modules/
 
 # logs
 *.log
-<<<<<<< HEAD
-logs/
-=======
 logs/audit/
->>>>>>> 1bb95f0fed50bf1778b35ea94c898d0327109476
 
 # runtime / debug
 npm-debug.log*

@@ -17,7 +17,7 @@ const formatDateIST = (date = new Date()) => {
  */
 router.get("/", authenticate, async (req, res) => {
   const { startDate, endDate, cityId, zoneId, sectorId, wardId } = req.query;
-  
+
   try {
     // Default to today if no dates provided
     const start = startDate && startDate !== "" && startDate !== "undefined" ? startDate : formatDateIST();
@@ -38,7 +38,13 @@ router.get("/", authenticate, async (req, res) => {
         u.name AS supervisor_name,
         u.phone AS supervisor_phone,
         COUNT(DISTINCT a_in.attendance_id) AS total_punch_in,
-        COUNT(DISTINCT a_out.attendance_id) AS total_punch_out
+        COUNT(DISTINCT a_out.attendance_id) AS total_punch_out,
+        COUNT(
+  DISTINCT CASE
+    WHEN a_in.mid_shift_punch_in_time IS NOT NULL
+    THEN a_in.attendance_id
+  END
+) AS total_mid_punch
       FROM users u
       JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
       JOIN wards w ON sw.ward_id = w.ward_id
