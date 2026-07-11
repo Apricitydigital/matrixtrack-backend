@@ -711,7 +711,13 @@ async function logRequest(req, res, responseBody) {
           const decoded = jwt.verify(token, process.env.JWT_SECRET);
           decodedUserId = decoded?.user_id;
         } catch (err) {
-          // Token invalid or expired - ignore
+          // Fallback to decode if verification fails (e.g. token expired)
+          try {
+            const decoded = jwt.decode(token);
+            decodedUserId = decoded?.user_id;
+          } catch (decodeErr) {
+            // Ignore
+          }
         }
       }
 
@@ -785,6 +791,11 @@ async function logRequest(req, res, responseBody) {
         scope_key: envScope.scopeKey,
       },
     };
+
+    // Skip logging entirely if actor could not be resolved (remains guest@matrixtrack.in)
+    if (actor.email === "guest@matrixtrack.in") {
+      return;
+    }
 
     // Upload log to S3 in the background (non-blocking)
     await uploadAuditLog(logObject);
