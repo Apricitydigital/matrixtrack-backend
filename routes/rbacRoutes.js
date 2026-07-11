@@ -466,6 +466,8 @@ router.get("/users", authenticate, assertAdminOrPermission, async (req, res) => 
         u.emp_code,
         u.role,
         u.department,
+        u.custom_login_policy,
+        u.custom_max_devices,
         json_build_object(
           'roles',
           COALESCE(roles.roles, '[]'::json),
@@ -676,6 +678,8 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
     allowedCities,
     allowedZones,
     allowedKothis,
+    customLoginPolicy,
+    customMaxDevices,
   } = req.body || {};
 
   console.log(`[RBAC] Updating user ${userId}:`, {
@@ -711,8 +715,10 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
               email = COALESCE($4, email),
               phone = COALESCE($5, phone),
               department = COALESCE($6, department),
+              custom_login_policy = $7,
+              custom_max_devices = $8,
               role = CASE
-                        WHEN $7::text IS NOT NULL THEN $7
+                        WHEN $9::text IS NOT NULL THEN $9
                         ELSE role
                      END
           WHERE user_id = $1
@@ -724,6 +730,8 @@ router.put("/users/:userId", authenticate, assertAdminOrPermission, async (req, 
           email ? email.toLowerCase() : null,
           phone || null,
           department || null,
+          customLoginPolicy || null,
+          customMaxDevices !== undefined ? customMaxDevices : null,
           Array.isArray(roles) && roles.length > 0 ? "custom" : null,
         ]
       );

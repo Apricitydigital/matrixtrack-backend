@@ -159,6 +159,62 @@ async function runMigrations() {
     `);
     console.log("[Migration] Leave allocation tables ready.");
 
+    // Add blocked_ips table for IP blocking feature
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS blocked_ips (
+        ip_address VARCHAR(45) PRIMARY KEY,
+        blocked_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
+        reason TEXT,
+        blocked_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    console.log("[Migration] ✅ blocked_ips table ready.");
+
+    // Add active_sessions table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS active_sessions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        token_hash VARCHAR(128) NOT NULL,
+        ip_address VARCHAR(45),
+        device TEXT,
+        logged_in_at TIMESTAMP DEFAULT NOW(),
+        is_revoked BOOLEAN DEFAULT FALSE,
+        revoked_by INTEGER,
+        revoked_at TIMESTAMP,
+        last_active_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(user_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_active_sessions_hash ON active_sessions(token_hash)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_active_sessions_revoked ON active_sessions(is_revoked)`);
+    console.log("[Migration] ✅ active_sessions table ready.");
+
+    // Add security_settings table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS security_settings (
+        id INT PRIMARY KEY,
+        admin_login_mode VARCHAR(20) DEFAULT 'multiple',
+        admin_max_devices INT DEFAULT 10,
+        supervisor_login_mode VARCHAR(20) DEFAULT 'multiple',
+        supervisor_max_devices INT DEFAULT 10,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`
+      INSERT INTO security_settings (id, admin_login_mode, admin_max_devices, supervisor_login_mode, supervisor_max_devices)
+      VALUES (1, 'multiple', 10, 'multiple', 10)
+      ON CONFLICT (id) DO NOTHING
+    `);
+    console.log("[Migration] ✅ security_settings table ready.");
+
+    // Add 2FA and login policy columns to users table
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp VARCHAR(10)`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp_expiry TIMESTAMP`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_login_policy VARCHAR(50) DEFAULT NULL`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_max_devices INTEGER DEFAULT NULL`);
+    console.log("[Migration] ✅ users 2FA and login policy columns ready.");
+
     console.log("[Migration] All migrations complete.");
   } catch (err) {
     console.error("[Migration] Migration error (non-fatal):", err.message);

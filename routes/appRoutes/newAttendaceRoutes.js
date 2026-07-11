@@ -37,7 +37,7 @@
 
 //         const attendanceDate = resolveAttendanceDate(req.body, req.query);
 
-//         // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+//         // ?? Session-aware validation (prevents re-punch-in + night shift support)
 //         const sessionError = await validatePunchSession(resolved.employee.emp_id, attendanceDate, punchType);
 //         if (sessionError) {
 //             return res.status(sessionError.status).json({
@@ -53,7 +53,7 @@
 //             { punchType, createIfMissing: true }
 //         );
 
-//         // 📍 Geofencing Validation
+//         // ?? Geofencing Validation
 //         const geoCheck = await validateGeofencing(
 //             resolved.employee.emp_id,
 //             req.body.latitude,
@@ -165,6 +165,21 @@ const {
 } = require("../../utils/selfAttendance");
 const { buildPublicFaceUrl } = require("../../utils/faceImage");
 const { validateGeofencing } = require("../../utils/geofencing");
+const {
+  sendTrackedRekognition,
+  resolveRequestCityId,
+  trackSuccessfulAttendanceEvent,
+} = require("../../utils/cityTrafficCost");
+
+const sendTrackedAttendanceRekognition = async (command, trackingPayload) => {
+  return sendTrackedRekognition({
+    client: rekognition,
+    command,
+    cityId: trackingPayload?.cityId,
+    source: trackingPayload?.source,
+    metricDate: trackingPayload?.metricDate,
+  });
+};
 
 const safeDebugLog = (line) => {
   try {
@@ -586,7 +601,7 @@ async function resolveEmployeeFromFaceIdentifiers({
   return employeeRecord;
 }
 
-// Legacy sync check — used only as last-resort guard on the attendance object itself
+// Legacy sync check � used only as last-resort guard on the attendance object itself
 function validatePunchAttempt(attendance, punchType) {
   if (!attendance) {
     return {
@@ -623,7 +638,7 @@ function validatePunchAttempt(attendance, punchType) {
 }
 
 /**
- * 🔒 SESSION-AWARE PUNCH VALIDATION (Night-Shift + Re-Punch-In Guard)
+ * ?? SESSION-AWARE PUNCH VALIDATION (Night-Shift + Re-Punch-In Guard)
  *
  * PUNCH IN allowed only if:
  *   1. No OPEN session exists (already punched in but not out)
@@ -633,8 +648,8 @@ function validatePunchAttempt(attendance, punchType) {
  *   1. An OPEN session exists
  *
  * Night shift is handled automatically:
- *   - 11 PM punch-in → attendance_date = Day1 (formatDate uses NIGHT_SHIFT_ROLLOVER_HOUR)
- *   - 4 AM punch-out → finds the open session from Day1, closes it correctly
+ *   - 11 PM punch-in ? attendance_date = Day1 (formatDate uses NIGHT_SHIFT_ROLLOVER_HOUR)
+ *   - 4 AM punch-out ? finds the open session from Day1, closes it correctly
  *   - Re-punch-in on Day2 morning is blocked because Day1 session is now CLOSED
  */
 async function validatePunchSession(empId, attendanceDate, punchType) {
@@ -687,7 +702,7 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
 
   // Multi-punch allowed: we no longer block re-punch-in or re-punch-out.
   // The system will update the existing record for the day.
-  return null; // ✅ OK to proceed
+  return null; // ? OK to proceed
 }
 
 const mapRekognitionError = (error) => {
@@ -741,17 +756,17 @@ const GROUP_DOUBLE_VERIFY_ENABLED =
 const GROUP_FALLBACK_ENABLED =
   process.env.GROUP_FALLBACK_ENABLED !== "false";
 
-// ─── COST OPTIMIZATION: Individual punch fallback loop ────────────────────────
+// --- COST OPTIMIZATION: Individual punch fallback loop ------------------------
 // When SearchFacesByImage returns no match, fallbackMatchByCompare runs a
-// CompareFaces call for EVERY employee in the ward — extremely expensive at scale.
+// CompareFaces call for EVERY employee in the ward � extremely expensive at scale.
 // Default: DISABLED. Enable only for debugging via env flag.
 // Set INDIVIDUAL_FALLBACK_ENABLED=true in .env ONLY if needed.
 const INDIVIDUAL_FALLBACK_ENABLED =
   process.env.INDIVIDUAL_FALLBACK_ENABLED === "true";
 
-// ─── COST OPTIMIZATION: 60-second punch dedup cache ──────────────────────────
+// --- COST OPTIMIZATION: 60-second punch dedup cache --------------------------
 // Prevents double-billing when supervisor retries on network timeout.
-// key: `${empId}:${punchType}:${date}` → timestamp of last successful punch.
+// key: `${empId}:${punchType}:${date}` ? timestamp of last successful punch.
 // In-memory is sufficient: restarts clear it, and 60s window is short enough.
 const recentPunchCache = new Map();
 const PUNCH_DEDUP_WINDOW_MS = 60_000; // 60 seconds
@@ -1061,7 +1076,7 @@ async function fetchRecentPrimaryPunchedInAttendance(empId, date) {
   );
 }
 
-// 🔒 Check if a CLOSED session already exists for the given attendance_date
+// ?? Check if a CLOSED session already exists for the given attendance_date
 // (handles night-shift: session started on date-1 but punch_out on date)
 async function fetchClosedSessionForDate(empId, date) {
   if (!empId || !date) {
@@ -1110,7 +1125,7 @@ async function getOrCreateAttendanceRecord(emp_id, date, options = {}) {
 
   if (!emp_id) throw new Error("Employee ID is required");
 
-  // ⚡ PERF FIX: Single query fetches ward_id + display fields together (was 2 separate queries)
+  // ? PERF FIX: Single query fetches ward_id + display fields together (was 2 separate queries)
   const empRow = await pool.query(
     `SELECT e.ward_id, e.emp_code, e.name AS employee_name,
             d.designation_name, w.ward_name
@@ -1173,7 +1188,7 @@ async function getOrCreateAttendanceRecord(emp_id, date, options = {}) {
     ward_name: null,
   };
 
-  // ⚡ PERF FIX: Reuse empMeta fetched above — no additional JOIN query needed
+  // ? PERF FIX: Reuse empMeta fetched above � no additional JOIN query needed
   Object.assign(newAttendance, empMeta);
 
   return newAttendance;
@@ -1191,14 +1206,14 @@ async function processPunch(
     employeeId: explicitEmployeeId = null,
     requireFaceMatch = false,
     faceMatchThreshold = DEFAULT_FACE_MATCH_THRESHOLD,
-    uploadContext: preloadedContext = null, // ⚡ PERF FIX: accept pre-fetched context
+    uploadContext: preloadedContext = null, // ? PERF FIX: accept pre-fetched context
   } = options;
 
   let uploadContext = null;
   const capturedAt = new Date();
   let uploadResult = null;
   if (imageFile) {
-    // ⚡ PERF FIX: use preloaded context if available, skips 4-table JOIN DB call
+    // ? PERF FIX: use preloaded context if available, skips 4-table JOIN DB call
     uploadContext = preloadedContext ?? await getAttendanceUploadContext(pool, attendanceId);
     const locationMeta = locationData || {};
     const punchLabel =
@@ -1308,7 +1323,7 @@ async function processPunch(
     locationData.longitude,
     locationData.address,
     imageUrl,
-    normalizeId(userId) ?? null, // ⚡ PERF FIX: userId already auth'd by JWT, no DB call needed
+    normalizeId(userId) ?? null, // ? PERF FIX: userId already auth'd by JWT, no DB call needed
     attendanceId,
   ]);
 
@@ -1325,7 +1340,7 @@ async function processPunch(
   return record;
 }
 
-// ⚡ PERF FIX: resolvePunchActor removed — userId from JWT is already authenticated.
+// ? PERF FIX: resolvePunchActor removed � userId from JWT is already authenticated.
 // Using normalizeId(userId) directly in processPunch saves one DB round trip per punch.
 
 function resolveS3ObjectKey(reference) {
@@ -1375,7 +1390,7 @@ async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) 
     }
   }
 
-  // 🛡️ Self-Healing Prefix Scan if the direct key fails
+  // ??? Self-Healing Prefix Scan if the direct key fails
   if (employeeId) {
     const candidatePrefixes = [
       `faces/${employeeId}/`,
@@ -1522,7 +1537,7 @@ async function fallbackMatchByCompare(
   }
 
   if (best) {
-    // 💡 AUTO-HEAL: If this employee's face is not in the Rekognition collection,
+    // ?? AUTO-HEAL: If this employee's face is not in the Rekognition collection,
     // index it now in the background so future punches match instantly!
     const collectionId = (process.env.REKOGNITION_COLLECTION || process.env.REKOGNITION_COLLECTION_ID || "employee").trim();
     const bucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
@@ -1604,7 +1619,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
   const faceKey = resolveS3ObjectKey(faceEmbedding);
   let sourceImage = null;
 
-  // 🛡️ MULTI-BUCKET RESOLUTION (Trying all possible buckets from environment)
+  // ??? MULTI-BUCKET RESOLUTION (Trying all possible buckets from environment)
   const bucketsToTry = [
     AWS_S3_BUCKET,
     process.env.AWS_S3_BUCKET,
@@ -1633,7 +1648,7 @@ async function ensureFaceMatch(employeeId, attendanceKey, threshold) {
     }
   }
 
-  // ⚡ PERF FIX: S3 prefix scan wrapped in 1.5s timeout.
+  // ? PERF FIX: S3 prefix scan wrapped in 1.5s timeout.
   // Previously could take 4-10s (up to 16 sequential S3 ListObjects calls on stale key).
   // Now: if scan doesn't finish in 1.5s, punch proceeds without it (same existing null path).
   if (!sourceImage) {
@@ -1795,7 +1810,7 @@ router.put("/", upload.single("image"), async (req, res) => {
     const attendanceDate = formatDate(new Date(recordDate));
     const punchType = normalizePunchType(punch_type);
 
-    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    // ?? Session-aware validation (prevents re-punch-in + night shift support)
     const sessionError = await validatePunchSession(attendanceEmpId, attendanceDate, punchType);
     if (sessionError) {
       return res.status(sessionError.status).json({
@@ -2090,12 +2105,21 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     console.log("[face-attendance] groupMode:", groupMode, "| mode:", rawMode, "| groupModeRequested:", groupModeRequested);
 
     if (groupModeRequested) {
+      const groupTrackingCityId = await resolveRequestCityId({
+        wardId,
+        supervisorId,
+      });
+      const groupTracking = {
+        cityId: groupTrackingCityId,
+        source: "group_attendance",
+        metricDate: attendanceDate,
+      };
       const detectCommand = new DetectFacesCommand({
         Image: { Bytes: normalizedCaptureBuffer },
         Attributes: ["DEFAULT"],
       });
 
-      const detectResult = await rekognition.send(detectCommand);
+      const detectResult = await sendTrackedAttendanceRekognition(detectCommand, groupTracking);
       const faceDetails = detectResult?.FaceDetails ?? [];
 
       console.log("[face-attendance] Detected faces:", faceDetails.length);
@@ -2126,11 +2150,11 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         });
       }
 
-      // ─── PARALLEL GROUP PUNCH ────────────────────────────────────────────────
+      // --- PARALLEL GROUP PUNCH ------------------------------------------------
       // All faces processed simultaneously. 5 faces that took 40s now take ~8s.
-      // Each face is fully independent — no shared mutable state inside the map.
+      // Each face is fully independent � no shared mutable state inside the map.
       // processedEmployees dedup is done as a post-pass on the collected results.
-      // ─────────────────────────────────────────────────────────────────────────
+      // -------------------------------------------------------------------------
       const groupThreshold = Math.max(88, Math.min(matchThreshold, 92));
 
       const perFaceResults = await mapLimit(
@@ -2139,7 +2163,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         async (faceDetail, index) => {
           const faceIndex = index + 1;
 
-          // ── 1. Crop face ──────────────────────────────────────────────────
+          // -- 1. Crop face --------------------------------------------------
           const cropRegion = computeCropRegion(faceDetail.BoundingBox, imageWidth, imageHeight);
           if (!cropRegion) {
             return { faceIndex, status: "skipped", message: "Unable to crop the detected face region." };
@@ -2156,8 +2180,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             return { faceIndex, status: "error", message: "Unable to process the detected face region." };
           }
 
-          // ── 2. Rekognition face search ────────────────────────────────────
-          // 💰 COST OPT: QualityFilter=AUTO skips low-quality/blurry crops before
+          // -- 2. Rekognition face search ------------------------------------
+          // ?? COST OPT: QualityFilter=AUTO skips low-quality/blurry crops before
           // AWS charges for them. DetectFaces already confirmed a face exists here.
           let searchResult;
           try {
@@ -2179,12 +2203,12 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             }
 
             searchResult = await withTimeout(
-              rekognition.send(new SearchFacesByImageCommand({
+              sendTrackedAttendanceRekognition(new SearchFacesByImageCommand({
                 CollectionId: collectionId,
                 Image: { Bytes: faceImageBuffer },
                 MaxFaces: 1,
                 FaceMatchThreshold: groupThreshold,
-              })),
+              }), groupTracking),
               GROUP_FACE_SEARCH_TIMEOUT_MS,
               "Face search timed out"
             );
@@ -2239,7 +2263,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           let employeeRecord = null;
           let similarity = bestMatch?.Similarity ?? null;
 
-          // ── 3. Resolve employee ───────────────────────────────────────────
+          // -- 3. Resolve employee -------------------------------------------
           if (bestMatch?.Face) {
             employeeRecord = await resolveEmployeeFromFaceIdentifiers({
               faceId: bestMatch.Face.FaceId,
@@ -2249,7 +2273,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           }
 
           // Group-only safe fallback: roster-level CompareFaces
-          // 💰 COST OPT: GROUP_FALLBACK_ENABLED guards this path.
+          // ?? COST OPT: GROUP_FALLBACK_ENABLED guards this path.
           // Each call here = N paid CompareFaces calls (N = employees in ward).
           // Only trigger when collection misses AND fallback is enabled.
           if (!employeeRecord && supervisorId && GROUP_FALLBACK_ENABLED) {
@@ -2271,18 +2295,18 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             };
           }
 
-          // ── 4. LAYER 2: CompareFaces cross-check (only if enabled) ────────
+          // -- 4. LAYER 2: CompareFaces cross-check (only if enabled) --------
           if (GROUP_DOUBLE_VERIFY_ENABLED) {
             const DOUBLE_VERIFY_THRESHOLD = 90;
             try {
               const enrolledBuffer = await loadFaceBuffer(employeeRecord.face_embedding, employeeRecord.emp_id);
               if (enrolledBuffer) {
                 const crossCheck = await withTimeout(
-                  rekognition.send(new CompareFacesCommand({
+                  sendTrackedAttendanceRekognition(new CompareFacesCommand({
                     SourceImage: { Bytes: enrolledBuffer },
                     TargetImage: { Bytes: faceImageBuffer },
                     SimilarityThreshold: DOUBLE_VERIFY_THRESHOLD,
-                  })),
+                  }), groupTracking),
                   GROUP_FACE_SEARCH_TIMEOUT_MS,
                   "Face secondary verification timed out"
                 );
@@ -2297,7 +2321,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             }
           }
 
-          // ── 5. LAYER 3: Supervisor roster cross-check ─────────────────────
+          // -- 5. LAYER 3: Supervisor roster cross-check ---------------------
           if (supervisorId) {
             const rosterCheck = await pool.query(
               `SELECT 1 FROM employee e
@@ -2328,7 +2352,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             }
           }
 
-          // ── 6. Leave check ────────────────────────────────────────────────
+          // -- 6. Leave check ------------------------------------------------
           try {
             const leaveCheck = await pool.query(
               `SELECT leave_type FROM attendance
@@ -2344,19 +2368,19 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             console.error(`[Group] Leave-check failed emp_id=${employeeRecord.emp_id}:`, leaveErr?.message);
           }
 
-          // ── 7. Session validation (prevents double punch-in) ──────────────
+          // -- 7. Session validation (prevents double punch-in) --------------
           const sessionError = await validatePunchSession(employeeRecord.emp_id, attendanceDate, punchType);
           if (sessionError) {
             return { faceIndex, status: "skipped", employeeId: employeeRecord.emp_id, employeeName: employeeRecord.name, similarity, message: sessionError.error, code: sessionError.code };
           }
 
-          // ── 8. Geofencing ─────────────────────────────────────────────────
+          // -- 8. Geofencing -------------------------------------------------
           const geoCheck = await validateGeofencing(employeeRecord.emp_id, locationPayload.latitude, locationPayload.longitude);
           if (!geoCheck.allowed) {
             return { faceIndex, status: "skipped", employeeId: employeeRecord.emp_id, employeeName: employeeRecord.name, similarity, message: geoCheck.message || "Out of assigned zone", code: "OUT_OF_GEofence" };
           }
 
-          // ── 9. Create attendance record & punch ───────────────────────────
+          // -- 9. Create attendance record & punch ---------------------------
           const attendance = await getOrCreateAttendanceRecord(
             employeeRecord.emp_id, attendanceDate, { punchType, createIfMissing: true }
           );
@@ -2383,7 +2407,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         }
       );
 
-      // Flatten allSettled → plain results array
+      // Flatten allSettled ? plain results array
       const rawResults = perFaceResults.map((settled, i) => {
         if (settled.status === "fulfilled") return settled.value;
         console.error(`[Group] Face ${i + 1} threw unexpectedly:`, settled.reason?.message);
@@ -2409,6 +2433,15 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
 
       safeDebugLog(`[${new Date().toISOString()}] Group Punch Results: ${JSON.stringify(results)}`);
 
+      if (punchedCount > 0) {
+        trackSuccessfulAttendanceEvent({
+          cityId: groupTrackingCityId,
+          source: "group_attendance",
+          metricDate: attendanceDate,
+          attendanceCount: punchedCount,
+        });
+      }
+
       return res.json({
         success: punchedCount > 0,
         mode: "group",
@@ -2420,6 +2453,16 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     }
 
     const requestedEmpId = normalizeId(rawEmpId ?? rawEmployeeId);
+    const individualTrackingCityId = await resolveRequestCityId({
+      wardId,
+      supervisorId,
+      employeeId: requestedEmpId,
+    });
+    const individualTracking = {
+      cityId: individualTrackingCityId,
+      source: "individual_attendance",
+      metricDate: attendanceDate,
+    };
     if (!requestedEmpId) {
       return res.status(400).json({
         error: "Please select an employee first.",
@@ -2434,11 +2477,11 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       });
     }
 
-    // 💰 COST OPT: 60-second dedup guard — if same employee punched within
+    // ?? COST OPT: 60-second dedup guard � if same employee punched within
     // the last 60s (network retry scenario), return cached success immediately
     // without making any paid Rekognition API call.
     if (isDuplicatePunch(requestedEmpId, punchType, attendanceDate)) {
-      console.log(`[face-attendance] Dedup hit: emp_id=${requestedEmpId} punchType=${punchType} date=${attendanceDate} — skipping Rekognition`);
+      console.log(`[face-attendance] Dedup hit: emp_id=${requestedEmpId} punchType=${punchType} date=${attendanceDate} � skipping Rekognition`);
       return res.status(200).json({
         success: true,
         employee: employeeRecord.name,
@@ -2469,12 +2512,12 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     let searchResult;
     try {
       searchResult = await withTimeout(
-        rekognition.send(new SearchFacesByImageCommand({
+        sendTrackedAttendanceRekognition(new SearchFacesByImageCommand({
           CollectionId: collectionId,
           Image: { Bytes: normalizedCaptureBuffer },
           MaxFaces: 1,
           FaceMatchThreshold: matchThreshold,
-        })),
+        }), individualTracking),
         GROUP_FACE_SEARCH_TIMEOUT_MS,
         "Face search timed out"
       );
@@ -2501,7 +2544,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     const matchedFaceResult = searchResult.FaceMatches?.[0];
     const matchedFace = matchedFaceResult?.Face ?? null;
 
-    // 🔒 STRICT IDENTITY CHECK
+    // ?? STRICT IDENTITY CHECK
     // If we found a face in the system, it MUST resolve to the selected employee.
     if (matchedFace) {
       const matchedExternalRaw = matchedFace.ExternalImageId ?? null;
@@ -2525,12 +2568,13 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
             employeeRecord.emp_code
           );
           if (selectedFaceBuffer) {
-            const directMatch = await rekognition.send(
+            const directMatch = await sendTrackedAttendanceRekognition(
               new CompareFacesCommand({
                 SourceImage: { Bytes: selectedFaceBuffer },
                 TargetImage: { Bytes: normalizedCaptureBuffer },
                 SimilarityThreshold: Math.max(88, Math.min(matchThreshold, 95)),
-              })
+              }),
+              individualTracking
             );
             const directSimilarity =
               directMatch?.FaceMatches?.[0]?.Similarity ?? 0;
@@ -2571,8 +2615,8 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       }
     }
 
-    // 💰 COST OPT: Individual fallback roster loop is DISABLED by default.
-    // This path calls CompareFaces for every employee in the ward — very expensive.
+    // ?? COST OPT: Individual fallback roster loop is DISABLED by default.
+    // This path calls CompareFaces for every employee in the ward � very expensive.
     // Collection search missing = face likely not enrolled. Return clear error instead.
     // Enable via INDIVIDUAL_FALLBACK_ENABLED=true in .env ONLY for debugging.
     if (!matchedFace && INDIVIDUAL_FALLBACK_ENABLED) {
@@ -2595,7 +2639,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         });
       }
     } else if (!matchedFace) {
-      // Face not found in collection — instruct supervisor to re-enroll
+      // Face not found in collection � instruct supervisor to re-enroll
       console.log(`[face-attendance] Individual: no collection match for emp_id=${requestedEmpId}. Fallback disabled.`);
       
       // Attempt a cheap direct 1:1 comparison with the selected employee
@@ -2607,12 +2651,13 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           employeeRecord.emp_code
         );
         if (selectedFaceBuffer) {
-          const directMatch = await rekognition.send(
+          const directMatch = await sendTrackedAttendanceRekognition(
             new CompareFacesCommand({
               SourceImage: { Bytes: selectedFaceBuffer },
               TargetImage: { Bytes: normalizedCaptureBuffer },
               SimilarityThreshold: Math.max(88, Math.min(matchThreshold, 95)),
-            })
+            }),
+            individualTracking
           );
           const directSimilarity = directMatch?.FaceMatches?.[0]?.Similarity ?? 0;
           if (directSimilarity >= Math.max(88, Math.min(matchThreshold, 95))) {
@@ -2634,7 +2679,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
 
     const empId = employeeRecord.emp_id;
 
-    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    // ?? Session-aware validation (prevents re-punch-in + night shift support)
     const sessionError = await validatePunchSession(empId, attendanceDate, punchType);
     if (sessionError) {
       return res.status(sessionError.status).json({
@@ -2649,7 +2694,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       createIfMissing: true,
     });
 
-    // 📍 Geofencing Validation
+    // ?? Geofencing Validation
     const geoCheck = await validateGeofencing(empId, locationPayload.latitude, locationPayload.longitude);
     if (!geoCheck.allowed) {
       if (geoCheck.notConfigured) {
@@ -2666,7 +2711,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         notConfigured: false,
         details: geoCheck.message || "You are outside the allowed geo-fence zone."
       });
-    }    // ⚡ PERF FIX: pass context directly so processPunch skips getAttendanceUploadContext DB call
+    }    // ? PERF FIX: pass context directly so processPunch skips getAttendanceUploadContext DB call
     const punchUploadContext = {
       attendance_date: attendanceDate,
       emp_id: empId,
@@ -2690,7 +2735,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       }
     );
 
-    // 🔒 SUPERVISOR SECURITY CHECK
+    // ?? SUPERVISOR SECURITY CHECK
     // If requireFaceMatch was true but similarity is null (missing S3),
     // we block the supervisor punch to prevent "any face" matching.
     if (!updated.face_similarity) {
@@ -2701,6 +2746,12 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     }
 
     safeDebugLog(`[${new Date().toISOString()}] Individual Punch Success: ${employeeRecord.emp_id}`);
+    trackSuccessfulAttendanceEvent({
+      cityId: individualTrackingCityId,
+      source: "individual_attendance",
+      metricDate: attendanceDate,
+      attendanceCount: 1,
+    });
     return res.json({
       success: true,
       employee: employeeRecord.name,
@@ -2781,12 +2832,24 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
       address: address ?? "",
     };
 
+    const livenessTrackingCityId = await resolveRequestCityId({
+      wardId,
+      supervisorId,
+      employeeId: normalizeId(rawEmpId ?? rawEmployeeId),
+    });
+    const livenessTracking = {
+      cityId: livenessTrackingCityId,
+      source: "individual_attendance",
+      metricDate: attendanceDate,
+    };
+
     // Liveness: ensure exactly one good-quality face
-    const detectResult = await rekognition.send(
+    const detectResult = await sendTrackedAttendanceRekognition(
       new DetectFacesCommand({
         Image: { Bytes: req.file.buffer },
         Attributes: ["ALL"],
-      })
+      }),
+      livenessTracking
     );
     const faces = detectResult?.FaceDetails ?? [];
     if (faces.length !== 1) {
@@ -2836,13 +2899,14 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
     let searchResult;
     try {
       searchResult = await withTimeout(
-        rekognition.send(
+        sendTrackedAttendanceRekognition(
           new SearchFacesByImageCommand({
             CollectionId: collectionId,
             Image: { Bytes: req.file.buffer },
             MaxFaces: 1,
             FaceMatchThreshold: matchThreshold,
-          })
+          }),
+          livenessTracking
         ),
         GROUP_FACE_SEARCH_TIMEOUT_MS,
         "Face search timed out"
@@ -2893,7 +2957,7 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
 
     const empId = employeeRecord.emp_id;
 
-    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    // ?? Session-aware validation (prevents re-punch-in + night shift support)
     const sessionError = await validatePunchSession(empId, attendanceDate, punchType);
     if (sessionError) {
       return res.status(sessionError.status).json({
@@ -2936,6 +3000,13 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
         faceMatchThreshold: matchThreshold,
       }
     );
+
+    trackSuccessfulAttendanceEvent({
+      cityId: livenessTrackingCityId,
+      source: "individual_attendance",
+      metricDate: attendanceDate,
+      attendanceCount: 1,
+    });
 
     return res.json({
       success: true,
@@ -3346,7 +3417,7 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
 
     const attendanceDate = resolveAttendanceDate(req.body, req.query);
 
-    // 🔒 Session-aware validation (prevents re-punch-in + night shift support)
+    // ?? Session-aware validation (prevents re-punch-in + night shift support)
     const sessionError = await validatePunchSession(resolved.employee.emp_id, attendanceDate, punchType);
     if (sessionError) {
       return res.status(sessionError.status).json({
@@ -3362,7 +3433,7 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
       { punchType, createIfMissing: true }
     );
 
-    // 📍 Geofencing Validation
+    // ?? Geofencing Validation
     const geoCheck = await validateGeofencing(
       resolved.employee.emp_id,
       req.body.latitude,
@@ -3401,6 +3472,14 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
         requireFaceMatch: true,
       }
     );
+
+    const selfPunchCityId = await resolveRequestCityId({ employeeId: resolved.employee.emp_id });
+    trackSuccessfulAttendanceEvent({
+      cityId: selfPunchCityId,
+      source: "individual_attendance",
+      metricDate: attendanceDate,
+      attendanceCount: 1,
+    });
 
     res.json({
       success: true,

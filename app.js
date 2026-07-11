@@ -62,6 +62,7 @@ const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
 const supervisorAadharRoutes = require("./routes/supervisorAadharRoutes");
 const supervisorPhotoRoutes = require("./routes/supervisorPhotoRoutes");
 const otpRoutes = require("./routes/otpRoutes");
+const compression = require("compression");
 
 const app = express();
 
@@ -79,6 +80,7 @@ app.set("trust proxy", trustProxyValue);
 console.log(`[HTTP] trust proxy = ${JSON.stringify(trustProxyValue)}`);
 
 // Middleware
+app.use(compression());
 app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.url}`);
   next();
@@ -645,6 +647,10 @@ if (PROFESSIONAL_PUNCH_IN_REMINDER_ENABLED && isPrimaryCronInstance) {
 app.get("/", (req, res) => {
   res.send("Attendance System API is running...");
 });
+
+// Mount IP Blocking Middleware
+const ipBlockMiddleware = require("./middleware/ipBlockMiddleware");
+app.use("/api", ipBlockMiddleware);
 
 // Mount Global Audit Logger Middleware (Asynchronous S3 logging)
 const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");
