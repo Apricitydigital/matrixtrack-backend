@@ -1,0 +1,21 @@
+﻿
+            // Each call here = N paid CompareFaces calls (N = employees in ward).
+            // Only trigger when collection misses AND fallback is enabled.
+            if (!employeeRecord && supervisorId && GROUP_FALLBACK_ENABLED) {
+>             const fallback = await fallbackMatchByCompare(
+                faceImageBuffer, supervisorId, wardId,
+                Math.max(85, Math.min(matchThreshold, 90))
+              );
+              if (fallback?.employee) {
+                employeeRecord = fallback.employee;
+      // Collection search missing = face likely not enrolled. Return clear error instead.
+      // Enable via INDIVIDUAL_FALLBACK_ENABLED=true in .env ONLY for debugging.
+      if (!matchedFace && INDIVIDUAL_FALLBACK_ENABLED) {
+>       const fallback = await fallbackMatchByCompare(
+          normalizedCaptureBuffer,
+          supervisorId,
+          wardId,
+          matchThreshold,
+          { cityId: individualBillingCityId, source: "individual_attendance", metricDate: attendanceDate }
+
+
