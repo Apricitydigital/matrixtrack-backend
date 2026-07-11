@@ -24,6 +24,7 @@ const AUDITABLE_PREFIXES = [
 ];
 const AUDITABLE_AUTH_PATHS = new Set([
   "/api/auth/login",
+  "/api/auth/verify-login-otp",
   "/api/auth/logout",
   "/api/auth/register",
   "/api/auth/update",
@@ -434,8 +435,7 @@ const getActionDescription = (req, body, context = null) => {
   const url = req.originalUrl || req.url;
   const id = extractIdFromUrl(url);
 
-  // ── Auth Events ──
-  if (url.includes("/api/auth/login") || url.includes("/api/auth/supervisor-login")) {
+  if (url.includes("/api/auth/login") || url.includes("/api/auth/supervisor-login") || url.includes("/api/auth/verify-login-otp")) {
     return "Logged in successfully";
   }
   if (url.includes("/api/auth/logout")) {
@@ -830,6 +830,10 @@ module.exports = async (req, res, next) => {
 
     try {
       if (res.statusCode >= 200 && res.statusCode < 300) {
+        // Skip logging if this is the initial login request that returned pending_2fa
+        if (normalizedPath === "/api/auth/login" && body && body.status === "pending_2fa") {
+          return;
+        }
         logRequest(req, res, body);
       }
     } catch (err) {
