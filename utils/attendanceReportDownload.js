@@ -1090,7 +1090,8 @@ TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,
                 current.setDate(current.getDate() + 1);
               }
             } else {
-              allDates.push(row.attendance_date);
+              const uniqueDates = [...new Set(allRows.map(r => r.attendance_date).filter(Boolean))].sort();
+              allDates.push(...uniqueDates);
             }
             allRows = Array.from(employeeMap.values()).map((row, index) => ({
               sr_no: index + 1,
