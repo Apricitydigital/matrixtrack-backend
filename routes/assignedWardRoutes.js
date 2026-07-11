@@ -34,6 +34,7 @@ router.put("/:id", async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: "AssignedID not found" });
     }
+
     invalidateCityAccessCache();
     invalidateKothiAccessCache();
     res.json(result.rows[0]); // Send the updated record as a response
@@ -50,10 +51,11 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "All fields are required" });
   }
   try {
+    // Insert new assignment (multiple locations per supervisor allowed)
     const result = await pool.query(
       `INSERT INTO supervisor_ward (supervisor_id, ward_id)
        VALUES ($1, $2)
-       ON CONFLICT DO NOTHING
+       ON CONFLICT (supervisor_id, ward_id) DO NOTHING
        RETURNING *`,
       [user_id, ward_id]
     );
@@ -65,7 +67,7 @@ router.post("/", async (req, res) => {
         [user_id, ward_id]
       );
       invalidateCityAccessCache();
-    invalidateKothiAccessCache();
+      invalidateKothiAccessCache();
       return res
         .status(200)
         .json(existing.rows[0] || { message: "Record exists, skipping" });

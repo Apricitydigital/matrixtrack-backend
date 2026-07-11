@@ -1,4 +1,5 @@
 require("dotenv").config();
+const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
@@ -9,6 +10,7 @@ const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const socketUtil = require("./utils/socket");
 
 
 process.on("unhandledRejection", (reason) => {
@@ -21,9 +23,34 @@ process.on("uncaughtException", (error) => {
 
 // const DEFAULT_TEST_NUMBERS = ["918827232995", "919131042937", "918982622996", "919111899909"];
 const NEW_REPORT_WEEKLY_RECIPIENTS = ["918827232995"];
+const CRON_RUNS_TABLE = "whatsapp_cron_runs";
 
 const todayKey = () =>
   new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+const ensureCronRunsTable = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${CRON_RUNS_TABLE} (
+      job_name TEXT NOT NULL,
+      run_key TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (job_name, run_key)
+    )
+  `);
+};
+
+const markCronRunStarted = async (client, jobName, runKey) => {
+  const { rowCount } = await client.query(
+    `
+      INSERT INTO ${CRON_RUNS_TABLE} (job_name, run_key)
+      VALUES ($1, $2)
+      ON CONFLICT (job_name, run_key) DO NOTHING
+    `,
+    [jobName, runKey]
+  );
+
+  return rowCount === 1;
+};
 
 
 // Import Routes
@@ -31,15 +58,23 @@ const authRoutes = require("./routes/authRoutes");
 const allRoutes = require("./routes/index");
 const appRoutes = require("./routes/appRoutes/index");
 const selfAttendanceRoutes = require("./routes/appRoutes/newAttendaceRoutes");
+const supervisorAadharRoutes = require("./routes/supervisorAadharRoutes");
+const supervisorPhotoRoutes = require("./routes/supervisorPhotoRoutes");
+const otpRoutes = require("./routes/otpRoutes");
+const compression = require("compression");
 
 const app = express();
 
 // Middleware
+app.use(compression());
 app.use((req, res, next) => {
   console.log(`[HTTP] ${req.method} ${req.url}`);
   next();
 });
-app.use(express.json());
+// PROD SAFETY: 2 MB JSON limit. 8 MB was too large — allowed clients to bypass
+// multer's file-size cap by encoding images as base64 in JSON body.
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 const defaultOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
@@ -77,28 +112,16 @@ const AUTO_HEAL_CRON_ENABLED = process.env.AUTO_HEAL_CRON_ENABLED !== "false";
 if (AUTO_HEAL_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     "10 3 * * *", // 03:10 IST daily
-    async () => {
-      const client = await pool.connect();
-      try {
-        const AUTO_HEAL_LOCK_ID = 812349;
-        const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [AUTO_HEAL_LOCK_ID]);
-        if (!rows[0]?.locked) return;
-
-        console.log("[AutoHealCron] Starting face healing process...");
-        const scriptPath = path.join(__dirname, "auto_heal_faces.js");
-        const child = spawn(process.execPath, [scriptPath], {
-          stdio: "inherit",
-          env: process.env,
-        });
-        child.on("exit", async (code) => {
-          console.log(`[AutoHealCron] auto_heal_faces.js exited with code ${code}`);
-          await client.query("SELECT pg_advisory_unlock($1)", [AUTO_HEAL_LOCK_ID]);
-        });
-      } catch (err) {
-        console.error("[AutoHealCron] Error:", err.message);
-      } finally {
-        client.release();
-      }
+    () => {
+      console.log("[AutoHealCron] Spawning face healing process...");
+      const scriptPath = path.join(__dirname, "auto_heal_faces.js");
+      const child = spawn(process.execPath, [scriptPath], {
+        stdio: "inherit",
+        env: process.env,
+      });
+      child.on("exit", (code) => {
+        console.log(`[AutoHealCron] auto_heal_faces.js exited with code ${code}`);
+      });
     },
     { timezone: "Asia/Kolkata" }
   );
@@ -146,6 +169,7 @@ const markSentTodayWeekly = (key) => {
 const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
 // const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
+const { sendDailyBulletinWhatsAppNew } = require("./utils/MT Daily Bulletin SWM pune");
 
 const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
 const hasSentTodayDailyFinal = (key) => {
@@ -164,9 +188,8 @@ const markSentTodayDailyFinal = (key) => {
   }
 };
 
-if (isPrimaryCronInstance) {
-
-  // Daily Final Report Cron (9:30 AM IST) - ISOLATED
+const WHATSAPP_CRON_ENABLED = process.env.WHATSAPP_CRON_ENABLED === "true";
+if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     "30 09 * * *",
     async () => {
@@ -184,19 +207,25 @@ if (isPrimaryCronInstance) {
         }
 
         const runKey = todayKey();
-        if (hasSentTodayDailyFinal(runKey)) {
-          console.log("[WhatsApp Daily Final Cron] Already sent today, skipping.");
+        const runClaimed = await markCronRunStarted(client, "daily_final_report", runKey);
+        if (!runClaimed) {
+          console.log("[WhatsApp Daily Final Cron] Already claimed today, skipping.");
           return;
         }
 
-        const recipients = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999","918349733213"];
-        
+        const recipients = ["918827232995", "919131042937", "918982622996", "919111899909", "919229499999", "918349733213"];
+
         for (const mobile of recipients) {
           try {
-            const { reportData } = await sendDailyWhatsAppReportFinal({
+            const result = await sendDailyWhatsAppReportFinal({
               phoneNumber: mobile,
+              useDispatchGuard: true,
             });
-            console.log('[WhatsApp Daily Final Cron] Sent to:', mobile, reportData.date);
+            if (result.skipped) {
+              console.log('[WhatsApp Daily Final Cron] Duplicate suppressed for:', mobile, result.reportData.date);
+            } else {
+              console.log('[WhatsApp Daily Final Cron] Sent to:', mobile, result.reportData.date);
+            }
           } catch (error) {
             console.error('[WhatsApp Daily Final Cron] Failed for:', mobile, error.message);
           }
@@ -210,10 +239,93 @@ if (isPrimaryCronInstance) {
         console.error('[WhatsApp Daily Final Cron] Cron error:', err.message);
       } finally {
         if (lockAcquired) {
-          await client.query("SELECT pg_advisory_unlock($1)", [FINAL_DAILY_LOCK_ID]);
+          try {
+            await client.query("SELECT pg_advisory_unlock($1)", [FINAL_DAILY_LOCK_ID]);
+          } catch (unlockErr) {
+            console.error('[WhatsApp Daily Final Cron] Unlock error:', unlockErr.message);
+          }
         }
         client.release();
       }
+    },
+    {
+      timezone: "Asia/Kolkata",
+    }
+  );
+
+  // =============================================
+  // NEW DAILY BULLETIN REPORT (V2) - ISOLATED
+  // =============================================
+  // Helper to trigger SWM daily bulletin report
+  const triggerDailyBulletinNew = async (triggerName, lockId, targetDate) => {
+    console.log(`[WhatsApp Daily V2 Cron] Daily V2 bulletin report triggered for ${triggerName}`);
+    const client = await pool.connect();
+    let lockAcquired = false;
+    try {
+      const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [lockId]);
+      lockAcquired = Boolean(rows[0]?.locked);
+
+      if (!lockAcquired) {
+        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Another instance is handling V2 send; skipping.`);
+        return;
+      }
+
+      const runKey = `${todayKey()}-${triggerName}`;
+      const runClaimed = await markCronRunStarted(client, "daily_v2_bulletin", runKey);
+      if (!runClaimed) {
+        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Already claimed today for ${triggerName}, skipping.`);
+        return;
+      }
+
+      // You can add, remove, or edit phone numbers in this list to configure who receives the reports.
+      const recipientsV2 = [
+        "918827232995",
+        "919111899909",//aditi ma'am
+        "919371222202",//saheb sir
+        "918007773301",//varule sir 
+        "919229499999", //md sir 
+        "918349733213",
+        "919131042937"];
+
+      const reportDate = targetDate || todayKey();
+
+      try {
+        const result = await sendDailyBulletinWhatsAppNew({
+          phoneNumber: recipientsV2,
+          date: reportDate, // Shared for the SAME DATE
+          useDispatchGuard: true,
+        });
+        if (result.skipped) {
+          console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Duplicate suppressed for date:`, result.reportData.date);
+        } else {
+          console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Sent PMC SWM V2 Daily Bulletin in bulk to:`, recipientsV2.join(", "), 'for date:', result.reportData.date);
+        }
+      } catch (error) {
+        console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Failed bulk send V2:`, error.message);
+      }
+
+      await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+      lockAcquired = false;
+    } catch (err) {
+      console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Cron error:`, err.message);
+    } finally {
+      if (lockAcquired) {
+        try {
+          await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
+        } catch (unlockErr) {
+          console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Unlock error:`, unlockErr.message);
+        }
+      }
+      client.release();
+    }
+  };
+
+  // ⏰ Trigger: 9:00 AM IST (Sends yesterday's bulletin report)
+  cron.schedule(
+    "00 09 * * *",
+    async () => {
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      await triggerDailyBulletinNew("9am", 812352, yesterday);
     },
     {
       timezone: "Asia/Kolkata",
@@ -264,7 +376,11 @@ if (isPrimaryCronInstance) {
         console.error('[WhatsApp Weekly Cron] Cron error:', err.message);
       } finally {
         if (lockAcquired) {
-          await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+          try {
+            await client.query("SELECT pg_advisory_unlock($1)", [WEEKLY_LOCK_ID]);
+          } catch (unlockErr) {
+            console.error('[WhatsApp Weekly Cron] Unlock error:', unlockErr.message);
+          }
         }
         client.release();
       }
@@ -336,7 +452,7 @@ if (isPrimaryCronInstance) {
 
 } else {
   console.log(
-    `[WhatsApp Cron] Skipping cron registration on cluster instance ${process.env.NODE_APP_INSTANCE}`
+    `[WhatsApp Cron] Skipping cron registration (WHATSAPP_CRON_ENABLED: ${process.env.WHATSAPP_CRON_ENABLED}, instance: ${process.env.NODE_APP_INSTANCE})`
   );
 }
 
@@ -386,8 +502,17 @@ app.get("/", (req, res) => {
   res.send("Attendance System API is running...");
 });
 
+// Mount IP Blocking Middleware
+const ipBlockMiddleware = require("./middleware/ipBlockMiddleware");
+app.use("/api", ipBlockMiddleware);
+
+// Mount Global Audit Logger Middleware (Asynchronous S3 logging)
+const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");
+app.use("/api", auditLoggerMiddleware);
+
 // Auth Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/otp", otpRoutes);
 
 // Other Routes
 app.use("/api", allRoutes);
@@ -395,13 +520,20 @@ app.use("/api", allRoutes);
 // App Routes
 app.use("/api/app", appRoutes);
 app.use("/api/app/attendance/employee", selfAttendanceRoutes);
+app.use("/api/supervisor-aadhar", supervisorAadharRoutes);
+app.use("/api/supervisor-photo", supervisorPhotoRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 5000;
+const httpServer = http.createServer(app);
 
 // Run migrations before starting the server
 runMigrations().then(() => {
-  app.listen(PORT, "0.0.0.0", () => {
+  return ensureCronRunsTable();
+}).then(() => {
+  // Initialize socket.io on the HTTP server
+  socketUtil.init(httpServer);
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
 }).catch(err => {

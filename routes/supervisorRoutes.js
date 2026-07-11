@@ -63,46 +63,70 @@ router.get("/", requireCityScope(), async (req, res) => {
     let params;
 
     if (scopedCityId === null) {
-      // Admin with no city filter — return ALL supervisors
+      // Admin with no city filter — return ALL supervisors with aggregated details
       query = `
-        SELECT DISTINCT ON (u.user_id)
+        WITH all_assignments AS (
+          SELECT user_id, ward_id FROM user_kothi_access
+          UNION
+          SELECT supervisor_id AS user_id, ward_id FROM supervisor_kothi
+          UNION
+          SELECT supervisor_id AS user_id, ward_id FROM supervisor_ward
+        )
+        SELECT 
           u.user_id,
           u.name,
           u.emp_code,
           u.email,
           u.phone,
           u.role,
-          c.city_id,
-          c.city_name
+          STRING_AGG(DISTINCT c.city_name, ', ') AS city_name,
+          STRING_AGG(DISTINCT z.zone_name, ', ') AS zone_name,
+          STRING_AGG(DISTINCT s.sector_name, ', ') AS ward_group,
+          STRING_AGG(DISTINCT w.ward_name, ', ') AS kothi_name
         FROM users u
-        LEFT JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
-        LEFT JOIN wards w ON sw.ward_id = w.ward_id
-        LEFT JOIN zones z ON w.zone_id = z.zone_id
+        LEFT JOIN all_assignments aa ON u.user_id = aa.user_id
+        LEFT JOIN wards w ON aa.ward_id = w.ward_id
+        LEFT JOIN sectors s ON w.sector_id = s.sector_id
+        LEFT JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
         LEFT JOIN cities c ON z.city_id = c.city_id
         WHERE u.role = 'supervisor'
-        ORDER BY u.user_id, u.name
+        GROUP BY u.user_id, u.name, u.emp_code, u.email, u.phone, u.role
+        ORDER BY u.name ASC
       `;
       params = [];
     } else {
-      // City-scoped user — return ONLY supervisors assigned to that city
+      // City-scoped user — return ONLY supervisors assigned to that city (via direct assignments or city access)
       query = `
-        SELECT DISTINCT ON (u.user_id)
+        WITH all_assignments AS (
+          SELECT user_id, ward_id FROM user_kothi_access
+          UNION
+          SELECT supervisor_id AS user_id, ward_id FROM supervisor_kothi
+          UNION
+          SELECT supervisor_id AS user_id, ward_id FROM supervisor_ward
+        )
+        SELECT 
           u.user_id,
           u.name,
           u.emp_code,
           u.email,
           u.phone,
           u.role,
-          c.city_id,
-          c.city_name
+          STRING_AGG(DISTINCT c.city_name, ', ') AS city_name,
+          STRING_AGG(DISTINCT z.zone_name, ', ') AS zone_name,
+          STRING_AGG(DISTINCT s.sector_name, ', ') AS ward_group,
+          STRING_AGG(DISTINCT w.ward_name, ', ') AS kothi_name
         FROM users u
-        INNER JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
-        INNER JOIN wards w ON sw.ward_id = w.ward_id
-        INNER JOIN zones z ON w.zone_id = z.zone_id
+        INNER JOIN all_assignments aa ON u.user_id = aa.user_id
+        INNER JOIN wards w ON aa.ward_id = w.ward_id
+        INNER JOIN sectors s ON w.sector_id = s.sector_id
+        INNER JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
         INNER JOIN cities c ON z.city_id = c.city_id
         WHERE u.role = 'supervisor'
-          AND c.city_id = $1::int
-        ORDER BY u.user_id, u.name
+          AND (c.city_id = $1::int OR EXISTS (
+            SELECT 1 FROM user_city_access uca WHERE uca.user_id = u.user_id AND uca.city_id = $1::int
+          ))
+        GROUP BY u.user_id, u.name, u.emp_code, u.email, u.phone, u.role
+        ORDER BY u.name ASC
       `;
       params = [scopedCityId];
     }
@@ -127,7 +151,13 @@ router.get(
         SELECT 
           COALESCE(c.city_name, 'All Cities') AS city_name,
           COUNT(DISTINCT sw.supervisor_id) AS supervisor_count
-        FROM supervisor_ward sw
+        FROM (
+          SELECT supervisor_id, ward_id FROM supervisor_ward
+          UNION
+          SELECT user_id AS supervisor_id, ward_id FROM user_kothi_access
+          UNION
+          SELECT supervisor_id, ward_id FROM supervisor_kothi
+        ) sw
         JOIN wards w ON sw.ward_id = w.ward_id
         JOIN zones z ON w.zone_id = z.zone_id
         JOIN cities c ON z.city_id = c.city_id
@@ -186,12 +216,18 @@ router.get(
           STRING_AGG(DISTINCT z.zone_name, ', ') AS zones,
           STRING_AGG(DISTINCT w.ward_name, ', ') AS kothis,
           COUNT(DISTINCT e.emp_id) AS total_employee_count
-        FROM supervisor_ward sw
+        FROM (
+          SELECT supervisor_id, ward_id FROM supervisor_ward
+          UNION
+          SELECT user_id AS supervisor_id, ward_id FROM user_kothi_access
+          UNION
+          SELECT supervisor_id, ward_id FROM supervisor_kothi
+        ) sw
         JOIN users u ON sw.supervisor_id = u.user_id
         JOIN wards w ON sw.ward_id = w.ward_id
         JOIN zones z ON w.zone_id = z.zone_id
         JOIN cities c ON z.city_id = c.city_id
-        LEFT JOIN employee e ON e.ward_id = w.ward_id
+        LEFT JOIN employee e ON e.ward_id = w.ward_id AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
       `;
 
       const conditions = ["u.role = 'supervisor'"];  // ← ADDED

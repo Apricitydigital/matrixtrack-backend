@@ -80,6 +80,48 @@ const BASE_PERMISSIONS = [
     description: "Access analytics dashboards",
   },
   {
+    module: "field-access-requests",
+    action: "view",
+    label: "View Professional Access Requests",
+    description: "View self punch-in registration requests",
+  },
+  {
+    module: "field-access-requests",
+    action: "write",
+    label: "Manage Professional Access Requests",
+    description: "Approve or reject self punch-in registration requests",
+  },
+  {
+    module: "professional-attendance",
+    action: "view",
+    label: "View Professional Attendance",
+    description: "View professional employee attendance dashboard",
+  },
+  {
+    module: "professional-leave-mgmt",
+    action: "view",
+    label: "View Professional Leave Management",
+    description: "View professional leave requests and leave decisions",
+  },
+  {
+    module: "professional-leave-mgmt",
+    action: "write",
+    label: "Manage Professional Leave Management",
+    description: "Approve and reject professional leave requests",
+  },
+  {
+    module: "professional-holiday-declare",
+    action: "view",
+    label: "View Professional Holiday Calendar",
+    description: "View declared holidays and holiday audit logs",
+  },
+  {
+    module: "professional-holiday-declare",
+    action: "write",
+    label: "Declare Professional Holidays",
+    description: "Create declared holidays for professionals in allowed cities",
+  },
+  {
     module: "master",
     action: "view",
     label: "View Master Data",
