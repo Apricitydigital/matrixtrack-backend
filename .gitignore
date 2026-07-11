@@ -1,14 +1,27 @@
-.env 
-node_modules/ 
-matrixtrack-backend/ 
-uploads/
-supervisor_errors.log
+.env
+.env.*
+
+node_modules/
 
 # logs
 *.log
 logs/audit/
 
-*.txt
+# runtime / debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+coverage/
+.nyc_output/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# local-only scripts/files
+scratch/
 check_*.js
 run_query.js
 

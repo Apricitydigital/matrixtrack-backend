@@ -150,3 +150,5 @@ router.post("/daily-bulletin", async (req, res) => {
 });
 
 module.exports = router;
+
+
