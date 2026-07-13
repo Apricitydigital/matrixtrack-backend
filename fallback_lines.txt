@@ -1,0 +1,9 @@
+﻿
+LineNumber Line                                                                      
+---------- ----                                                                      
+       769 // When SearchFacesByImage returns no match, fallbackMatchByCompare runs a
+      1496 async function fallbackMatchByCompare(                                    
+      2260             const fallback = await fallbackMatchByCompare(                
+      2615       const fallback = await fallbackMatchByCompare(                      
+
+

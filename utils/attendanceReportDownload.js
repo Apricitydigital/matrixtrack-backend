@@ -1,6 +1,7 @@
 const SUPPORTED_FORMATS = new Set(["csv", "json"]);
 const SUPPORTED_GROUPINGS = new Set([
   "detail",
+  "simple", // <-- ADD THIS
   "zone",
   "ward",
   "city",
@@ -44,7 +45,8 @@ const buildExcelDocument = async (rows, headers, summaryRowData = null) => {
             }
           }
         }
-        rowData[header.key] = rawValue ?? "";
+
+        rowData[header.key] = rawValue;
       });
       const addedRow = sheet.addRow(rowData);
       headers.forEach((header, idx) => {
@@ -383,12 +385,16 @@ const groupingConfigs = {
       e.emp_id AS emp_id,
       e.name AS employee_name,
       e.emp_code,
-      e.phone AS contact_no,
-      TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,
-      TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
-      TO_CHAR(a.mid_shift_punch_in_time, 'HH24:MI:SS') AS mid_shift_punch_in_time,
-      TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
       a.leave_type,
+      e.phone AS contact_no,
+      a.date,
+TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,
+      TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in_time,
+      TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in_time,
+      TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_out_time,
+      a.punch_in_image,
+      a.mid_shift_punch_in_image,
+      a.punch_out_image,
       a.duration,
       a.in_address,
       a.out_address,
@@ -416,27 +422,45 @@ const groupingConfigs = {
       END AS punched_out_by
     `,
     orderBy: "a.date DESC, a.attendance_id DESC",
-    csvHeaders: [
+    csvHeaders: ({ baseUrl }) => [
       { key: "sr_no", label: "Sr No." },
       { key: "attendance_date", label: "Date" },
       { key: "zone_name", label: "Zone", formatter: (val) => val || "-" },
       { key: "ward_name", label: "Ward", formatter: (val) => val || "-" },
+      { key: "department_name", label: "Department", formatter: (val) => val || "-" },
+      { key: "designation_name", label: "Designation", formatter: (val) => val || "-" },
       { key: "employee_name", label: "Employee Name", formatter: (val) => val || "-" },
       { key: "leave_type", label: "Leave Type", formatter: (val) => val || "-" },
       { key: "emp_code", label: "Emp Code", formatter: (val) => val ? `="${val}"` : "-" },
       { key: "contact_no", label: "Contact No.", formatter: (val) => val ? `="${val}"` : "-" },
       { key: "punch_in_time", label: "Punch In Time", formatter: (val) => val || "-" },
+      { key: "punch_in_image", label: "Punch In Image", formatter: (val, row) => val ? { text: "view", hyperlink: `${baseUrl}/app/attendance/employee/image?attendance_id=${row.attendance_id}&punch_type=in` } : "-" },
       { key: "punched_in_by", label: "Punched In By", formatter: (val, row) => row.punch_in_time ? val : "-" },
+      { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
+      { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? { text: `${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}`, hyperlink: `https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}` } : "-" },
       { key: "mid_shift_punch_in_time", label: "Mid Shift Punch In", formatter: (val) => val || "-" },
+      { key: "mid_shift_punch_in_image", label: "Mid In Image", formatter: (val, row) => val ? { text: "view", hyperlink: `${baseUrl}/app/attendance/employee/image?attendance_id=${row.attendance_id}&punch_type=mid_in` } : "-" },
       { key: "mid_shift_punched_in_by", label: "Mid Shift Punched By", formatter: (val, row) => row.mid_shift_punch_in_time ? val : "-" },
       { key: "mid_in_address", label: "Mid In Address", formatter: (val) => val || "-" },
-      { key: "latitude_mid_in", label: "Mid In Lat / Long", formatter: (_, row) => (row.latitude_mid_in && row.longitude_mid_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_mid_in},${row.longitude_mid_in}", "${Number(row.latitude_mid_in).toFixed(6)}, ${Number(row.longitude_mid_in).toFixed(6)}")` : "-" },
-      { key: "in_address", label: "In Address", formatter: (val) => val || "-" },
-      { key: "latitude_in", label: "In Lat / Long", formatter: (_, row) => (row.latitude_in && row.longitude_in) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_in},${row.longitude_in}", "${Number(row.latitude_in).toFixed(6)}, ${Number(row.longitude_in).toFixed(6)}")` : "-" },
+      { key: "latitude_mid_in", label: "Mid In Lat / Long", formatter: (_, row) => (row.latitude_mid_in && row.longitude_mid_in) ? { text: `${Number(row.latitude_mid_in).toFixed(6)}, ${Number(row.longitude_mid_in).toFixed(6)}`, hyperlink: `https://www.google.com/maps?q=${row.latitude_mid_in},${row.longitude_mid_in}` } : "-" },
       { key: "punch_out_time", label: "Punch Out Time", formatter: (val) => val || "-" },
+      { key: "punch_out_image", label: "Punch Out Image", formatter: (val, row) => val ? { text: "view", hyperlink: `${baseUrl}/app/attendance/employee/image?attendance_id=${row.attendance_id}&punch_type=out` } : "-" },
       { key: "punched_out_by", label: "Punched Out By", formatter: (val, row) => row.punch_out_time ? val : "-" },
       { key: "out_address", label: "Out Address", formatter: (val) => val || "-" },
-      { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? `=HYPERLINK("https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}", "${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}")` : "-" },
+      { key: "latitude_out", label: "Out Lat / Long", formatter: (_, row) => (row.latitude_out && row.longitude_out) ? { text: `${Number(row.latitude_out).toFixed(6)}, ${Number(row.longitude_out).toFixed(6)}`, hyperlink: `https://www.google.com/maps?q=${row.latitude_out},${row.longitude_out}` } : "-" },
+    ],
+  },
+  simple: {
+    label: "Simple Attendance Report",
+    filenameSuffix: "simple-attendance",
+
+    csvHeaders: [
+      { key: "sr_no", label: "Sr No." },
+      { key: "emp_code", label: "Employee Code" },
+      { key: "employee_name", label: "Employee Name" },
+      { key: "kothi_name", label: "Kothi" },
+      { key: "zone_name", label: "Zone" },
+      { key: "employee_type", label: "Employee Type" },
     ],
   },
   zone: {
@@ -454,8 +478,8 @@ const groupingConfigs = {
       COUNT(a.punch_out_time) AS punch_out_count,
       TO_CHAR(MIN(a.date), 'DD-MM-YYYY') AS first_attendance_date,
       TO_CHAR(MAX(a.date), 'DD-MM-YYYY') AS last_attendance_date,
-      TO_CHAR(MIN(a.punch_in_time), 'DD-MM-YYYY HH24:MI:SS') AS first_punch_in_time,
-      TO_CHAR(MAX(a.punch_out_time), 'DD-MM-YYYY HH24:MI:SS') AS last_punch_out_time
+      TO_CHAR(MIN(a.punch_in_time) AT TIME ZONE 'Asia/Kolkata', 'DD-MM-YYYY HH24:MI:SS') AS first_punch_in_time,
+      TO_CHAR(MAX(a.punch_out_time) AT TIME ZONE 'Asia/Kolkata', 'DD-MM-YYYY HH24:MI:SS') AS last_punch_out_time
     `,
     groupBy: "z.zone_id, z.zone_name, c.city_id, c.city_name",
     orderBy: "c.city_name, z.zone_name",
@@ -729,6 +753,7 @@ const createAttendanceDownloadHandler =
         if (!cityScope.all) {
           const allowedIds = (cityScope.ids || []).map((id) => Number(id));
           if (!allowedIds.length) {
+            console.error("403 ERROR 1: allowedIds is empty", { cityScope });
             return res
               .status(403)
               .json({ error: "No city access assigned. Please contact admin." });
@@ -737,6 +762,7 @@ const createAttendanceDownloadHandler =
             requestedCityId !== null &&
             !allowedIds.includes(Number(requestedCityId))
           ) {
+            console.error("403 ERROR 2: city mismatch", { requestedCityId, allowedIds });
             return res.status(403).json({
               error: "Forbidden: city not assigned to the current user.",
             });
@@ -767,15 +793,38 @@ const createAttendanceDownloadHandler =
 
         let allRows;
 
-        if (requestedGrouping === "detail") {
+        if (
+          requestedGrouping === "detail" ||
+          requestedGrouping === "simple"
+        ) {
           // Single unified query: start from employee and left-join attendance for the target date.
+          const startDate =
+            payload.start_date ||
+            payload.startDate ||
+            payload.date_from;
+
+          const endDate =
+            payload.end_date ||
+            payload.endDate ||
+            payload.date_to;
+
           const targetDate =
             payload.date ||
-            payload.start_date ||
-            payload.date_from ||
-            new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+            new Date().toLocaleDateString("en-CA", {
+              timeZone: "Asia/Kolkata",
+            });
 
-          const detailParams = [targetDate];
+          let detailParams = [];
+          let attendanceDateCondition = "";
+          if (startDate && endDate) {
+            detailParams = [startDate, endDate];
+            attendanceDateCondition =
+              "a.date BETWEEN $1::date AND $2::date";
+          } else {
+            detailParams = [targetDate];
+            attendanceDateCondition =
+              "a.date = $1::date";
+          }
           const filters = [];
           const hasPunchInFlag = parseBooleanFlag(payload.has_punch_in);
           const hasPunchOutFlag = parseBooleanFlag(payload.has_punch_out);
@@ -824,15 +873,15 @@ const createAttendanceDownloadHandler =
             detailParams.push(empCode);
             filters.push(`e.emp_code = $${detailParams.length}`);
           }
-          const departmentId = parseIntegerParam(payload.department_id);
-          if (departmentId !== null) {
-            detailParams.push(departmentId);
-            filters.push(`dept.department_id = $${detailParams.length}`);
+          const departmentIds = (payload.department_id || payload.departmentId || "").toString().split(",").map(id => parseIntegerParam(id)).filter(id => id !== null);
+          if (departmentIds.length > 0) {
+            detailParams.push(departmentIds);
+            filters.push(`dept.department_id = ANY($${detailParams.length}::int[])`);
           }
-          const designationId = parseIntegerParam(payload.designation_id);
-          if (designationId !== null) {
-            detailParams.push(designationId);
-            filters.push(`des.designation_id = $${detailParams.length}`);
+          const designationIds = (payload.designation_id || payload.designationId || "").toString().split(",").map(id => parseIntegerParam(id)).filter(id => id !== null);
+          if (designationIds.length > 0) {
+            detailParams.push(designationIds);
+            filters.push(`des.designation_id = ANY($${detailParams.length}::int[])`);
           }
           if (absOnlyFlag === true) {
             filters.push("a.punch_in_time IS NULL");
@@ -856,17 +905,21 @@ const createAttendanceDownloadHandler =
 
           const unifiedQuery = `
             SELECT
-              ROW_NUMBER() OVER (ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC) AS sr_no,
-              a.attendance_id,
+ROW_NUMBER() OVER (ORDER BY a.date DESC, a.attendance_id DESC, e.name ASC) AS sr_no,
+a.attendance_id,
               e.emp_id AS emp_id,
               e.name AS employee_name,
               e.emp_code,
+                 a.leave_type,
               e.phone AS contact_no,
-              TO_CHAR($1::date, 'DD-MM-YYYY') AS attendance_date,
-              TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in_time,
-              TO_CHAR(a.mid_shift_punch_in_time, 'HH24:MI:SS') AS mid_shift_punch_in_time,
-              TO_CHAR(a.punch_out_time, 'HH24:MI:SS') AS punch_out_time,
-              a.leave_type,
+a.date,
+TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,         
+ TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_in_time,
+              TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in_time,
+              TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS punch_out_time,
+              a.punch_in_image,
+              a.mid_shift_punch_in_image,
+              a.punch_out_image,
               a.duration,
               a.in_address,
               a.latitude_in,
@@ -904,41 +957,201 @@ const createAttendanceDownloadHandler =
             LEFT JOIN department dept ON des.department_id = dept.department_id
             -- Removed direct supervisor join to prevent row duplication.
             -- Using correlate subquery instead for supervisor_name.
-            LEFT JOIN LATERAL (
-              SELECT 
-                att.attendance_id, 
-                att.punch_in_time, 
-                att.mid_shift_punch_in_time,
-                att.punch_out_time, 
-                att.leave_type,
-                att.duration, 
-                att.in_address,
-                att.latitude_in,
-                att.longitude_in,
-                att.out_address,
-                att.latitude_out,
-                att.longitude_out,
-                att.mid_in_address,
-                att.latitude_mid_in,
-                att.longitude_mid_in,
-                att.punched_in_by,
-                att.mid_shift_punched_in_by,
-                att.punched_out_by
-              FROM attendance att
-              WHERE att.emp_id = e.emp_id 
-                AND (att.date = $1::date OR att.date = $1)
-              ORDER BY att.attendance_id DESC
-              LIMIT 1
-            ) a ON TRUE
+          LEFT JOIN attendance a
+  ON a.emp_id = e.emp_id
+ AND ${attendanceDateCondition}
             LEFT JOIN users u ON a.punched_in_by = u.user_id
             LEFT JOIN users u2 ON a.mid_shift_punched_in_by = u2.user_id
             LEFT JOIN users u1 ON a.punched_out_by = u1.user_id
             ${whereCombined}
             ORDER BY a.attendance_id DESC NULLS LAST, e.name ASC;
           `;
-
+          console.log("detailParams:", detailParams);
+          console.log("attendanceDateCondition:", attendanceDateCondition);
+          console.log("QUERY:", unifiedQuery);
           const unifiedResult = await pool.query(unifiedQuery, detailParams);
           allRows = unifiedResult.rows;
+          if (requestedGrouping === "simple") {
+
+            const employeeMap = new Map();
+
+            allRows.forEach((row) => {
+
+              const empId = row.emp_id;
+
+              if (!employeeMap.has(empId)) {
+
+                employeeMap.set(empId, {
+                  emp_id: row.emp_id,
+                  emp_code: row.emp_code,
+
+                  employee_name: row.employee_name,
+                  kothi_name: row.ward_name,
+                  zone_name: row.zone_name,
+                  employee_type: row.designation_name,
+
+                  days: {},
+                  summary: {}
+                });
+              }
+
+              const emp = employeeMap.get(empId);
+
+              // const dateKey = new Date(row.date)
+              //   .toISOString()
+              //   .split("T")[0];
+              const dateKey = row.attendance_date;
+
+              let status = "A";
+
+              if (row.leave_type) {
+
+                status = row.leave_type;
+
+              } else if (
+                row.punch_in_time &&
+                row.punch_in_time !== "-"
+              ) {
+
+                status = "P";
+
+              }
+
+              emp.days[dateKey] = status;
+
+              emp.summary[status] =
+                (emp.summary[status] || 0) + 1;
+
+            });
+
+            // const allDates = [
+            //   ...new Set(
+            //     allRows.flatMap(r => Object.keys(r.days || {}))
+            //   )
+            // ].sort();
+
+
+
+            // groupConfig.csvHeaders = [
+            //   { key: "sr_no", label: "Sr No." },
+            //   { key: "emp_code", label: "Employee Code" },
+            //   { key: "employee_name", label: "Employee Name" },
+            //   { key: "kothi_name", label: "Kothi" },
+            //   { key: "zone_name", label: "Zone" },
+            //   { key: "employee_type", label: "Employee Type" },
+
+            //   ...allDates.map(date => ({
+            //     key: date,
+            //     label: date.slice(-2),
+            //     formatter: (_, row) => row.days?.[date] ?? "-"
+            //   })),
+
+            //   { key: "P", label: "P" },
+            //   { key: "A", label: "A" },
+            //   { key: "CL", label: "CL" },
+            //   { key: "EL", label: "EL" },
+            //   { key: "ML", label: "ML" },
+            //   { key: "WO", label: "WO" },
+            //   { key: "TOTAL", label: "TOTAL" }
+            // ];
+            // const allDates = [
+            //   ...new Set(
+            //     allRows.flatMap(r => Object.keys(r.days || {}))
+            //   )
+            // ].sort();
+
+            // groupConfig.csvHeaders = [
+            //   { key: "sr_no", label: "Sr No." },
+            //   { key: "emp_code", label: "Employee Code" },
+            //   { key: "employee_name", label: "Employee Name" },
+            //   { key: "kothi_name", label: "Kothi" },
+            //   { key: "zone_name", label: "Zone" },
+            //   { key: "employee_type", label: "Employee Type" },
+
+            //   ...allDates.map(date => ({
+            //     key: date,
+            //     label: date,
+            //     formatter: (_, row) => row.days?.[date] || "-"
+            //   }))
+            // ];
+            const allDates = [];
+
+            if (startDate && endDate) {
+              let current = new Date(startDate);
+              const last = new Date(endDate);
+
+              while (current <= last) {
+                const dd = String(current.getDate()).padStart(2, "0");
+                const mm = String(current.getMonth() + 1).padStart(2, "0");
+                const yyyy = current.getFullYear();
+
+                allDates.push(`${dd}-${mm}-${yyyy}`);
+
+                current.setDate(current.getDate() + 1);
+              }
+            } else {
+              const uniqueDates = [...new Set(allRows.map(r => r.attendance_date).filter(Boolean))].sort();
+              allDates.push(...uniqueDates);
+            }
+            allRows = Array.from(employeeMap.values()).map((row, index) => ({
+              sr_no: index + 1,
+              ...row,
+
+              P: row.summary?.P || 0,
+              A: row.summary?.A || 0,
+              CL: row.summary?.CL || 0,
+              EL: row.summary?.EL || 0,
+              ML: row.summary?.ML || 0,
+              WO: row.summary?.WO || 0,
+
+              TOTAL: allDates.length
+            }));
+            const leaveTypes = [
+              ...new Set(
+                allRows.flatMap(r => Object.keys(r.summary || {}))
+              )
+            ]
+              .filter(k => !["P", "A"].includes(k))
+              .sort();
+
+            groupConfig.csvHeaders = [
+              { key: "sr_no", label: "Sr No." },
+              { key: "emp_code", label: "Employee Code" },
+              { key: "employee_name", label: "Employee Name" },
+              { key: "kothi_name", label: "Kothi" },
+              { key: "zone_name", label: "Zone" },
+              { key: "employee_type", label: "Employee Type" },
+
+              ...allDates.map(date => ({
+                key: date,
+                label: date.split("-")[0], // only day: 05 06 07 ...
+                formatter: (_, row) => row.days?.[date] ?? "-"
+              })),
+
+              {
+                key: "P",
+                label: "P",
+                formatter: (_, row) => row.summary?.P || 0
+              },
+              {
+                key: "A",
+                label: "A",
+                formatter: (_, row) => row.summary?.A || 0
+              },
+
+              ...leaveTypes.map(type => ({
+                key: type,
+                label: type,
+                formatter: (_, row) => row.summary?.[type] || 0
+              })),
+
+              {
+                key: "TOTAL",
+                label: "TOTAL",
+                formatter: () => allDates.length
+              }
+            ];
+          }
         } else {
           const selectClause =
             typeof groupConfig.select === "function"
@@ -1016,6 +1229,7 @@ const createAttendanceDownloadHandler =
         if (allRows && allRows.length) {
           allRows.forEach((row, idx) => {
             row.sr_no = idx + 1;
+            if (idx < 5) console.log(`DEBUG: Row ${idx + 1} punch_in_image:`, row.punch_in_image);
           });
         }
 
@@ -1029,16 +1243,17 @@ const createAttendanceDownloadHandler =
           });
         }
 
+        const baseUrl = process.env.API_BASE_URL || (req.protocol + '://' + req.get('host') + '/api');
         const headers =
           typeof groupConfig.csvHeaders === "function"
-            ? groupConfig.csvHeaders({ locationExpression })
+            ? groupConfig.csvHeaders({ locationExpression, baseUrl })
             : groupConfig.csvHeaders;
 
         let summaryRowData = null;
         if (requestedGrouping === "detail" && allRows.length > 0) {
           const totalRecords = allRows.length;
           const presentCount = allRows.filter(r => r.punch_in_time && r.punch_in_time !== '-').length;
-          
+
           summaryRowData = {};
           headers.forEach(h => {
             if (h.key === "sr_no") summaryRowData[h.key] = "TOTAL";
