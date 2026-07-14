@@ -5,10 +5,14 @@ const crypto = require("crypto");
 const pool = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware"); // ✅ Import middleware
 const { fetchUserCityAccess } = require("../utils/userCityAccess");
+const { fetchUserZoneAccess } = require("../utils/userZoneAccess");
+const { fetchUserKothiAccess } = require("../utils/userKothiAccess");
 const {
   ensureSelfAttendanceSupport,
   fetchEmployeeByCode,
 } = require("../utils/selfAttendance");
+const { isPhoneVerified, sendGenericSms } = require("../utils/otpService");
+const { sendWelcomeWhatsApp, sendWelcomeSms, sendPasswordUpdateSms } = require("../utils/notificationService");
 
 const router = express.Router();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "45d";
@@ -16,7 +20,7 @@ const JWT_COOKIE_MAX_AGE_MS =
   Number(process.env.JWT_COOKIE_MAX_AGE_MS) || 45 * 24 * 60 * 60 * 1000;
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
 
-const getUserAccessProfile = async (userId) => {
+const getUserAccessProfile = async (userId, userRole = "") => {
   const rolesQuery = `
     SELECT r.id, r.name
     FROM user_roles ur
@@ -38,14 +42,24 @@ const getUserAccessProfile = async (userId) => {
     ORDER BY module, action
   `;
 
-  const [rolesResult, permissionsResult] = await Promise.all([
+  const [rolesResult, permissionsResult, zoneScope, kothiScope] = await Promise.all([
     pool.query(rolesQuery, [userId]),
     pool.query(permissionsQuery, [userId]),
+    fetchUserZoneAccess(
+      { user_id: userId, role: userRole },
+      { includeZones: true, allowCityFallback: true }
+    ),
+    fetchUserKothiAccess(
+      { user_id: userId, role: userRole },
+      { includeKothis: true, allowZoneFallback: true, allowCityFallback: false }
+    ),
   ]);
 
   return {
     roles: rolesResult.rows,
     permissions: permissionsResult.rows,
+    zones: Array.isArray(zoneScope?.zones) ? zoneScope.zones : [],
+    kothis: Array.isArray(kothiScope?.kothis) ? kothiScope.kothis : [],
   };
 };
 
@@ -121,6 +135,7 @@ const fetchEmployeeProfile = async (empCode) => {
   }
 };
 
+
 // ✅ Get Logged-in User
 router.get("/me", authenticateToken, async (req, res) => {
   try {
@@ -133,7 +148,7 @@ router.get("/me", authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const access = await getUserAccessProfile(req.user.user_id);
+    const access = await getUserAccessProfile(req.user.user_id, user.rows[0].role);
 
     const allowedCities = await computeAllowedCities(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
@@ -187,10 +202,46 @@ router.post("/check-duplicate", async (req, res) => {
 
 // ✅ Create new User
 router.post("/register", async (req, res) => {
-  const { name, emp_code, email, phone, role, password } = req.body;
+  const { name, emp_code, email, phone, role, password, aadhar_number, ward_id } = req.body;
 
   if (!name || !emp_code || !email || !phone || !role || !password) {
     return res.status(400).json({ error: "All fields are required" });
+  }
+
+  // Validate aadhar if provided — must be exactly 12 digits
+  if (aadhar_number && !/^\d{12}$/.test(aadhar_number.trim())) {
+    return res.status(400).json({ error: "Aadhar number must be exactly 12 digits" });
+  }
+
+  // Validate phone — must be 10 digits
+  if (!/^\d{10}$/.test(phone.trim())) {
+    return res.status(400).json({ error: "Phone must be exactly 10 digits" });
+  }
+
+  // Validate email format
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return res.status(400).json({ error: "Invalid email format" });
+  }
+
+  // Validate emp_code — not empty, no spaces
+  if (!emp_code.trim() || emp_code.includes(" ")) {
+    return res.status(400).json({ error: "Employee code must not contain spaces" });
+  }
+
+  // ✅ Verify phone OTP before proceeding
+  if (!isPhoneVerified(phone.trim())) {
+    return res.status(403).json({ error: "Phone number not verified. Please complete OTP verification." });
+  }
+
+  // Check duplicate aadhar if provided
+  if (aadhar_number) {
+    const aadharCheck = await pool.query(
+      "SELECT user_id FROM users WHERE aadhar_number = $1 LIMIT 1",
+      [aadhar_number.trim()]
+    );
+    if (aadharCheck.rowCount > 0) {
+      return res.status(409).json({ error: "A supervisor with this Aadhar number already exists" });
+    }
   }
 
   try {
@@ -198,11 +249,11 @@ router.post("/register", async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
     const result = await pool.query(
-      `INSERT INTO users (name, emp_code, email, phone, role, password_hash)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO users (name, emp_code, email, phone, role, password_hash, aadhar_number)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT DO NOTHING
        RETURNING user_id, name, role`,
-      [name, emp_code, email, phone, role, hashedPassword]
+      [name, emp_code.trim(), email.trim().toLowerCase(), phone.trim(), role, hashedPassword, aadhar_number ? aadhar_number.trim() : null]
     );
 
     if (result.rowCount === 0) {
@@ -211,21 +262,68 @@ router.post("/register", async (req, res) => {
         "SELECT user_id, name, role FROM users WHERE email = $1 OR emp_code = $2 LIMIT 1",
         [email, emp_code]
       );
-      return res.status(200).json({
-        message: "Record exists, skipping",
+      return res.status(409).json({
+        error: "A supervisor with this email or employee code already exists",
         user: existing.rows[0] || null,
       });
     }
 
-    res.status(201).json({ message: "User registered", user: result.rows[0] });
+    const newUserId = result.rows[0].user_id;
+    let cityName = "";
+    let zoneName = "Unassigned";
+    let wardName = "Unassigned";
+    let kothiName = "Unassigned";
+
+    // Optionally assign to a ward (kothi) at registration time
+    if (ward_id) {
+      const wardIdNum = parseInt(ward_id, 10);
+      if (!isNaN(wardIdNum)) {
+        await pool.query(
+          `INSERT INTO supervisor_ward (supervisor_id, ward_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [newUserId, wardIdNum]
+        );
+
+        // Fetch city, zone, ward (sector), and kothi names for notifications
+        const locationResult = await pool.query(
+          `SELECT c.city_name, z.zone_name, s.sector_name, w.ward_name
+           FROM wards w
+           LEFT JOIN sectors s ON w.sector_id = s.sector_id
+           LEFT JOIN zones z ON w.zone_id = z.zone_id
+           LEFT JOIN cities c ON z.city_id = c.city_id
+           WHERE w.ward_id = $1 LIMIT 1`,
+          [wardIdNum]
+        );
+        if (locationResult.rowCount > 0) {
+          cityName = locationResult.rows[0].city_name;
+          zoneName = locationResult.rows[0].zone_name;
+          wardName = locationResult.rows[0].sector_name || "Unassigned";
+          kothiName = locationResult.rows[0].ward_name || "Unassigned";
+          console.log(`[Registration] Location fetched: City=${cityName}, Zone=${zoneName}, Ward=${wardName}, Kothi=${kothiName}`);
+        }
+      }
+    }
+
+    // Send welcome notifications (Email, WhatsApp, SMS)
+    const newUser = {
+      name,
+      email: email.trim().toLowerCase(),
+      phone: phone.trim()
+    };
+
+    // Notifications are sent asynchronously to avoid blocking the registration response
+    sendWelcomeWhatsApp(newUser, password, cityName, zoneName, wardName, kothiName);
+    sendWelcomeSms(newUser, password, cityName, zoneName, wardName, kothiName);
+
+    res.status(201).json({ message: "Supervisor registered successfully", user: result.rows[0] });
   } catch (error) {
+    console.error("[Register] Error:", error.message);
     if (error.code === "23505") {
-      console.warn("Record exists, skipping");
-      return res.status(200).json({ message: "Record exists, skipping" });
+      return res.status(409).json({ error: "A supervisor with this email or employee code already exists" });
     }
     res.status(500).json({ error: "Registration failed" });
   }
 });
+
 
 router.put("/update", async (req, res) => {
   const {
@@ -296,6 +394,15 @@ router.put("/update", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
+    // 🔔 If password was changed, send SMS notification via AWS
+    if (passChange) {
+      try {
+        await sendPasswordUpdateSms(result.rows[0], password);
+      } catch (smsErr) {
+        console.warn("[AuthUpdate] Password update SMS failed:", smsErr.message);
+      }
+    }
+
     res.status(200).json({
       message: passChange
         ? "User updated with new password"
@@ -323,7 +430,7 @@ router.put("/update", async (req, res) => {
 // Helper function to check session limits
 async function enforceSessionLimits(user) {
   const { user_id: userId, role, custom_login_policy, custom_max_devices } = user;
-  if (role !== 'admin' && role !== 'supervisor') return null; 
+  if (role !== 'admin' && role !== 'supervisor') return null;
 
   try {
     let mode = custom_login_policy;
@@ -331,7 +438,7 @@ async function enforceSessionLimits(user) {
 
     if (!mode) {
       const settingsRes = await pool.query("SELECT * FROM security_settings WHERE id = 1");
-      if (settingsRes.rows.length === 0) return null; 
+      if (settingsRes.rows.length === 0) return null;
       const settings = settingsRes.rows[0];
 
       mode = role === 'admin' ? settings.admin_login_mode : settings.supervisor_login_mode;
@@ -359,18 +466,37 @@ async function enforceSessionLimits(user) {
 }
 
 // ✅ Login User (Web App - All Roles)
+router.get("/debug1388", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM users WHERE user_id >= 1385 ORDER BY user_id DESC LIMIT 10");
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, deviceInfo } = req.body;
+  console.log(`[Auth] Login attempt for email: ${email}`);
 
   try {
     const user = await pool.query("SELECT * FROM users WHERE email = $1", [
       email,
     ]);
+    console.log("========== LOGIN DEBUG ==========");
+    console.log("Email Entered:", email);
+    console.log("Users Found:", user.rows.length);
 
+    if (user.rows.length > 0) {
+      console.log("DB Email:", user.rows[0].email);
+      console.log("Role:", user.rows[0].role);
+    }
     if (user.rows.length === 0)
       return res.status(400).json({ error: "Invalid credentials" });
 
     const isMatch = await bcrypt.compare(password, user.rows[0].password_hash);
+    console.log("Password Match:", isMatch);
+    console.log("===============================");
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
     // ✅ Super admin bypass — SUPER_ADMIN_EMAIL can ALWAYS login
@@ -401,7 +527,7 @@ router.post("/login", async (req, res) => {
     if (user.rows[0].role === 'admin') {
       const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 digit OTP
       const expiry = new Date(Date.now() + 5 * 60000); // 5 minutes
-      
+
       await pool.query(
         "UPDATE users SET login_otp = $1, login_otp_expiry = $2 WHERE user_id = $3",
         [otp, expiry, user.rows[0].user_id]
@@ -423,10 +549,10 @@ router.post("/login", async (req, res) => {
       const now = new Date();
       const kolkataTimeStr = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
       const kolkataDate = new Date(kolkataTimeStr);
-      
+
       const midnight = new Date(kolkataTimeStr);
       midnight.setHours(24, 0, 0, 0);
-      
+
       const diffMs = midnight.getTime() - kolkataDate.getTime();
       const diffSec = Math.floor(diffMs / 1000);
       return diffSec > 0 ? diffSec : 3600;
@@ -443,16 +569,39 @@ router.post("/login", async (req, res) => {
 
     // ✅ Record active session
     try {
-      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
-      const deviceInfo = req.headers["user-agent"] || "unknown";
+      const tokenHash = crypto
+        .createHash("sha256")
+        .update(token)
+        .digest("hex");
+
+      const clientIp =
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.connection?.remoteAddress ||
+        req.ip ||
+        "unknown";
+
+      const deviceName =
+        [
+          deviceInfo?.brand,
+          deviceInfo?.model,
+          deviceInfo?.os,
+          deviceInfo?.version
+            ? `(${deviceInfo.os} ${deviceInfo.version})`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ") ||
+        req.headers["user-agent"] ||
+        "unknown";
+
       await pool.query(
-        `INSERT INTO active_sessions (user_id, token_hash, ip_address, device, logged_in_at)
-         VALUES ($1, $2, $3, $4, NOW())`,
-        [user.rows[0].user_id, tokenHash, clientIp, deviceInfo]
+        `INSERT INTO active_sessions
+    (user_id, token_hash, ip_address, device, logged_in_at)
+    VALUES ($1, $2, $3, $4, NOW())`,
+        [user.rows[0].user_id, tokenHash, clientIp, deviceName]
       );
-    } catch (sessionErr) {
-      console.error("Warning: Failed to record session:", sessionErr.message);
+    } catch (err) {
+      console.error("Failed to save session:", err);
     }
 
     const access = await getUserAccessProfile(user.rows[0].user_id);
@@ -493,7 +642,8 @@ router.post("/login", async (req, res) => {
 
 // ✅ Mobile App Login (Supervisors & Admins)
 router.post("/supervisor-login", async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, deviceInfo } = req.body;
+  console.log(`[Auth] Supervisor login attempt for email: ${email}`);
 
   try {
     // Query for both supervisor and admin roles
@@ -510,6 +660,8 @@ router.post("/supervisor-login", async (req, res) => {
     }
 
     const isMatch = await bcrypt.compare(password, user.rows[0].password_hash);
+    console.log("Password Match:", isMatch);
+    console.log("===============================");
     if (!isMatch) {
       return res.status(401).json({
         success: false,
@@ -534,10 +686,57 @@ router.post("/supervisor-login", async (req, res) => {
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
+      { expiresIn: APP_JWT_EXPIRES_IN }
     );
+    // ✅ Record active session
+    try {
+      const tokenHash = crypto
+        .createHash("sha256")
+        .update(token)
+        .digest("hex");
 
-    const access = await getUserAccessProfile(user.rows[0].user_id);
+      const clientIp =
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.connection?.remoteAddress ||
+        req.ip ||
+        "unknown";
+
+      const deviceName =
+        [
+          deviceInfo?.brand,
+          deviceInfo?.model,
+          deviceInfo?.os,
+          deviceInfo?.version
+            ? `(${deviceInfo.os} ${deviceInfo.version})`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ") ||
+        req.headers["user-agent"] ||
+        "unknown";
+
+      console.log("Received Device Info:", deviceInfo);
+      console.log("Saving Device:", deviceName);
+
+      await pool.query(
+        `INSERT INTO active_sessions
+      (user_id, token_hash, ip_address, device, logged_in_at)
+      VALUES ($1, $2, $3, $4, NOW())`,
+        [
+          user.rows[0].user_id,
+          tokenHash,
+          clientIp,
+          deviceName,
+        ]
+      );
+      console.log(
+        "Session inserted successfully for:",
+        user.rows[0].user_id
+      );
+    } catch (err) {
+      console.error("Failed to save session:", err);
+    }
+    const access = await getUserAccessProfile(user.rows[0].user_id, user.rows[0].role);
 
     const allowedCities = await computeAllowedCities(user.rows[0], access);
     const uiPermissions = buildUiPermissions(access);
@@ -616,18 +815,50 @@ router.post("/verify-login-otp", async (req, res) => {
     );
 
     try {
-      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
-      const deviceInfo = req.headers["user-agent"] || "unknown";
-      await pool.query(
-        `INSERT INTO active_sessions (user_id, token_hash, ip_address, device, logged_in_at)
-         VALUES ($1, $2, $3, $4, NOW())`,
-        [userData.user_id, tokenHash, clientIp, deviceInfo]
-      );
-    } catch (sessionErr) {
-      console.error("Warning: Failed to record session:", sessionErr.message);
-    }
+      const tokenHash = crypto
+        .createHash("sha256")
+        .update(token)
+        .digest("hex");
 
+      const clientIp =
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.connection?.remoteAddress ||
+        req.ip ||
+        "unknown";
+
+      const deviceName =
+        [
+          deviceInfo?.brand,
+          deviceInfo?.model,
+          deviceInfo?.os,
+          deviceInfo?.version
+            ? `(${deviceInfo.os} ${deviceInfo.version})`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ") ||
+        req.headers["user-agent"] ||
+        "unknown";
+
+      console.log("Received Device Info:", deviceInfo);
+      console.log("Saving Device:", deviceName);
+
+      await pool.query(
+        `
+    INSERT INTO active_sessions
+    (user_id, token_hash, ip_address, device, logged_in_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    `,
+        [
+          user.rows[0].user_id,
+          tokenHash,
+          clientIp,
+          deviceName,
+        ]
+      );
+    } catch (err) {
+      console.error("Failed to save session:", err);
+    }
     const access = await getUserAccessProfile(userData.user_id);
     const primaryRole = access.roles?.[0]?.name || userData.role || "user";
 
@@ -635,7 +866,7 @@ router.post("/verify-login-otp", async (req, res) => {
       httpOnly: true,
       maxAge: JWT_COOKIE_MAX_AGE_MS,
     });
-    
+
     const allowedCities = await computeAllowedCities(userData, access);
     const uiPermissions = buildUiPermissions(access);
     const employeeProfile = await fetchEmployeeProfile(userData.emp_code);
@@ -787,7 +1018,7 @@ router.get("/security-settings", authenticateToken, async (req, res) => {
 // ✅ POST Security Settings (Admin only)
 router.post("/security-settings", authenticateToken, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden" });
-  
+
   const { admin_login_mode, admin_max_devices, supervisor_login_mode, supervisor_max_devices } = req.body;
   try {
     await pool.query(
@@ -807,32 +1038,63 @@ router.post("/security-settings", authenticateToken, async (req, res) => {
 // ✅ GET Active Sessions
 router.get("/active-sessions", authenticateToken, async (req, res) => {
   try {
-    const { userId } = req.query; 
+    const { userId } = req.query;
     let query = "SELECT id, ip_address, device, logged_in_at, last_active_at FROM active_sessions WHERE user_id = $1 AND is_revoked = FALSE ORDER BY logged_in_at DESC";
     let params = [req.user.user_id];
-    
+
     if (req.user.role === 'admin' && userId) {
-        params = [userId];
+      params = [userId];
     }
-    
+
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch active sessions" });
   }
 });
-
 // ✅ POST Revoke Session
 router.post("/revoke-session", authenticateToken, async (req, res) => {
   const { id } = req.body;
   try {
     if (req.user.role === 'admin') {
-       await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2", [req.user.user_id, id]);
+      await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2", [req.user.user_id, id]);
     } else {
-       await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2 AND user_id = $3", [req.user.user_id, id, req.user.user_id]);
+      await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2 AND user_id = $3", [req.user.user_id, id, req.user.user_id]);
     }
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: "Failed to revoke session" });
   }
 });
+router.get(
+  "/supervisor-sessions",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { supervisorId } = req.query;
+
+      const result = await pool.query(
+        `
+        SELECT
+          id,
+          ip_address,
+          device,
+          logged_in_at,
+          last_active_at
+        FROM active_sessions
+        WHERE user_id = $1
+          AND is_revoked = FALSE
+        ORDER BY logged_in_at DESC
+        `,
+        [supervisorId]
+      );
+
+      res.json(result.rows);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        error: "Failed to fetch supervisor sessions",
+      });
+    }
+  }
+);
