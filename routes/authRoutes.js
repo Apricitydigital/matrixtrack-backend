@@ -12,9 +12,22 @@ const {
 
 const router = express.Router();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "45d";
+const APP_JWT_EXPIRES_IN = process.env.APP_JWT_EXPIRES_IN || "45d";
 const JWT_COOKIE_MAX_AGE_MS =
   Number(process.env.JWT_COOKIE_MAX_AGE_MS) || 45 * 24 * 60 * 60 * 1000;
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
+
+const isMobileClient = (req) => {
+  const clientHeader = req.headers["x-client-platform"] || "";
+  const userAgent = (req.headers["user-agent"] || "").toLowerCase();
+  return (
+    clientHeader.toLowerCase() === "mobile" ||
+    userAgent.includes("matrixtrack") ||
+    userAgent.includes("okhttp") ||
+    userAgent.includes("expo")
+  );
+};
+
 
 const getUserAccessProfile = async (userId) => {
   const rolesQuery = `
@@ -433,12 +446,14 @@ router.post("/login", async (req, res) => {
     };
 
     const secondsUntilMidnight = getSecondsUntilMidnight();
+    const isMobile = isMobileClient(req);
+    const tokenExpiresIn = isMobile ? APP_JWT_EXPIRES_IN : secondsUntilMidnight;
 
     // ✅ Generate JWT Token
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: secondsUntilMidnight }
+      { expiresIn: tokenExpiresIn }
     );
 
     // ✅ Record active session
@@ -609,10 +624,13 @@ router.post("/verify-login-otp", async (req, res) => {
       return diffSec > 0 ? diffSec : 3600;
     };
 
+    const isMobile = isMobileClient(req);
+    const tokenExpiresIn = isMobile ? APP_JWT_EXPIRES_IN : getSecondsUntilMidnight();
+
     const token = jwt.sign(
       { user_id: userData.user_id, role: userData.role },
       process.env.JWT_SECRET,
-      { expiresIn: getSecondsUntilMidnight() }
+      { expiresIn: tokenExpiresIn }
     );
 
     try {
