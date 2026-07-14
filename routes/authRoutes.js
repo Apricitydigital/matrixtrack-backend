@@ -18,13 +18,21 @@ const JWT_COOKIE_MAX_AGE_MS =
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
 
 const isMobileClient = (req) => {
-  const clientHeader = req.headers["x-client-platform"] || "";
-  const userAgent = (req.headers["user-agent"] || "").toLowerCase();
+  const clientHeader = req.headers["x-client-platform"];
+  const rawUserAgent = req.headers["user-agent"];
+
+  const clientHeaderStr = Array.isArray(clientHeader) 
+    ? clientHeader[0] 
+    : (clientHeader || "");
+  const userAgentStr = Array.isArray(rawUserAgent) 
+    ? rawUserAgent[0] 
+    : (rawUserAgent || "");
+
   return (
-    clientHeader.toLowerCase() === "mobile" ||
-    userAgent.includes("matrixtrack") ||
-    userAgent.includes("okhttp") ||
-    userAgent.includes("expo")
+    clientHeaderStr.toLowerCase() === "mobile" ||
+    userAgentStr.toLowerCase().includes("matrixtrack") ||
+    userAgentStr.toLowerCase().includes("okhttp") ||
+    userAgentStr.toLowerCase().includes("expo")
   );
 };
 
