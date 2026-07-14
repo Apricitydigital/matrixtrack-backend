@@ -430,7 +430,7 @@ router.put("/update", async (req, res) => {
 // Helper function to check session limits
 async function enforceSessionLimits(user) {
   const { user_id: userId, role, custom_login_policy, custom_max_devices } = user;
-  if (role !== 'admin' && role !== 'supervisor') return null; 
+  if (role !== 'admin' && role !== 'supervisor') return null;
 
   try {
     let mode = custom_login_policy;
@@ -438,7 +438,7 @@ async function enforceSessionLimits(user) {
 
     if (!mode) {
       const settingsRes = await pool.query("SELECT * FROM security_settings WHERE id = 1");
-      if (settingsRes.rows.length === 0) return null; 
+      if (settingsRes.rows.length === 0) return null;
       const settings = settingsRes.rows[0];
 
       mode = role === 'admin' ? settings.admin_login_mode : settings.supervisor_login_mode;
@@ -476,7 +476,7 @@ router.get("/debug1388", async (req, res) => {
 });
 
 router.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, deviceInfo } = req.body;
   console.log(`[Auth] Login attempt for email: ${email}`);
 
   try {
@@ -527,7 +527,7 @@ router.post("/login", async (req, res) => {
     if (user.rows[0].role === 'admin') {
       const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 digit OTP
       const expiry = new Date(Date.now() + 5 * 60000); // 5 minutes
-      
+
       await pool.query(
         "UPDATE users SET login_otp = $1, login_otp_expiry = $2 WHERE user_id = $3",
         [otp, expiry, user.rows[0].user_id]
@@ -549,10 +549,10 @@ router.post("/login", async (req, res) => {
       const now = new Date();
       const kolkataTimeStr = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
       const kolkataDate = new Date(kolkataTimeStr);
-      
+
       const midnight = new Date(kolkataTimeStr);
       midnight.setHours(24, 0, 0, 0);
-      
+
       const diffMs = midnight.getTime() - kolkataDate.getTime();
       const diffSec = Math.floor(diffMs / 1000);
       return diffSec > 0 ? diffSec : 3600;
@@ -569,16 +569,39 @@ router.post("/login", async (req, res) => {
 
     // ✅ Record active session
     try {
-      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
-      const deviceInfo = req.headers["user-agent"] || "unknown";
+      const tokenHash = crypto
+        .createHash("sha256")
+        .update(token)
+        .digest("hex");
+
+      const clientIp =
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.connection?.remoteAddress ||
+        req.ip ||
+        "unknown";
+
+      const deviceName =
+        [
+          deviceInfo?.brand,
+          deviceInfo?.model,
+          deviceInfo?.os,
+          deviceInfo?.version
+            ? `(${deviceInfo.os} ${deviceInfo.version})`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ") ||
+        req.headers["user-agent"] ||
+        "unknown";
+
       await pool.query(
-        `INSERT INTO active_sessions (user_id, token_hash, ip_address, device, logged_in_at)
-         VALUES ($1, $2, $3, $4, NOW())`,
-        [user.rows[0].user_id, tokenHash, clientIp, deviceInfo]
+        `INSERT INTO active_sessions
+    (user_id, token_hash, ip_address, device, logged_in_at)
+    VALUES ($1, $2, $3, $4, NOW())`,
+        [user.rows[0].user_id, tokenHash, clientIp, deviceName]
       );
-    } catch (sessionErr) {
-      console.error("Warning: Failed to record session:", sessionErr.message);
+    } catch (err) {
+      console.error("Failed to save session:", err);
     }
 
     const access = await getUserAccessProfile(user.rows[0].user_id);
@@ -619,7 +642,7 @@ router.post("/login", async (req, res) => {
 
 // ✅ Mobile App Login (Supervisors & Admins)
 router.post("/supervisor-login", async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, deviceInfo } = req.body;
   console.log(`[Auth] Supervisor login attempt for email: ${email}`);
 
   try {
@@ -665,7 +688,54 @@ router.post("/supervisor-login", async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: APP_JWT_EXPIRES_IN }
     );
+    // ✅ Record active session
+    try {
+      const tokenHash = crypto
+        .createHash("sha256")
+        .update(token)
+        .digest("hex");
 
+      const clientIp =
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.connection?.remoteAddress ||
+        req.ip ||
+        "unknown";
+
+      const deviceName =
+        [
+          deviceInfo?.brand,
+          deviceInfo?.model,
+          deviceInfo?.os,
+          deviceInfo?.version
+            ? `(${deviceInfo.os} ${deviceInfo.version})`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ") ||
+        req.headers["user-agent"] ||
+        "unknown";
+
+      console.log("Received Device Info:", deviceInfo);
+      console.log("Saving Device:", deviceName);
+
+      await pool.query(
+        `INSERT INTO active_sessions
+      (user_id, token_hash, ip_address, device, logged_in_at)
+      VALUES ($1, $2, $3, $4, NOW())`,
+        [
+          user.rows[0].user_id,
+          tokenHash,
+          clientIp,
+          deviceName,
+        ]
+      );
+      console.log(
+        "Session inserted successfully for:",
+        user.rows[0].user_id
+      );
+    } catch (err) {
+      console.error("Failed to save session:", err);
+    }
     const access = await getUserAccessProfile(user.rows[0].user_id, user.rows[0].role);
 
     const allowedCities = await computeAllowedCities(user.rows[0], access);
@@ -745,18 +815,50 @@ router.post("/verify-login-otp", async (req, res) => {
     );
 
     try {
-      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
-      const deviceInfo = req.headers["user-agent"] || "unknown";
-      await pool.query(
-        `INSERT INTO active_sessions (user_id, token_hash, ip_address, device, logged_in_at)
-         VALUES ($1, $2, $3, $4, NOW())`,
-        [userData.user_id, tokenHash, clientIp, deviceInfo]
-      );
-    } catch (sessionErr) {
-      console.error("Warning: Failed to record session:", sessionErr.message);
-    }
+      const tokenHash = crypto
+        .createHash("sha256")
+        .update(token)
+        .digest("hex");
 
+      const clientIp =
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.connection?.remoteAddress ||
+        req.ip ||
+        "unknown";
+
+      const deviceName =
+        [
+          deviceInfo?.brand,
+          deviceInfo?.model,
+          deviceInfo?.os,
+          deviceInfo?.version
+            ? `(${deviceInfo.os} ${deviceInfo.version})`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ") ||
+        req.headers["user-agent"] ||
+        "unknown";
+
+      console.log("Received Device Info:", deviceInfo);
+      console.log("Saving Device:", deviceName);
+
+      await pool.query(
+        `
+    INSERT INTO active_sessions
+    (user_id, token_hash, ip_address, device, logged_in_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    `,
+        [
+          user.rows[0].user_id,
+          tokenHash,
+          clientIp,
+          deviceName,
+        ]
+      );
+    } catch (err) {
+      console.error("Failed to save session:", err);
+    }
     const access = await getUserAccessProfile(userData.user_id);
     const primaryRole = access.roles?.[0]?.name || userData.role || "user";
 
@@ -764,7 +866,7 @@ router.post("/verify-login-otp", async (req, res) => {
       httpOnly: true,
       maxAge: JWT_COOKIE_MAX_AGE_MS,
     });
-    
+
     const allowedCities = await computeAllowedCities(userData, access);
     const uiPermissions = buildUiPermissions(access);
     const employeeProfile = await fetchEmployeeProfile(userData.emp_code);
@@ -916,7 +1018,7 @@ router.get("/security-settings", authenticateToken, async (req, res) => {
 // ✅ POST Security Settings (Admin only)
 router.post("/security-settings", authenticateToken, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden" });
-  
+
   const { admin_login_mode, admin_max_devices, supervisor_login_mode, supervisor_max_devices } = req.body;
   try {
     await pool.query(
@@ -936,32 +1038,63 @@ router.post("/security-settings", authenticateToken, async (req, res) => {
 // ✅ GET Active Sessions
 router.get("/active-sessions", authenticateToken, async (req, res) => {
   try {
-    const { userId } = req.query; 
+    const { userId } = req.query;
     let query = "SELECT id, ip_address, device, logged_in_at, last_active_at FROM active_sessions WHERE user_id = $1 AND is_revoked = FALSE ORDER BY logged_in_at DESC";
     let params = [req.user.user_id];
-    
+
     if (req.user.role === 'admin' && userId) {
-        params = [userId];
+      params = [userId];
     }
-    
+
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch active sessions" });
   }
 });
-
 // ✅ POST Revoke Session
 router.post("/revoke-session", authenticateToken, async (req, res) => {
   const { id } = req.body;
   try {
     if (req.user.role === 'admin') {
-       await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2", [req.user.user_id, id]);
+      await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2", [req.user.user_id, id]);
     } else {
-       await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2 AND user_id = $3", [req.user.user_id, id, req.user.user_id]);
+      await pool.query("UPDATE active_sessions SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() WHERE id = $2 AND user_id = $3", [req.user.user_id, id, req.user.user_id]);
     }
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: "Failed to revoke session" });
   }
 });
+router.get(
+  "/supervisor-sessions",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { supervisorId } = req.query;
+
+      const result = await pool.query(
+        `
+        SELECT
+          id,
+          ip_address,
+          device,
+          logged_in_at,
+          last_active_at
+        FROM active_sessions
+        WHERE user_id = $1
+          AND is_revoked = FALSE
+        ORDER BY logged_in_at DESC
+        `,
+        [supervisorId]
+      );
+
+      res.json(result.rows);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        error: "Failed to fetch supervisor sessions",
+      });
+    }
+  }
+);
