@@ -165,7 +165,7 @@ router.get("/me", authenticateToken, async (req, res) => {
   }
 });
 
-// ✅ Check duplicate fields
+// ✅ Check duplicate fields (Only among active, non-deleted users)
 router.post("/check-duplicate", async (req, res) => {
   const { email, emp_code, phone, aadhar_number } = req.body;
   try {
@@ -175,19 +175,31 @@ router.post("/check-duplicate", async (req, res) => {
     let aadharExists = false;
 
     if (email) {
-      const emailCheck = await pool.query("SELECT user_id FROM users WHERE email = $1 LIMIT 1", [email.trim().toLowerCase()]);
+      const emailCheck = await pool.query(
+        "SELECT user_id FROM users WHERE email = $1 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [email.trim().toLowerCase()]
+      );
       emailExists = emailCheck.rowCount > 0;
     }
     if (emp_code) {
-      const empCodeCheck = await pool.query("SELECT user_id FROM users WHERE emp_code = $1 LIMIT 1", [emp_code.trim()]);
+      const empCodeCheck = await pool.query(
+        "SELECT user_id FROM users WHERE emp_code = $1 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [emp_code.trim()]
+      );
       empCodeExists = empCodeCheck.rowCount > 0;
     }
     if (phone) {
-      const phoneCheck = await pool.query("SELECT user_id FROM users WHERE phone = $1 LIMIT 1", [phone.trim()]);
+      const phoneCheck = await pool.query(
+        "SELECT user_id FROM users WHERE phone = $1 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [phone.trim()]
+      );
       phoneExists = phoneCheck.rowCount > 0;
     }
     if (aadhar_number) {
-      const aadharCheck = await pool.query("SELECT user_id FROM users WHERE aadhar_number = $1 LIMIT 1", [aadhar_number.trim()]);
+      const aadharCheck = await pool.query(
+        "SELECT user_id FROM users WHERE aadhar_number = $1 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [aadhar_number.trim()]
+      );
       aadharExists = aadharCheck.rowCount > 0;
     }
 
@@ -200,38 +212,91 @@ router.post("/check-duplicate", async (req, res) => {
 
 // ✅ Create new User
 router.post("/register", async (req, res) => {
-  const { name, emp_code, email, phone, role, password } = req.body;
+  const { name, emp_code, email, phone, role, password, ward_id, aadhar_number } = req.body;
 
   if (!name || !emp_code || !email || !phone || !role || !password) {
     return res.status(400).json({ error: "All fields are required" });
   }
 
   try {
-    // Hash password
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
-    const result = await pool.query(
-      `INSERT INTO users (name, emp_code, email, phone, role, password_hash)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT DO NOTHING
-       RETURNING user_id, name, role`,
-      [name, emp_code, email, phone, role, hashedPassword]
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanEmpCode = emp_code.trim();
+    const cleanPhone = phone.trim();
+
+    // 1. Check if a soft-deleted user with this email, emp_code, or phone exists
+    const deletedUserCheck = await pool.query(
+      `SELECT user_id FROM users 
+       WHERE (email = $1 OR emp_code = $2 OR phone = $3) 
+         AND COALESCE(is_deleted, false) = true 
+       LIMIT 1`,
+      [cleanEmail, cleanEmpCode, cleanPhone]
     );
 
-    if (result.rowCount === 0) {
-      console.warn("Record exists, skipping");
-      const existing = await pool.query(
-        "SELECT user_id, name, role FROM users WHERE email = $1 OR emp_code = $2 LIMIT 1",
-        [email, emp_code]
+    let registeredUser = null;
+
+    if (deletedUserCheck.rows.length > 0) {
+      const userIdToRestore = deletedUserCheck.rows[0].user_id;
+      const restoreResult = await pool.query(
+        `UPDATE users
+         SET name = $1,
+             emp_code = $2,
+             email = $3,
+             phone = $4,
+             role = $5,
+             password_hash = $6,
+             is_deleted = false,
+             deleted_at = NULL,
+             aadhar_number = COALESCE($7, aadhar_number)
+         WHERE user_id = $8
+         RETURNING user_id, name, role`,
+        [name.trim(), cleanEmpCode, cleanEmail, cleanPhone, role, hashedPassword, aadhar_number ? aadhar_number.trim() : null, userIdToRestore]
       );
-      return res.status(200).json({
-        message: "Record exists, skipping",
-        user: existing.rows[0] || null,
-      });
+      registeredUser = restoreResult.rows[0];
+    } else {
+      const result = await pool.query(
+        `INSERT INTO users (name, emp_code, email, phone, role, password_hash, aadhar_number)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT DO NOTHING
+         RETURNING user_id, name, role`,
+        [name.trim(), cleanEmpCode, cleanEmail, cleanPhone, role, hashedPassword, aadhar_number ? aadhar_number.trim() : null]
+      );
+
+      if (result.rowCount === 0) {
+        console.warn("Record exists, skipping");
+        const existing = await pool.query(
+          "SELECT user_id, name, role FROM users WHERE (email = $1 OR emp_code = $2) AND COALESCE(is_deleted, false) = false LIMIT 1",
+          [cleanEmail, cleanEmpCode]
+        );
+        registeredUser = existing.rows[0] || null;
+      } else {
+        registeredUser = result.rows[0];
+      }
     }
 
-    res.status(201).json({ message: "User registered", user: result.rows[0] });
+    if (registeredUser && ward_id && role === "supervisor") {
+      try {
+        await pool.query(
+          `INSERT INTO supervisor_ward (supervisor_id, ward_id)
+           VALUES ($1, $2)
+           ON CONFLICT DO NOTHING`,
+          [registeredUser.user_id, ward_id]
+        );
+        await pool.query(
+          `INSERT INTO supervisor_kothi (supervisor_id, ward_id)
+           VALUES ($1, $2)
+           ON CONFLICT DO NOTHING`,
+          [registeredUser.user_id, ward_id]
+        );
+      } catch (wardErr) {
+        console.warn("Error assigning ward during register:", wardErr.message);
+      }
+    }
+
+    res.status(201).json({ message: "User registered", user: registeredUser });
   } catch (error) {
+    console.error("Registration error:", error);
     if (error.code === "23505") {
       console.warn("Record exists, skipping");
       return res.status(200).json({ message: "Record exists, skipping" });
