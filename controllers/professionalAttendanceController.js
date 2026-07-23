@@ -53,7 +53,7 @@ const livenessEnvNumber = (name, fallback) => {
 };
 
 const LIVENESS_CONFIG = {
-  enabled: String(process.env.PROFESSIONAL_LIVENESS_ENABLED ?? 'true').toLowerCase() !== 'false',
+  enabled: String(process.env.PROFESSIONAL_LIVENESS_ENABLED ?? 'false').toLowerCase() !== 'false',
   allowMultipleFaces: String(process.env.PROFESSIONAL_LIVENESS_ALLOW_MULTI_FACE ?? 'true').toLowerCase() !== 'false',
   requireActiveChallenge: String(process.env.PROFESSIONAL_LIVENESS_REQUIRE_ACTIVE_CHALLENGE ?? 'true').toLowerCase() !== 'false',
   smartMode: String(process.env.PROFESSIONAL_LIVENESS_SMART_MODE ?? 'true').toLowerCase() !== 'false',
@@ -509,7 +509,7 @@ const punchIn = async (req, res) => {
       });
     }
 
-    const challengeFrame = getChallengeFrameForFaceMatch(liveness_frames);
+    const challengeFrame = LIVENESS_CONFIG.enabled ? getChallengeFrameForFaceMatch(liveness_frames) : null;
     if (challengeFrame) {
       let challengeMatchResult;
       try {
@@ -663,7 +663,7 @@ const punchOut = async (req, res) => {
       });
     }
 
-    const challengeFrame = getChallengeFrameForFaceMatch(liveness_frames);
+    const challengeFrame = LIVENESS_CONFIG.enabled ? getChallengeFrameForFaceMatch(liveness_frames) : null;
     if (challengeFrame) {
       let challengeMatchResult;
       try {
