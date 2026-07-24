@@ -16,11 +16,32 @@ const { sendWelcomeWhatsApp, sendWelcomeSms, sendPasswordUpdateSms } = require("
 
 const router = express.Router();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "45d";
+const APP_JWT_EXPIRES_IN = process.env.APP_JWT_EXPIRES_IN || "45d";
 const JWT_COOKIE_MAX_AGE_MS =
   Number(process.env.JWT_COOKIE_MAX_AGE_MS) || 45 * 24 * 60 * 60 * 1000;
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
 
-const getUserAccessProfile = async (userId, userRole = "") => {
+const isMobileClient = (req) => {
+  const clientHeader = req.headers["x-client-platform"];
+  const rawUserAgent = req.headers["user-agent"];
+
+  const clientHeaderStr = Array.isArray(clientHeader) 
+    ? clientHeader[0] 
+    : (clientHeader || "");
+  const userAgentStr = Array.isArray(rawUserAgent) 
+    ? rawUserAgent[0] 
+    : (rawUserAgent || "");
+
+  return (
+    clientHeaderStr.toLowerCase() === "mobile" ||
+    userAgentStr.toLowerCase().includes("matrixtrack") ||
+    userAgentStr.toLowerCase().includes("okhttp") ||
+    userAgentStr.toLowerCase().includes("expo")
+  );
+};
+
+
+const getUserAccessProfile = async (userId) => {
   const rolesQuery = `
     SELECT r.id, r.name
     FROM user_roles ur
@@ -167,7 +188,7 @@ router.get("/me", authenticateToken, async (req, res) => {
   }
 });
 
-// ✅ Check duplicate fields
+// ✅ Check duplicate fields (Only among active, non-deleted users)
 router.post("/check-duplicate", async (req, res) => {
   const { email, emp_code, phone, aadhar_number } = req.body;
   try {
@@ -177,19 +198,31 @@ router.post("/check-duplicate", async (req, res) => {
     let aadharExists = false;
 
     if (email) {
-      const emailCheck = await pool.query("SELECT user_id FROM users WHERE email = $1 LIMIT 1", [email.trim().toLowerCase()]);
+      const emailCheck = await pool.query(
+        "SELECT user_id FROM users WHERE email = $1 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [email.trim().toLowerCase()]
+      );
       emailExists = emailCheck.rowCount > 0;
     }
     if (emp_code) {
-      const empCodeCheck = await pool.query("SELECT user_id FROM users WHERE emp_code = $1 LIMIT 1", [emp_code.trim()]);
+      const empCodeCheck = await pool.query(
+        "SELECT user_id FROM users WHERE emp_code = $1 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [emp_code.trim()]
+      );
       empCodeExists = empCodeCheck.rowCount > 0;
     }
     if (phone) {
-      const phoneCheck = await pool.query("SELECT user_id FROM users WHERE phone = $1 LIMIT 1", [phone.trim()]);
+      const phoneCheck = await pool.query(
+        "SELECT user_id FROM users WHERE phone = $1 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [phone.trim()]
+      );
       phoneExists = phoneCheck.rowCount > 0;
     }
     if (aadhar_number) {
-      const aadharCheck = await pool.query("SELECT user_id FROM users WHERE aadhar_number = $1 LIMIT 1", [aadhar_number.trim()]);
+      const aadharCheck = await pool.query(
+        "SELECT user_id FROM users WHERE aadhar_number = $1 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [aadhar_number.trim()]
+      );
       aadharExists = aadharCheck.rowCount > 0;
     }
 
@@ -202,7 +235,7 @@ router.post("/check-duplicate", async (req, res) => {
 
 // ✅ Create new User
 router.post("/register", async (req, res) => {
-  const { name, emp_code, email, phone, role, password, aadhar_number, ward_id } = req.body;
+  const { name, emp_code, email, phone, role, password, ward_id, aadhar_number } = req.body;
 
   if (!name || !emp_code || !email || !phone || !role || !password) {
     return res.status(400).json({ error: "All fields are required" });
@@ -245,78 +278,84 @@ router.post("/register", async (req, res) => {
   }
 
   try {
-    // Hash password
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
-    const result = await pool.query(
-      `INSERT INTO users (name, emp_code, email, phone, role, password_hash, aadhar_number)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT DO NOTHING
-       RETURNING user_id, name, role`,
-      [name, emp_code.trim(), email.trim().toLowerCase(), phone.trim(), role, hashedPassword, aadhar_number ? aadhar_number.trim() : null]
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanEmpCode = emp_code.trim();
+    const cleanPhone = phone.trim();
+
+    // 1. Check if a soft-deleted user with this email, emp_code, or phone exists
+    const deletedUserCheck = await pool.query(
+      `SELECT user_id FROM users 
+       WHERE (email = $1 OR emp_code = $2 OR phone = $3) 
+         AND COALESCE(is_deleted, false) = true 
+       LIMIT 1`,
+      [cleanEmail, cleanEmpCode, cleanPhone]
     );
 
-    if (result.rowCount === 0) {
-      console.warn("Record exists, skipping");
-      const existing = await pool.query(
-        "SELECT user_id, name, role FROM users WHERE email = $1 OR emp_code = $2 LIMIT 1",
-        [email, emp_code]
+    let registeredUser = null;
+
+    if (deletedUserCheck.rows.length > 0) {
+      const userIdToRestore = deletedUserCheck.rows[0].user_id;
+      const restoreResult = await pool.query(
+        `UPDATE users
+         SET name = $1,
+             emp_code = $2,
+             email = $3,
+             phone = $4,
+             role = $5,
+             password_hash = $6,
+             is_deleted = false,
+             deleted_at = NULL,
+             aadhar_number = COALESCE($7, aadhar_number)
+         WHERE user_id = $8
+         RETURNING user_id, name, role`,
+        [name.trim(), cleanEmpCode, cleanEmail, cleanPhone, role, hashedPassword, aadhar_number ? aadhar_number.trim() : null, userIdToRestore]
       );
-      return res.status(409).json({
-        error: "A supervisor with this email or employee code already exists",
-        user: existing.rows[0] || null,
-      });
-    }
+      registeredUser = restoreResult.rows[0];
+    } else {
+      const result = await pool.query(
+        `INSERT INTO users (name, emp_code, email, phone, role, password_hash, aadhar_number)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT DO NOTHING
+         RETURNING user_id, name, role`,
+        [name.trim(), cleanEmpCode, cleanEmail, cleanPhone, role, hashedPassword, aadhar_number ? aadhar_number.trim() : null]
+      );
 
-    const newUserId = result.rows[0].user_id;
-    let cityName = "";
-    let zoneName = "Unassigned";
-    let wardName = "Unassigned";
-    let kothiName = "Unassigned";
-
-    // Optionally assign to a ward (kothi) at registration time
-    if (ward_id) {
-      const wardIdNum = parseInt(ward_id, 10);
-      if (!isNaN(wardIdNum)) {
-        await pool.query(
-          `INSERT INTO supervisor_ward (supervisor_id, ward_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [newUserId, wardIdNum]
+      if (result.rowCount === 0) {
+        console.warn("Record exists, skipping");
+        const existing = await pool.query(
+          "SELECT user_id, name, role FROM users WHERE (email = $1 OR emp_code = $2) AND COALESCE(is_deleted, false) = false LIMIT 1",
+          [cleanEmail, cleanEmpCode]
         );
-
-        // Fetch city, zone, ward (sector), and kothi names for notifications
-        const locationResult = await pool.query(
-          `SELECT c.city_name, z.zone_name, s.sector_name, w.ward_name
-           FROM wards w
-           LEFT JOIN sectors s ON w.sector_id = s.sector_id
-           LEFT JOIN zones z ON w.zone_id = z.zone_id
-           LEFT JOIN cities c ON z.city_id = c.city_id
-           WHERE w.ward_id = $1 LIMIT 1`,
-          [wardIdNum]
-        );
-        if (locationResult.rowCount > 0) {
-          cityName = locationResult.rows[0].city_name;
-          zoneName = locationResult.rows[0].zone_name;
-          wardName = locationResult.rows[0].sector_name || "Unassigned";
-          kothiName = locationResult.rows[0].ward_name || "Unassigned";
-          console.log(`[Registration] Location fetched: City=${cityName}, Zone=${zoneName}, Ward=${wardName}, Kothi=${kothiName}`);
-        }
+        registeredUser = existing.rows[0] || null;
+      } else {
+        registeredUser = result.rows[0];
       }
     }
 
-    // Send welcome notifications (Email, WhatsApp, SMS)
-    const newUser = {
-      name,
-      email: email.trim().toLowerCase(),
-      phone: phone.trim()
-    };
+    if (registeredUser && ward_id && role === "supervisor") {
+      try {
+        await pool.query(
+          `INSERT INTO supervisor_ward (supervisor_id, ward_id)
+           VALUES ($1, $2)
+           ON CONFLICT DO NOTHING`,
+          [registeredUser.user_id, ward_id]
+        );
+        await pool.query(
+          `INSERT INTO supervisor_kothi (supervisor_id, ward_id)
+           VALUES ($1, $2)
+           ON CONFLICT DO NOTHING`,
+          [registeredUser.user_id, ward_id]
+        );
+      } catch (wardErr) {
+        console.warn("Error assigning ward during register:", wardErr.message);
+      }
+    }
 
-    // Notifications are sent asynchronously to avoid blocking the registration response
-    sendWelcomeWhatsApp(newUser, password, cityName, zoneName, wardName, kothiName);
-    sendWelcomeSms(newUser, password, cityName, zoneName, wardName, kothiName);
-
-    res.status(201).json({ message: "Supervisor registered successfully", user: result.rows[0] });
+    res.status(201).json({ message: "User registered", user: registeredUser });
   } catch (error) {
-    console.error("[Register] Error:", error.message);
+    console.error("Registration error:", error);
     if (error.code === "23505") {
       return res.status(409).json({ error: "A supervisor with this email or employee code already exists" });
     }
@@ -559,12 +598,14 @@ router.post("/login", async (req, res) => {
     };
 
     const secondsUntilMidnight = getSecondsUntilMidnight();
+    const isMobile = isMobileClient(req);
+    const tokenExpiresIn = isMobile ? APP_JWT_EXPIRES_IN : secondsUntilMidnight;
 
     // ✅ Generate JWT Token
     const token = jwt.sign(
       { user_id: user.rows[0].user_id, role: user.rows[0].role },
       process.env.JWT_SECRET,
-      { expiresIn: secondsUntilMidnight }
+      { expiresIn: tokenExpiresIn }
     );
 
     // ✅ Record active session
@@ -808,10 +849,13 @@ router.post("/verify-login-otp", async (req, res) => {
       return diffSec > 0 ? diffSec : 3600;
     };
 
+    const isMobile = isMobileClient(req);
+    const tokenExpiresIn = isMobile ? APP_JWT_EXPIRES_IN : getSecondsUntilMidnight();
+
     const token = jwt.sign(
       { user_id: userData.user_id, role: userData.role },
       process.env.JWT_SECRET,
-      { expiresIn: getSecondsUntilMidnight() }
+      { expiresIn: tokenExpiresIn }
     );
 
     try {
