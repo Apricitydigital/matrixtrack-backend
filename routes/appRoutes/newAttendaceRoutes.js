@@ -183,7 +183,7 @@ const sendTrackedAttendanceRekognition = async (command, trackingPayload) => {
 
 const safeDebugLog = (line) => {
   try {
-    fs.appendFile("debug-face.log", `${line}\n`, () => {});
+    fs.appendFile("debug-face.log", `${line}\n`, () => { });
   } catch (_) {
     // Never block attendance flow for debug logging failures.
   }
@@ -1298,11 +1298,7 @@ async function processPunch(
           image: "punch_in_image",
           by: "punched_in_by",
         };
-  const punchTimeFallbackExpression =
-    punchType === PUNCH_TYPES.MID_IN
-      ? "NOW()"
-      : "NOW() AT TIME ZONE 'Asia/Kolkata'";
-
+  const punchTimeFallbackExpression = "NOW() AT TIME ZONE 'Asia/Kolkata'";
   const updateQuery = `
     UPDATE attendance SET 
       ${punchFieldMap.time} = COALESCE(${punchFieldMap.time}, ${punchTimeFallbackExpression}),
@@ -1408,14 +1404,14 @@ async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) 
           if (foundKey) {
             const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: foundKey }));
             const buffer = await streamToBuffer(obj.Body);
-            
+
             // Backfill the database so next time is a direct hit
             console.log(`[Self-Healing] Correcting stale face_embedding for emp_id ${employeeId}: ${foundKey}`);
-            pool.query("UPDATE employee SET face_embedding = $1 WHERE emp_id = $2", [foundKey, employeeId]).catch(()=>{});
-            
+            pool.query("UPDATE employee SET face_embedding = $1 WHERE emp_id = $2", [foundKey, employeeId]).catch(() => { });
+
             return buffer;
           }
-        } catch (_err) {}
+        } catch (_err) { }
       }
     }
   }
@@ -1553,7 +1549,7 @@ async function fallbackMatchByCompare(
           pool.query(
             "UPDATE employee SET face_id = $1, face_confidence = $2 WHERE emp_id = $3",
             [newFaceId, newConfidence, best.employee.emp_id]
-          ).catch(() => {});
+          ).catch(() => { });
         }
       }).catch((err) => {
         console.error(`[Auto-Heal-Index] Failed to index emp_id ${best.employee.emp_id}:`, err.message);
@@ -2598,7 +2594,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     } else if (!matchedFace) {
       // Face not found in collection � instruct supervisor to re-enroll
       console.log(`[face-attendance] Individual: no collection match for emp_id=${requestedEmpId}. Fallback disabled.`);
-      
+
       // Attempt a cheap direct 1:1 comparison with the selected employee
       let directMatchPassed = false;
       try {
@@ -2833,7 +2829,7 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
     }
 
     const requestedEmpId = normalizeId(rawEmpId ?? rawEmployeeId);
-    
+
     // Validate image buffer immediately before SearchFacesByImage call
     const maxImageSizeBytes = 5 * 1024 * 1024;
     const allowedMimetypes = ["image/jpeg", "image/jpg", "image/png"];
