@@ -151,7 +151,7 @@ router.get("/daily", async (req, res) => {
         a.out_address,
         a.mid_in_address,
         TO_CHAR(a.punch_in_time, 'HH12:MI AM') AS punch_in_display,
-        TO_CHAR(a.mid_shift_punch_in_time, 'HH12:MI AM') AS mid_shift_punch_in_display,
+        TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH12:MI AM') AS mid_shift_punch_in_display,
         TO_CHAR(a.punch_out_time, 'HH12:MI AM') AS punch_out_display,
         CASE
           WHEN a.punch_in_time IS NOT NULL AND a.punch_out_time IS NOT NULL THEN 'Marked'
