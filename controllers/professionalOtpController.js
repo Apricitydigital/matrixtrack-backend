@@ -5,12 +5,102 @@ const logger = require('../utils/logger');
 const PROFESSIONAL_JWT_EXPIRES_IN = process.env.PROFESSIONAL_JWT_EXPIRES_IN || '45d';
 const APP_JWT_EXPIRES_IN = process.env.APP_JWT_EXPIRES_IN || '45d';
 
-// In-memory OTP store: { mobile → { otp, expiresAt, attempts, userType, professionalId, supervisorId } }
-// For production, use Redis or DB table for persistence across restarts.
+// In-memory OTP store fallback
 const otpStore = new Map();
 
 const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_OTP_ATTEMPTS = 5;
+
+let isOtpTableEnsured = false;
+const ensureOtpTable = async () => {
+  if (isOtpTableEnsured) return;
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS professional_otp_sessions (
+        mobile VARCHAR(20) PRIMARY KEY,
+        otp VARCHAR(10) NOT NULL,
+        expires_at BIGINT NOT NULL,
+        attempts INT DEFAULT 0,
+        user_type VARCHAR(20) NOT NULL,
+        professional_id INT,
+        supervisor_id INT,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    const staleCutoff = Date.now() - 24 * 60 * 60 * 1000;
+    await pool.query(`DELETE FROM professional_otp_sessions WHERE expires_at < $1`, [staleCutoff]);
+    isOtpTableEnsured = true;
+  } catch (err) {
+    logger.error('[OTPAuth] Failed to ensure professional_otp_sessions table', err);
+  }
+};
+
+const saveOtpSession = async (mobile, { otp, expiresAt, userType, professionalId, supervisorId }) => {
+  // Save in memory
+  otpStore.set(mobile, { otp, expiresAt, attempts: 0, userType, professionalId, supervisorId });
+  // Save in DB for multi-instance PM2 & server restart persistence
+  try {
+    await ensureOtpTable();
+    await pool.query(
+      `INSERT INTO professional_otp_sessions (mobile, otp, expires_at, attempts, user_type, professional_id, supervisor_id, updated_at)
+       VALUES ($1, $2, $3, 0, $4, $5, $6, NOW())
+       ON CONFLICT (mobile) DO UPDATE SET
+         otp = EXCLUDED.otp,
+         expires_at = EXCLUDED.expires_at,
+         attempts = 0,
+         user_type = EXCLUDED.user_type,
+         professional_id = EXCLUDED.professional_id,
+         supervisor_id = EXCLUDED.supervisor_id,
+         updated_at = NOW()`,
+      [mobile, otp, expiresAt, userType, professionalId || null, supervisorId || null]
+    );
+  } catch (dbErr) {
+    logger.error('[OTPAuth] DB save OTP session error', dbErr);
+  }
+};
+
+const getOtpSession = async (mobile) => {
+  // Check memory first
+  const mem = otpStore.get(mobile);
+  if (mem) return mem;
+
+  // Check DB table
+  try {
+    await ensureOtpTable();
+    const { rows } = await pool.query(
+      `SELECT otp, expires_at, attempts, user_type, professional_id, supervisor_id
+       FROM professional_otp_sessions
+       WHERE mobile = $1`,
+      [mobile]
+    );
+    if (rows.length > 0) {
+      const r = rows[0];
+      const session = {
+        otp: r.otp,
+        expiresAt: Number(r.expires_at),
+        attempts: Number(r.attempts),
+        userType: r.user_type,
+        professionalId: r.professional_id,
+        supervisorId: r.supervisor_id,
+      };
+      otpStore.set(mobile, session);
+      return session;
+    }
+  } catch (dbErr) {
+    logger.error('[OTPAuth] DB fetch OTP session error', dbErr);
+  }
+  return null;
+};
+
+const clearOtpSession = async (mobile) => {
+  otpStore.delete(mobile);
+  try {
+    await ensureOtpTable();
+    await pool.query(`DELETE FROM professional_otp_sessions WHERE mobile = $1`, [mobile]);
+  } catch (dbErr) {
+    logger.error('[OTPAuth] DB clear OTP session error', dbErr);
+  }
+};
 
 const generateOtp = () => String(Math.floor(1000 + Math.random() * 9000));
 
@@ -89,7 +179,7 @@ const sendOtp = async (req, res) => {
       const supervisor = supResult.rows[0];
       const otp = generateOtp();
       const expiresAt = Date.now() + OTP_TTL_MS;
-      otpStore.set(normalizedMobile, { otp, expiresAt, attempts: 0, userType: 'supervisor', supervisorId: supervisor.user_id });
+      await saveOtpSession(normalizedMobile, { otp, expiresAt, userType: 'supervisor', supervisorId: supervisor.user_id });
 
       await _sendOtpSms(normalizedMobile, otp, 'supervisor_otp_login');
 
@@ -110,7 +200,7 @@ const sendOtp = async (req, res) => {
 
       const otp = generateOtp();
       const expiresAt = Date.now() + OTP_TTL_MS;
-      otpStore.set(normalizedMobile, { otp, expiresAt, attempts: 0, userType: 'professional', professionalId: professional.id });
+      await saveOtpSession(normalizedMobile, { otp, expiresAt, userType: 'professional', professionalId: professional.id });
 
       await _sendOtpSms(normalizedMobile, otp, 'professional_otp_login');
 
@@ -126,7 +216,7 @@ const sendOtp = async (req, res) => {
     const supervisor = supResult.rows[0];
     const otp = generateOtp();
     const expiresAt = Date.now() + OTP_TTL_MS;
-    otpStore.set(normalizedMobile, { otp, expiresAt, attempts: 0, userType: 'supervisor', supervisorId: supervisor.user_id });
+    await saveOtpSession(normalizedMobile, { otp, expiresAt, userType: 'supervisor', supervisorId: supervisor.user_id });
 
     await _sendOtpSms(normalizedMobile, otp, 'supervisor_otp_login');
 
@@ -168,10 +258,23 @@ const _sendOtpSms = async (normalizedMobile, otp, context) => {
   }
 };
 
-const MASTER_OTPS = new Set(['1234', '1111', '0000', '9999', '123456']);
-if (process.env.MASTER_OTP) MASTER_OTPS.add(String(process.env.MASTER_OTP).trim());
+const isDevOrTestMode = () => {
+  const env = (process.env.NODE_ENV || 'development').trim().toLowerCase();
+  const allowMaster = String(process.env.ALLOW_MASTER_OTP || '').trim().toLowerCase() === 'true';
+  return env !== 'production' || allowMaster || Boolean(process.env.MASTER_OTP);
+};
 
-const checkIsMasterOtp = (inputOtp) => MASTER_OTPS.has(String(inputOtp || '').trim());
+const checkIsMasterOtp = (inputOtp) => {
+  const trimmed = String(inputOtp || '').trim();
+  if (process.env.MASTER_OTP && trimmed === String(process.env.MASTER_OTP).trim()) {
+    return true;
+  }
+  if (!isDevOrTestMode()) {
+    return false;
+  }
+  const masterOtps = new Set(['1234', '1111', '0000', '9999', '123456']);
+  return masterOtps.has(trimmed);
+};
 
 /**
  * POST /professional/auth/verify-otp
@@ -188,11 +291,11 @@ const verifyOtp = async (req, res) => {
   }
 
   const normalizedMobile = normalizeIndianMobile(mobile);
-  let record = otpStore.get(normalizedMobile);
+  let record = await getOtpSession(normalizedMobile);
   const isMaster = checkIsMasterOtp(otp);
 
-  // If memory store record missing (e.g. server restarted or direct entry), but Master OTP entered:
-  if (!record && isMaster) {
+  // If no OTP session found in DB/memory (e.g. direct entry or expired), check DB tables dynamically:
+  if (!record) {
     try {
       const supResult = await pool.query(
         `SELECT user_id, name, role
@@ -228,14 +331,14 @@ const verifyOtp = async (req, res) => {
   }
 
   if (!isMaster && Date.now() > record.expiresAt) {
-    otpStore.delete(normalizedMobile);
+    await clearOtpSession(normalizedMobile);
     return res.status(400).json({ success: false, message: 'OTP has expired. Please request a new one.' });
   }
 
-  record.attempts += 1;
+  record.attempts = (record.attempts || 0) + 1;
 
   if (!isMaster && record.attempts > MAX_OTP_ATTEMPTS) {
-    otpStore.delete(normalizedMobile);
+    await clearOtpSession(normalizedMobile);
     return res.status(429).json({ success: false, message: 'Too many failed attempts. Please request a new OTP.' });
   }
 
@@ -247,7 +350,7 @@ const verifyOtp = async (req, res) => {
   }
 
   // OTP valid — clear it
-  otpStore.delete(normalizedMobile);
+  await clearOtpSession(normalizedMobile);
 
   try {
     // ── PROFESSIONAL login ────────────────────────────────────────────────────
