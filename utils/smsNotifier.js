@@ -29,10 +29,11 @@ const contextTemplateEnvMap = {
 
 const resolveTemplateIdForContext = (context) => {
   const contextKey = contextTemplateEnvMap[String(context || '').trim()];
-  if (contextKey && process.env[contextKey]) {
-    return process.env[contextKey];
+  const rawId = (contextKey && process.env[contextKey]) || process.env.AWS_SNS_TEMPLATE_ID || null;
+  if (!rawId || rawId.includes('YOUR_') || rawId.includes('PLACEHOLDER')) {
+    return null;
   }
-  return process.env.AWS_SNS_TEMPLATE_ID || null;
+  return rawId;
 };
 
 const isOtpContext = (context = '') =>
@@ -50,10 +51,11 @@ const buildSnsMessageAttributes = (context = 'general') => {
       StringValue: process.env.AWS_SNS_SENDER_ID
     };
   }
-  if (process.env.AWS_SNS_ENTITY_ID) {
+  const entityId = process.env.AWS_SNS_ENTITY_ID;
+  if (entityId && !entityId.includes('YOUR_') && !entityId.includes('PLACEHOLDER')) {
     attributes['AWS.MM.SMS.EntityId'] = {
       DataType: 'String',
-      StringValue: process.env.AWS_SNS_ENTITY_ID
+      StringValue: entityId
     };
   }
   const templateId = resolveTemplateIdForContext(context);
