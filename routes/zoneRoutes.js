@@ -161,6 +161,16 @@ router.delete(
     const { id } = req.params;
     const client = await pool.connect();
 
+    const safeExec = async (sql, params = []) => {
+      try {
+        await client.query("SAVEPOINT sp");
+        await client.query(sql, params);
+        await client.query("RELEASE SAVEPOINT sp");
+      } catch (err) {
+        await client.query("ROLLBACK TO SAVEPOINT sp");
+      }
+    };
+
     try {
       await client.query("BEGIN");
 
@@ -198,57 +208,96 @@ router.delete(
       const supRes = await client.query(supervisorQuery, supervisorParams);
       const supervisorIds = supRes.rows.map((r) => r.user_id);
 
-      // 3. Delete standard employees linked to wards in this zone
+      // 3. Clean professional dependencies (logs, requests, notifications, tokens)
+      await safeExec(
+        "DELETE FROM professional_leave_request_logs WHERE actor_professional_id IN (SELECT id FROM professional_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
+        [id, wardIds.length > 0 ? wardIds : [-1]]
+      );
+      await safeExec(
+        "DELETE FROM professional_leave_requests WHERE professional_id IN (SELECT id FROM professional_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
+        [id, wardIds.length > 0 ? wardIds : [-1]]
+      );
+      await safeExec(
+        "DELETE FROM professional_notifications WHERE professional_id IN (SELECT id FROM professional_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
+        [id, wardIds.length > 0 ? wardIds : [-1]]
+      );
+      await safeExec(
+        "DELETE FROM professional_push_tokens WHERE professional_id IN (SELECT id FROM professional_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
+        [id, wardIds.length > 0 ? wardIds : [-1]]
+      );
+
+      // Clean professional attendance and employees
       if (wardIds.length > 0) {
-        await client.query("DELETE FROM employee WHERE ward_id = ANY($1::int[])", [wardIds]);
+        await safeExec("DELETE FROM professional_attendance WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
+        await safeExec("DELETE FROM professional_employees WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
+      } else {
+        await safeExec("DELETE FROM professional_attendance WHERE zone_id = $1", [id]);
+        await safeExec("DELETE FROM professional_employees WHERE zone_id = $1", [id]);
       }
 
-      // Delete professional employees linked to this zone
-      await client.query("DELETE FROM professional_employees WHERE zone_id = $1", [id]);
+      // Clean self-punch requests & standard attendance
+      if (wardIds.length > 0) {
+        await safeExec("DELETE FROM attendance WHERE ward_id = ANY($1::int[])", [wardIds]);
+        await safeExec("DELETE FROM self_punch_requests WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
+        await safeExec("DELETE FROM employee WHERE ward_id = ANY($1::int[])", [wardIds]);
+      } else {
+        await safeExec("DELETE FROM self_punch_requests WHERE zone_id = $1", [id]);
+      }
+
+      if (wardIds.length > 0 || sectorIds.length > 0) {
+        await safeExec(
+          "DELETE FROM professional_holidays WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])) OR (kothi_id IS NOT NULL AND kothi_id = ANY($3::int[]))",
+          [id, sectorIds.length > 0 ? sectorIds : [-1], wardIds.length > 0 ? wardIds : [-1]]
+        );
+      } else {
+        await safeExec("DELETE FROM professional_holidays WHERE zone_id = $1", [id]);
+      }
 
       // 4. Soft-delete supervisors linked to this zone
       if (supervisorIds.length > 0) {
-        await client.query(
+        await safeExec(
           "UPDATE users SET is_deleted = true, deleted_at = NOW() WHERE user_id = ANY($1::int[])",
           [supervisorIds]
         );
       }
 
       // 5. Delete supervisor access & assignments
-      await client.query("DELETE FROM user_zone_access WHERE zone_id = $1", [id]);
+      await safeExec("DELETE FROM user_zone_access WHERE zone_id = $1", [id]);
       if (wardIds.length > 0) {
-        await client.query("DELETE FROM supervisor_ward WHERE ward_id = ANY($1::int[])", [wardIds]);
-        await client.query("DELETE FROM supervisor_kothi WHERE ward_id = ANY($1::int[])", [wardIds]);
-        await client.query("DELETE FROM user_kothi_access WHERE ward_id = ANY($1::int[])", [wardIds]);
+        await safeExec("DELETE FROM supervisor_ward WHERE ward_id = ANY($1::int[])", [wardIds]);
+        await safeExec("DELETE FROM supervisor_kothi WHERE ward_id = ANY($1::int[])", [wardIds]);
+        await safeExec("DELETE FROM user_kothi_access WHERE ward_id = ANY($1::int[])", [wardIds]);
       }
 
-      // 6. Clean up foreign keys in other related tables
+      // 6. Clean up geofencing and transfer histories
       if (wardIds.length > 0) {
-        await client.query("DELETE FROM geofencing WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
-        await client.query("DELETE FROM geofencing_requests WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
+        await safeExec("DELETE FROM geofencing WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
+        await safeExec("DELETE FROM geofencing_requests WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
       } else {
-        await client.query("DELETE FROM geofencing WHERE zone_id = $1", [id]);
-        await client.query("DELETE FROM geofencing_requests WHERE zone_id = $1", [id]);
+        await safeExec("DELETE FROM geofencing WHERE zone_id = $1", [id]);
+        await safeExec("DELETE FROM geofencing_requests WHERE zone_id = $1", [id]);
       }
 
-      await client.query("DELETE FROM employee_transfer_history WHERE from_zone_id = $1 OR to_zone_id = $1", [id]);
-      await client.query("DELETE FROM supervisor_transfer_history WHERE from_zone_id = $1 OR to_zone_id = $1", [id]);
+      await safeExec(
+        "DELETE FROM employee_transfer_history WHERE from_zone_id = $1 OR to_zone_id = $1 OR (from_kothi_id IS NOT NULL AND from_kothi_id = ANY($2::int[])) OR (to_kothi_id IS NOT NULL AND to_kothi_id = ANY($2::int[]))",
+        [id, wardIds.length > 0 ? wardIds : [-1]]
+      );
 
-      // Clean up optional tables safely
-      await client.query("DELETE FROM self_punch_requests WHERE zone_id = $1", [id]).catch(() => {});
-      await client.query("DELETE FROM professional_attendance WHERE zone_id = $1", [id]).catch(() => {});
-      await client.query("DELETE FROM professional_holidays WHERE zone_id = $1", [id]).catch(() => {});
+      await safeExec(
+        "DELETE FROM supervisor_transfer_history WHERE from_zone_id = $1 OR to_zone_id = $1 OR (from_kothi_id IS NOT NULL AND from_kothi_id = ANY($2::int[])) OR (to_kothi_id IS NOT NULL AND to_kothi_id = ANY($2::int[]))",
+        [id, wardIds.length > 0 ? wardIds : [-1]]
+      );
 
       // 7. Delete Wards & Sectors
       if (wardIds.length > 0) {
-        await client.query("DELETE FROM wards WHERE ward_id = ANY($1::int[])", [wardIds]);
+        await safeExec("DELETE FROM wards WHERE ward_id = ANY($1::int[])", [wardIds]);
       }
       if (sectorIds.length > 0) {
-        await client.query("DELETE FROM sectors WHERE sector_id = ANY($1::int[])", [sectorIds]);
+        await safeExec("DELETE FROM sectors WHERE sector_id = ANY($1::int[])", [sectorIds]);
       }
 
       // 8. Delete Zone
-      await client.query("DELETE FROM zones WHERE zone_id = $1", [id]);
+      await safeExec("DELETE FROM zones WHERE zone_id = $1", [id]);
 
       await client.query("COMMIT");
       res.json({
