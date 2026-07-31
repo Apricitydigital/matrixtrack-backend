@@ -52,6 +52,52 @@ router.get("/leave/balance", getMyLeaveBalance);
 router.get("/notifications", getMyNotifications);
 router.post("/notifications/:id/read", markNotificationRead);
 router.post("/push-token/register", registerPushToken);
-router.post("/push-token/unregister", unregisterPushToken);
+router.get('/reminder-settings', async (req, res) => {
+  try {
+    const { professional_id } = req.professional;
+    const result = await pool.query(
+      `SELECT COALESCE(reminder_enabled, true) AS reminder_enabled, COALESCE(reminder_time, '10:00') AS reminder_time FROM professional_employees WHERE id = $1`,
+      [professional_id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Professional employee not found' });
+    }
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/reminder-settings', async (req, res) => {
+  try {
+    const { professional_id } = req.professional;
+    const { reminder_enabled, reminder_time } = req.body;
+    
+    await pool.query(
+      `UPDATE professional_employees 
+       SET reminder_enabled = COALESCE($1, reminder_enabled),
+           reminder_time = COALESCE($2, reminder_time)
+       WHERE id = $3`,
+      [typeof reminder_enabled === 'boolean' ? reminder_enabled : null, reminder_time || null, professional_id]
+    );
+
+    res.json({ success: true, message: 'Notification reminder settings updated successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+const { runProfessionalPunchInReminder } = require('../utils/professionalPunchInReminder');
+
+router.post('/notifications/trigger-reminders', async (req, res) => {
+  try {
+    const { target_time } = req.body || {};
+    const result = await runProfessionalPunchInReminder(target_time || null);
+    res.json({ success: true, message: 'Punch-in reminders dispatched', result });
+  } catch (error) {
+    console.error('Failed to trigger reminders:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 module.exports = router;

@@ -456,6 +456,33 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
   );
 }
 
+// =============================================
+// ⏰ PROFESSIONAL PUNCH-IN REMINDER CRON
+// Runs every 30 minutes (between 8:00 AM and 12:00 PM IST)
+// Automatically matches each employee's chosen reminder_time (Default '10:00')
+// =============================================
+const { runProfessionalPunchInReminder } = require("./utils/professionalPunchInReminder");
+if (isPrimaryCronInstance) {
+  cron.schedule(
+    "0,30 8-12 * * *",
+    async () => {
+      const nowIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+      const hh = String(nowIST.getHours()).padStart(2, "0");
+      const mm = String(nowIST.getMinutes() >= 30 ? 30 : 0).padStart(2, "0");
+      const currentTimeSlot = `${hh}:${mm}`;
+
+      console.log(`[ProfessionalReminderCron] Checking punch-in reminders for time slot: ${currentTimeSlot} IST`);
+      try {
+        await runProfessionalPunchInReminder(currentTimeSlot);
+      } catch (err) {
+        console.error("[ProfessionalReminderCron] Error:", err.message);
+      }
+    },
+    { timezone: "Asia/Kolkata" }
+  );
+  console.log("[ProfessionalReminderCron] ✅ Registered — dynamic time slot schedule (8:00 AM - 12:00 PM IST).");
+}
+
 // =======================
 // ⏰ AUTO PUNCH-OUT CRON
 // Runs at the top of every hour.

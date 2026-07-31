@@ -11,6 +11,22 @@ const ensureProfessionalLeaveSchema = async () => {
         await client.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
 
         await client.query(`
+          ALTER TABLE professional_employees
+            ADD COLUMN IF NOT EXISTS reminder_time VARCHAR(8) DEFAULT '10:00',
+            ADD COLUMN IF NOT EXISTS reminder_enabled BOOLEAN DEFAULT TRUE;
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_emp_active_reminder
+          ON professional_employees (is_active, reminder_enabled, reminder_time)
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_att_prof_date
+          ON professional_attendance (professional_id, date)
+        `);
+
+        await client.query(`
           CREATE TABLE IF NOT EXISTS professional_leave_requests (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             professional_id UUID NOT NULL REFERENCES professional_employees(id) ON DELETE CASCADE,

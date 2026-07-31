@@ -158,21 +158,111 @@ router.delete(
   authenticate,
   authorize("master", "manage"),
   async (req, res) => {
-  const { id } = req.params;
+    const { id } = req.params;
+    const client = await pool.connect();
 
-  try {
-    const result = await pool.query(
-      `DELETE FROM zones WHERE zone_id = $1 RETURNING *`,
-      [id]
-    );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: "Zone not found" });
+    try {
+      await client.query("BEGIN");
+
+      // Check if zone exists
+      const zoneCheck = await client.query("SELECT zone_id FROM zones WHERE zone_id = $1", [id]);
+      if (zoneCheck.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Zone not found" });
+      }
+
+      // 1. Get linked ward IDs & sector IDs
+      const wardRows = await client.query("SELECT ward_id FROM wards WHERE zone_id = $1", [id]);
+      const wardIds = wardRows.rows.map((r) => r.ward_id);
+
+      const sectorRows = await client.query("SELECT sector_id FROM sectors WHERE zone_id = $1", [id]);
+      const sectorIds = sectorRows.rows.map((r) => r.sector_id);
+
+      // 2. Identify supervisors linked to this zone (via user_zone_access or via wards)
+      let supervisorQuery = `
+        SELECT DISTINCT u.user_id 
+        FROM users u
+        WHERE u.role = 'supervisor' AND (
+          EXISTS (SELECT 1 FROM user_zone_access uza WHERE uza.user_id = u.user_id AND uza.zone_id = $1)
+      `;
+      if (wardIds.length > 0) {
+        supervisorQuery += `
+          OR EXISTS (SELECT 1 FROM supervisor_ward sw WHERE sw.supervisor_id = u.user_id AND sw.ward_id = ANY($2::int[]))
+          OR EXISTS (SELECT 1 FROM supervisor_kothi sk WHERE sk.supervisor_id = u.user_id AND sk.ward_id = ANY($2::int[]))
+          OR EXISTS (SELECT 1 FROM user_kothi_access uka WHERE uka.user_id = u.user_id AND uka.ward_id = ANY($2::int[]))
+        `;
+      }
+      supervisorQuery += `)`;
+      
+      const supervisorParams = wardIds.length > 0 ? [id, wardIds] : [id];
+      const supRes = await client.query(supervisorQuery, supervisorParams);
+      const supervisorIds = supRes.rows.map((r) => r.user_id);
+
+      // 3. Delete standard employees linked to wards in this zone
+      if (wardIds.length > 0) {
+        await client.query("DELETE FROM employee WHERE ward_id = ANY($1::int[])", [wardIds]);
+      }
+
+      // Delete professional employees linked to this zone
+      await client.query("DELETE FROM professional_employees WHERE zone_id = $1", [id]);
+
+      // 4. Soft-delete supervisors linked to this zone
+      if (supervisorIds.length > 0) {
+        await client.query(
+          "UPDATE users SET is_deleted = true, deleted_at = NOW() WHERE user_id = ANY($1::int[])",
+          [supervisorIds]
+        );
+      }
+
+      // 5. Delete supervisor access & assignments
+      await client.query("DELETE FROM user_zone_access WHERE zone_id = $1", [id]);
+      if (wardIds.length > 0) {
+        await client.query("DELETE FROM supervisor_ward WHERE ward_id = ANY($1::int[])", [wardIds]);
+        await client.query("DELETE FROM supervisor_kothi WHERE ward_id = ANY($1::int[])", [wardIds]);
+        await client.query("DELETE FROM user_kothi_access WHERE ward_id = ANY($1::int[])", [wardIds]);
+      }
+
+      // 6. Clean up foreign keys in other related tables
+      if (wardIds.length > 0) {
+        await client.query("DELETE FROM geofencing WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
+        await client.query("DELETE FROM geofencing_requests WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
+      } else {
+        await client.query("DELETE FROM geofencing WHERE zone_id = $1", [id]);
+        await client.query("DELETE FROM geofencing_requests WHERE zone_id = $1", [id]);
+      }
+
+      await client.query("DELETE FROM employee_transfer_history WHERE from_zone_id = $1 OR to_zone_id = $1", [id]);
+      await client.query("DELETE FROM supervisor_transfer_history WHERE from_zone_id = $1 OR to_zone_id = $1", [id]);
+
+      // Clean up optional tables safely
+      await client.query("DELETE FROM self_punch_requests WHERE zone_id = $1", [id]).catch(() => {});
+      await client.query("DELETE FROM professional_attendance WHERE zone_id = $1", [id]).catch(() => {});
+      await client.query("DELETE FROM professional_holidays WHERE zone_id = $1", [id]).catch(() => {});
+
+      // 7. Delete Wards & Sectors
+      if (wardIds.length > 0) {
+        await client.query("DELETE FROM wards WHERE ward_id = ANY($1::int[])", [wardIds]);
+      }
+      if (sectorIds.length > 0) {
+        await client.query("DELETE FROM sectors WHERE sector_id = ANY($1::int[])", [sectorIds]);
+      }
+
+      // 8. Delete Zone
+      await client.query("DELETE FROM zones WHERE zone_id = $1", [id]);
+
+      await client.query("COMMIT");
+      res.json({
+        message: "Zone and all associated employees, supervisors, wards, and data deleted successfully",
+        deletedEmployeesCount: wardIds.length,
+        deletedSupervisorsCount: supervisorIds.length,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      console.error("Error deleting zone:", error);
+      res.status(500).json({ error: "Failed to delete zone: " + error.message });
+    } finally {
+      client.release();
     }
-    res.json({ message: "Zone deleted successfully" });
-  } catch (error) {
-    console.error("Error deleting zone:", error);
-    res.status(500).json({ error: "Database error" });
-  }
   }
 );
 
