@@ -15,7 +15,7 @@ let isOtpTableEnsured = false;
 const ensureOtpTable = async () => {
   if (isOtpTableEnsured) return;
   try {
-    // Create table with TEXT supervisor_id (users.user_id is UUID, not INT)
+    // Create table with TEXT for both id columns (both professional_employees.id and users.user_id are UUIDs)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS professional_otp_sessions (
         mobile VARCHAR(20) PRIMARY KEY,
@@ -23,22 +23,23 @@ const ensureOtpTable = async () => {
         expires_at BIGINT NOT NULL,
         attempts INT DEFAULT 0,
         user_type VARCHAR(20) NOT NULL,
-        professional_id INT,
+        professional_id TEXT,
         supervisor_id TEXT,
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
 
-    // Migration: fix existing tables where supervisor_id was incorrectly created as INT
+    // Migration: fix existing tables where these columns were incorrectly created as INT
     try {
       await pool.query(`
         ALTER TABLE professional_otp_sessions
+        ALTER COLUMN professional_id TYPE TEXT USING professional_id::TEXT,
         ALTER COLUMN supervisor_id TYPE TEXT USING supervisor_id::TEXT
       `);
     } catch (alterErr) {
-      // Ignore if already TEXT or column doesn't need changing
+      // Ignore if already TEXT — this is expected on re-runs
       if (!alterErr.message.includes('already') && !alterErr.message.includes('does not exist')) {
-        logger.warn('[OTPAuth] Could not alter supervisor_id column (may already be TEXT):', alterErr.message);
+        logger.warn('[OTPAuth] Could not alter id columns (may already be TEXT):', alterErr.message);
       }
     }
 
