@@ -15,6 +15,7 @@ let isOtpTableEnsured = false;
 const ensureOtpTable = async () => {
   if (isOtpTableEnsured) return;
   try {
+    // Create table with TEXT supervisor_id (users.user_id is UUID, not INT)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS professional_otp_sessions (
         mobile VARCHAR(20) PRIMARY KEY,
@@ -23,10 +24,24 @@ const ensureOtpTable = async () => {
         attempts INT DEFAULT 0,
         user_type VARCHAR(20) NOT NULL,
         professional_id INT,
-        supervisor_id INT,
+        supervisor_id TEXT,
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+
+    // Migration: fix existing tables where supervisor_id was incorrectly created as INT
+    try {
+      await pool.query(`
+        ALTER TABLE professional_otp_sessions
+        ALTER COLUMN supervisor_id TYPE TEXT USING supervisor_id::TEXT
+      `);
+    } catch (alterErr) {
+      // Ignore if already TEXT or column doesn't need changing
+      if (!alterErr.message.includes('already') && !alterErr.message.includes('does not exist')) {
+        logger.warn('[OTPAuth] Could not alter supervisor_id column (may already be TEXT):', alterErr.message);
+      }
+    }
+
     const staleCutoff = Date.now() - 24 * 60 * 60 * 1000;
     await pool.query(`DELETE FROM professional_otp_sessions WHERE expires_at < $1`, [staleCutoff]);
     isOtpTableEnsured = true;
