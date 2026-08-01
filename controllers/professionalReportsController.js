@@ -354,21 +354,79 @@ const getAttendanceSummary = async (req, res) => {
       ${cte}
       SELECT COUNT(DISTINCT pa.professional_id) AS total
       FROM professional_attendance pa
-      WHERE 1=1 ${filters}
+      WHERE pa.punch_in IS NOT NULL ${filters}
     `;
 
-    const [peCountResult, aggResult, presentProfessionalsResult] = await Promise.all([
+    const punchedOutProfessionalsQuery = `
+      ${cte}
+      SELECT COUNT(DISTINCT pa.professional_id) AS total
+      FROM professional_attendance pa
+      WHERE pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL ${filters}
+    `;
+
+    const punchedOutSystemProfessionalsQuery = `
+      ${cte}
+      SELECT COUNT(DISTINCT pa.professional_id) AS total
+      FROM professional_attendance pa
+      WHERE pa.punch_in IS NOT NULL
+        AND pa.punch_out IS NOT NULL
+        AND (
+          pa.auto_punched_out = true
+          OR LOWER(COALESCE(pa.out_address, '')) LIKE '%auto punch%'
+        ) ${filters}
+    `;
+
+    let leaveQuery = null;
+    let leaveParams = [];
+    if (date) {
+      leaveParams = [...peParams, date];
+      const leaveDateIdx = leaveParams.length;
+      leaveQuery = `
+        ${peCte}
+        SELECT COUNT(DISTINCT plr.professional_id) AS total
+        FROM professional_leave_requests plr
+        JOIN professional_employees pe ON plr.professional_id = pe.id
+        WHERE plr.requested_date = $${leaveDateIdx}
+          AND plr.status = 'approved'
+          AND pe.is_active = true
+          ${peFilters}
+          AND NOT EXISTS (
+            SELECT 1 FROM professional_attendance pa
+            WHERE pa.professional_id = plr.professional_id
+              AND pa.date = $${leaveDateIdx}
+              AND pa.punch_in IS NOT NULL
+          )
+      `;
+    }
+
+    const [
+      peCountResult,
+      aggResult,
+      presentProfessionalsResult,
+      punchedOutProfessionalsResult,
+      punchedOutSystemProfessionalsResult,
+      leaveResult
+    ] = await Promise.all([
       runQueryWithTimeout(peCountQuery, peParams),
       runQueryWithTimeout(aggQuery, params),
-      runQueryWithTimeout(presentProfessionalsQuery, params)
+      runQueryWithTimeout(presentProfessionalsQuery, params),
+      runQueryWithTimeout(punchedOutProfessionalsQuery, params),
+      runQueryWithTimeout(punchedOutSystemProfessionalsQuery, params),
+      leaveQuery ? runQueryWithTimeout(leaveQuery, leaveParams) : Promise.resolve({ rows: [{ total: 0 }] })
     ]);
 
     const totalProfessionals = parseInt(peCountResult.rows[0].total, 10);
-    
+
     let totalPresentDays = 0;
     aggResult.rows.forEach(r => totalPresentDays += parseInt(r.total_present_days, 10));
 
     const uniquePresentProfessionals = parseInt(presentProfessionalsResult.rows?.[0]?.total || 0, 10);
+    const punchedOutProfessionals = parseInt(punchedOutProfessionalsResult.rows?.[0]?.total || 0, 10);
+    const punchedOutSystemProfessionals = parseInt(punchedOutSystemProfessionalsResult.rows?.[0]?.total || 0, 10);
+    const leaveProfessionals = parseInt(leaveResult.rows?.[0]?.total || 0, 10);
+    const inProgressProfessionals = Math.max(uniquePresentProfessionals - punchedOutProfessionals, 0);
+    const absentProfessionals = Math.max(totalProfessionals - uniquePresentProfessionals - leaveProfessionals, 0);
+
     const avgRate = totalProfessionals > 0
       ? ((uniquePresentProfessionals / totalProfessionals) * 100).toFixed(2)
       : 0;
@@ -377,7 +435,13 @@ const getAttendanceSummary = async (req, res) => {
       success: true,
       data: {
         total_professionals: totalProfessionals,
+        present_professionals: uniquePresentProfessionals,
         unique_present_professionals: uniquePresentProfessionals,
+        leave_professionals: leaveProfessionals,
+        absent_professionals: absentProfessionals,
+        punched_out_professionals: punchedOutProfessionals,
+        punched_out_system_professionals: punchedOutSystemProfessionals,
+        in_progress_professionals: inProgressProfessionals,
         total_present_days: totalPresentDays,
         avg_attendance_rate: parseFloat(avgRate),
         by_ward: aggResult.rows
