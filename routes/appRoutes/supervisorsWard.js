@@ -241,7 +241,13 @@ const mapRowsToWards = (rows) => {
         ? Number(row.face_confidence)
         : null;
 
+
     wardMap[wardId].employees.push({
+      zone_id: row.zone_id,
+      zone_name: row.zone_name,
+
+      kothi_id: row.ward_id,
+      kothi_name: row.ward_name,
       emp_id: row.emp_id,
       emp_name: row.employee_name,
       emp_code: row.emp_code,
@@ -252,6 +258,7 @@ const mapRowsToWards = (rows) => {
       attendance_status: row.attendance_status,
       leave_type: row.leave_type,
       leaveType: row.leave_type,
+      attendance_history: row.attendance_history || [],
       days_present: Number(row.days_present ?? 0),
       days_marked: Number(row.days_marked ?? 0),
       face_embedding: row.face_embedding,
@@ -598,60 +605,94 @@ const fetchSupervisorEmployees = async (
         ${zoneFilterSql}
         ${kothiFilterSql}
     ),
-    attendance_summary AS (
-      SELECT
+ attendance_summary AS (
+    SELECT
         a.emp_id,
-       MAX(
-    CASE
-        WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
-        THEN 1
-        ELSE 0
-    END
-) AS has_punch_in,
 
-MAX(
-    CASE
-        WHEN a.mid_shift_punch_in_time IS NOT NULL
-        THEN 1
-        ELSE 0
-    END
-) AS has_mid_shift_punch_in,
-
-MAX(
-    CASE
-        WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
-        THEN 1
-        ELSE 0
-    END
-) AS has_punch_start,
-
-MAX(
-    CASE
-        WHEN a.leave_type IS NOT NULL
-        THEN 1
-        ELSE 0
-    END
-) AS has_leave,
-        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
-        STRING_AGG(DISTINCT a.leave_type, ', ') AS leave_type,
-        COUNT(DISTINCT a.date::date) FILTER (WHERE (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)) AS days_present,
-        COUNT(DISTINCT a.date::date) FILTER (WHERE a.punch_out_time IS NOT NULL) AS days_marked,
-        MAX(a.punch_in_time) FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
-        MAX(a.mid_shift_punch_in_time) FILTER (WHERE a.mid_shift_punch_in_time IS NOT NULL) AS mid_shift_punch_in_time,
-        MAX(a.punch_out_time) FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,
         MAX(
-          CASE
-            WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
-            WHEN a.mid_shift_punch_in_time IS NOT NULL THEN a.mid_shift_punch_in_time
-            WHEN a.punch_in_time IS NOT NULL THEN a.punch_in_time
-            ELSE NULL
-          END
+            CASE
+                WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
+                THEN 1
+                ELSE 0
+            END
+        ) AS has_punch_in,
+
+        MAX(
+            CASE
+                WHEN a.mid_shift_punch_in_time IS NOT NULL
+                THEN 1
+                ELSE 0
+            END
+        ) AS has_mid_shift_punch_in,
+
+        MAX(
+            CASE
+                WHEN (a.punch_in_time IS NOT NULL OR a.mid_shift_punch_in_time IS NOT NULL)
+                THEN 1
+                ELSE 0
+            END
+        ) AS has_punch_start,
+
+        MAX(
+            CASE
+                WHEN a.leave_type IS NOT NULL
+                THEN 1
+                ELSE 0
+            END
+        ) AS has_leave,
+
+        MAX(CASE WHEN a.punch_out_time IS NOT NULL THEN 1 ELSE 0 END) AS has_punch_out,
+
+        STRING_AGG(DISTINCT a.leave_type, ', ') AS leave_type,
+
+        JSON_AGG(
+            JSON_BUILD_OBJECT(
+                'date', a.date::date,
+                'status',
+                CASE
+                    WHEN a.leave_type IS NOT NULL THEN a.leave_type
+                    WHEN a.punch_in_time IS NOT NULL
+                      OR a.mid_shift_punch_in_time IS NOT NULL
+                    THEN 'P'
+                    ELSE 'A'
+                END
+            )
+            ORDER BY a.date
+        ) AS attendance_history,
+
+        COUNT(DISTINCT a.date::date)
+            FILTER (
+                WHERE a.punch_in_time IS NOT NULL
+                   OR a.mid_shift_punch_in_time IS NOT NULL
+            ) AS days_present,
+
+        COUNT(DISTINCT a.date::date)
+            FILTER (
+                WHERE a.punch_out_time IS NOT NULL
+            ) AS days_marked,
+
+        MAX(a.punch_in_time)
+            FILTER (WHERE a.punch_in_time IS NOT NULL) AS punch_in_time,
+
+        MAX(a.mid_shift_punch_in_time)
+            FILTER (WHERE a.mid_shift_punch_in_time IS NOT NULL) AS mid_shift_punch_in_time,
+
+        MAX(a.punch_out_time)
+            FILTER (WHERE a.punch_out_time IS NOT NULL) AS punch_out_time,
+
+        MAX(
+            CASE
+                WHEN a.punch_out_time IS NOT NULL THEN a.punch_out_time
+                WHEN a.mid_shift_punch_in_time IS NOT NULL THEN a.mid_shift_punch_in_time
+                WHEN a.punch_in_time IS NOT NULL THEN a.punch_in_time
+            END
         ) AS last_punch_time
-      FROM attendance a
-      JOIN scoped_employees se ON se.emp_id = a.emp_id
-      WHERE a.date::date BETWEEN $2::date AND $3::date
-      GROUP BY a.emp_id
-    )
+
+    FROM attendance a
+    JOIN scoped_employees se ON se.emp_id = a.emp_id
+    WHERE a.date::date BETWEEN $2::date AND $3::date
+    GROUP BY a.emp_id
+)
     SELECT
       se.*,
       (
@@ -668,6 +709,7 @@ MAX(
         ELSE 'Not Marked'
       END AS attendance_status,
       summary.leave_type AS leave_type,
+      summary.attendance_history,
       COALESCE(summary.days_present, 0) AS days_present,
       COALESCE(summary.days_marked, 0) AS days_marked,
       summary.leave_type,
