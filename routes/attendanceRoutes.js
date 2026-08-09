@@ -103,7 +103,7 @@ const handleAttendanceReport = async (req, res) => {
         des.designation_name AS designation,
            a.leave_type,
         e.phone AS contact_no, 
-        TO_CHAR(a.punch_in_time, 'HH24:MI:SS') AS punch_in, 
+        TO_CHAR(a.punch_in_time , 'HH24:MI:SS') AS punch_in, 
         TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in,
         a.in_address,
         a.latitude_in,
