@@ -78,6 +78,7 @@ app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 const defaultOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
+  "http://localhost:5001",
   "http://localhost:3001",
   "http://192.168.29.213:3000",
   "http://192.168.29.213:61960",
@@ -130,10 +131,13 @@ if (AUTO_HEAL_CRON_ENABLED && isPrimaryCronInstance) {
 app.use(
   cors({
     origin: (origin, callback) => {
+      console.log("Incoming Origin:", origin);
+
       if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-        return;
+        return callback(null, true);
       }
+
+      console.log("Blocked Origin:", origin);
       callback(new Error("Not allowed by CORS"));
     },
     credentials: true,

@@ -150,10 +150,12 @@ router.get("/daily", async (req, res) => {
         a.in_address,
         a.out_address,
         a.mid_in_address,
-        TO_CHAR(a.punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH12:MI AM') AS punch_in_display,
+        a.leave_type,
+        TO_CHAR(a.punch_in_time , 'HH12:MI AM') AS punch_in_display,
         TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH12:MI AM') AS mid_shift_punch_in_display,
-        TO_CHAR(a.punch_out_time AT TIME ZONE 'Asia/Kolkata', 'HH12:MI AM') AS punch_out_display,
+        TO_CHAR(a.punch_out_time , 'HH12:MI AM') AS punch_out_display,
         CASE
+          WHEN a.leave_type IS NOT NULL THEN 'Leave'
           WHEN a.punch_in_time IS NOT NULL AND a.punch_out_time IS NOT NULL THEN 'Marked'
           WHEN a.punch_in_time IS NOT NULL THEN 'In Progress'
           ELSE 'Not Marked'
@@ -200,6 +202,7 @@ router.get("/daily", async (req, res) => {
         date: isoDate,
         dateLabel: row.attendance_date_label ?? isoDate,
         attendanceId: row.attendance_id ?? null,
+        leave_type: row.leave_type,
         punchInIso: punchInRaw ? punchInRaw.toISOString() : null,
         punchOutIso: punchOutRaw ? punchOutRaw.toISOString() : null,
         midShiftPunchInIso: midShiftPunchInRaw ? midShiftPunchInRaw.toISOString() : null,
@@ -232,6 +235,8 @@ router.get("/daily", async (req, res) => {
           acc.markedDays += 1;
         } else if (record.status === "In Progress") {
           acc.inProgressDays += 1;
+        } else if (record.status === "Leave") {
+          acc.leaveDays = (acc.leaveDays || 0) + 1;
         } else {
           acc.notMarkedDays += 1;
         }
@@ -248,6 +253,7 @@ router.get("/daily", async (req, res) => {
         punchOutCount: 0,
         markedDays: 0,
         inProgressDays: 0,
+        leaveDays: 0,
         notMarkedDays: 0,
         totalDurationMinutes: 0,
       }
