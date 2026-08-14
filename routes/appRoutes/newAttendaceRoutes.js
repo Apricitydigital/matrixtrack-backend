@@ -1193,7 +1193,7 @@ async function getOrCreateAttendanceRecord(emp_id, date, options = {}) {
   );
 
   const needsOpenCarryForward =
-    punchType === PUNCH_TYPES.OUT &&
+    (punchType === PUNCH_TYPES.OUT || punchType === PUNCH_TYPES.MID_IN) &&
     (!attendance || (attendance && !attendance.punch_in_time));
 
   if (needsOpenCarryForward) {
