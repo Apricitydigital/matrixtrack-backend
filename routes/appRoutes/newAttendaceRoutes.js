@@ -721,11 +721,11 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
   }
 
   if (punchType === PUNCH_TYPES.MID_IN) {
-    // MID_IN must be evaluated only against the active/open session.
-    // Do not block due to older closed sessions from previous day.
-    let openSession = await fetchRecentOpenAttendance(empId, attendanceDate);
+    // MID_IN should always bind to the employee's latest open attendance session.
+    // This keeps old deployed app builds compatible even if they send a shifted date.
+    let openSession = await fetchLatestOpenAttendance(empId);
     if (!openSession) {
-      openSession = await fetchLatestOpenAttendance(empId);
+      openSession = await fetchRecentOpenAttendance(empId, attendanceDate);
     }
     if (!openSession || !openSession.punch_in_time) {
       return {
@@ -756,9 +756,9 @@ async function validatePunchSession(empId, attendanceDate, punchType) {
 
   // Enforce punch-in before punch-out (with support for night-shift carry-forward)
   if (punchType === PUNCH_TYPES.OUT) {
-    let hasPunchStart = await fetchRecentPunchedInAttendance(empId, attendanceDate);
+    let hasPunchStart = await fetchLatestOpenAttendance(empId);
     if (!hasPunchStart) {
-      hasPunchStart = await fetchLatestOpenAttendance(empId);
+      hasPunchStart = await fetchRecentPunchedInAttendance(empId, attendanceDate);
     }
     if (!hasPunchStart) {
       return {
@@ -1907,10 +1907,12 @@ router.put("/", upload.single("image"), async (req, res) => {
       });
     }
 
-    // For punch-out: use the OPEN session's attendance_id (night-shift carry-forward)
+    // For MID_IN / punch-out: use the latest OPEN session's attendance_id.
     let targetAttendanceId = attendance_id;
-    if (punchType === PUNCH_TYPES.OUT) {
-      const openSession = await fetchRecentOpenAttendance(attendanceEmpId, attendanceDate);
+    if (punchType === PUNCH_TYPES.OUT || punchType === PUNCH_TYPES.MID_IN) {
+      const openSession =
+        (await fetchLatestOpenAttendance(attendanceEmpId)) ||
+        (await fetchRecentOpenAttendance(attendanceEmpId, attendanceDate));
       if (openSession && openSession.attendance_id !== attendance_id) {
         targetAttendanceId = openSession.attendance_id;
       }
