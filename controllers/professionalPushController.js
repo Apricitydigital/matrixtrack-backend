@@ -8,6 +8,8 @@ const registerPushToken = async (req, res) => {
   const professionalId = req.professional?.professional_id;
   const token = String(req.body?.token || "").trim();
   const platform = String(req.body?.platform || "").trim().toLowerCase();
+  const provider = String(req.body?.provider || "").trim().toLowerCase();
+  const endpointArn = String(req.body?.endpoint_arn || "").trim() || null;
 
   if (!professionalId) {
     return res.status(401).json({ success: false, message: "Unauthorized professional session." });
@@ -18,12 +20,14 @@ const registerPushToken = async (req, res) => {
 
   try {
     await ensureProfessionalPushSchema();
-    await registerProfessionalPushToken({
+    const result = await registerProfessionalPushToken({
       professionalId,
       expoPushToken: token,
+      provider: provider || null,
       platform: platform || null,
+      existingEndpointArn: endpointArn,
     });
-    return res.json({ success: true, message: "Push token registered." });
+    return res.json({ success: true, message: "Push token registered.", data: result });
   } catch (error) {
     console.error("[ProfessionalPush] registerPushToken error:", error.message);
     return res.status(500).json({ success: false, message: "Unable to register push token." });

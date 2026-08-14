@@ -40,8 +40,10 @@ const getAttendanceList = async (req, res) => {
     await ensureAttendanceReportColumns();
     await ensureProfessionalLeaveSchema();
     await ensureProfessionalLeaveSchema();
-    const { city_id, zone_id, ward_id, kothi_id, professional_id, date, month, page = 1, limit = 50 } = req.query;
-    const offset = (page - 1) * limit;
+    const { city_id, zone_id, ward_id, kothi_id, professional_id, date, month, page = 1, limit = 50, search } = req.query;
+    const numericLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 10000);
+    const numericPage = Math.max(parseInt(page, 10) || 1, 1);
+    const offset = (numericPage - 1) * numericLimit;
 
     const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, 'pe');
     
@@ -50,6 +52,30 @@ const getAttendanceList = async (req, res) => {
     let paFilters = '';
     let leaveDateParamIndex = null;
 
+    if (search && String(search).trim()) {
+      paramCount++;
+      const searchPattern = `%${String(search).trim()}%`;
+      peFilters += `
+        AND (
+          pe.full_name ILIKE $${paramCount}
+          OR pe.emp_code ILIKE $${paramCount}
+          OR pe.mobile ILIKE $${paramCount}
+          OR pe.email ILIKE $${paramCount}
+          OR z.zone_name ILIKE $${paramCount}
+          OR c.city_name ILIKE $${paramCount}
+          OR EXISTS (
+            SELECT 1 FROM wards w_s WHERE w_s.ward_id = pe.ward_id AND w_s.ward_name ILIKE $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM sectors s_s WHERE s_s.sector_id = pe.ward_id AND s_s.sector_name ILIKE $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM wards k_s WHERE k_s.ward_id = pe.kothi_id AND k_s.ward_name ILIKE $${paramCount}
+          )
+        )
+      `;
+      params.push(searchPattern);
+    }
     if (city_id) {
       paramCount++;
       peFilters += ` AND pe.city_id = $${paramCount}`;
@@ -180,11 +206,13 @@ const getAttendanceList = async (req, res) => {
       ${cte}
       SELECT COUNT(*) as total
       FROM professional_employees pe
+      JOIN zones z ON pe.zone_id = z.zone_id
+      JOIN cities c ON pe.city_id = c.city_id
       WHERE 1=1 ${peFilters}
     `;
 
     // Add LIMIT and OFFSET to params for the main query
-    const mainParams = [...params, limit, offset];
+    const mainParams = [...params, numericLimit, offset];
 
     const [dataResult, countResult] = await Promise.all([
       runQueryWithTimeout(query, mainParams),
@@ -471,7 +499,8 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       start_date,
       end_date,
       page = 1,
-      limit = 20
+      limit = 20,
+      search
     } = req.query;
 
     const dateRange = getValidatedDateRange(start_date, end_date);
@@ -483,13 +512,37 @@ const getDateRangeAttendanceSummary = async (req, res) => {
     }
 
     const numericPage = Math.max(parseInt(page, 10) || 1, 1);
-    const numericLimit = Math.max(parseInt(limit, 10) || 20, 1);
+    const numericLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 10000);
     const offset = (numericPage - 1) * numericLimit;
 
     const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, 'pe');
     let peFilters = `AND ${whereClause} AND pe.is_active = true`;
     let paramCount = params.length;
 
+    if (search && String(search).trim()) {
+      paramCount++;
+      const searchPattern = `%${String(search).trim()}%`;
+      peFilters += `
+        AND (
+          pe.full_name ILIKE $${paramCount}
+          OR pe.emp_code ILIKE $${paramCount}
+          OR pe.mobile ILIKE $${paramCount}
+          OR pe.email ILIKE $${paramCount}
+          OR z.zone_name ILIKE $${paramCount}
+          OR c.city_name ILIKE $${paramCount}
+          OR EXISTS (
+            SELECT 1 FROM wards w_s WHERE w_s.ward_id = pe.ward_id AND w_s.ward_name ILIKE $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM sectors s_s WHERE s_s.sector_id = pe.ward_id AND s_s.sector_name ILIKE $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM wards k_s WHERE k_s.ward_id = pe.kothi_id AND k_s.ward_name ILIKE $${paramCount}
+          )
+        )
+      `;
+      params.push(searchPattern);
+    }
     if (city_id) {
       paramCount++;
       peFilters += ` AND pe.city_id = $${paramCount}`;
@@ -640,6 +693,8 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       ${cte}
       SELECT COUNT(*) AS total
       FROM professional_employees pe
+      JOIN zones z ON pe.zone_id = z.zone_id
+      JOIN cities c ON pe.city_id = c.city_id
       WHERE 1=1 ${peFilters}
     `;
 

@@ -181,12 +181,78 @@ const sendTrackedAttendanceRekognition = async (command, trackingPayload) => {
   });
 };
 
+const ATTENDANCE_DEBUG_LOG_ENABLED =
+  process.env.ATTENDANCE_DEBUG_LOG_ENABLED === "true";
+const ATTENDANCE_VERBOSE_LOGS =
+  process.env.ATTENDANCE_VERBOSE_LOGS === "true";
+
 const safeDebugLog = (line) => {
+  if (!ATTENDANCE_DEBUG_LOG_ENABLED) {
+    return;
+  }
   try {
     fs.appendFile("debug-face.log", `${line}\n`, () => {});
   } catch (_) {
     // Never block attendance flow for debug logging failures.
   }
+};
+
+const FACE_ATTENDANCE_RESPONSE_TTL_MS = 2 * 60 * 1000;
+const FACE_ATTENDANCE_RESPONSE_CACHE_MAX = Math.max(
+  500,
+  Number(process.env.FACE_ATTENDANCE_RESPONSE_CACHE_MAX || 2000)
+);
+const faceAttendanceResponseCache = new Map();
+let faceAttendanceResponseCacheOps = 0;
+
+const cleanupFaceAttendanceResponseCache = () => {
+  const now = Date.now();
+  for (const [key, entry] of faceAttendanceResponseCache.entries()) {
+    if (!entry || entry.expiresAt <= now) {
+      faceAttendanceResponseCache.delete(key);
+    }
+  }
+  while (faceAttendanceResponseCache.size > FACE_ATTENDANCE_RESPONSE_CACHE_MAX) {
+    const oldestKey = faceAttendanceResponseCache.keys().next().value;
+    if (!oldestKey) break;
+    faceAttendanceResponseCache.delete(oldestKey);
+  }
+};
+
+const maybeCleanupFaceAttendanceResponseCache = () => {
+  faceAttendanceResponseCacheOps += 1;
+  if (
+    faceAttendanceResponseCache.size >= FACE_ATTENDANCE_RESPONSE_CACHE_MAX ||
+    faceAttendanceResponseCacheOps % 200 === 0
+  ) {
+    cleanupFaceAttendanceResponseCache();
+  }
+};
+
+const normalizeRequestId = (value) => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
+};
+
+const getCachedFaceAttendanceResponse = (requestId) => {
+  if (!requestId) return null;
+  maybeCleanupFaceAttendanceResponseCache();
+  const cached = faceAttendanceResponseCache.get(requestId);
+  return cached && cached.expiresAt > Date.now() ? cached : null;
+};
+
+const sendFaceAttendanceResponse = (res, payload, options = {}) => {
+  const { status = 200, requestId = null } = options;
+  if (requestId) {
+    maybeCleanupFaceAttendanceResponseCache();
+    faceAttendanceResponseCache.set(requestId, {
+      status,
+      payload,
+      expiresAt: Date.now() + FACE_ATTENDANCE_RESPONSE_TTL_MS,
+    });
+  }
+  return res.status(status).json(payload);
 };
 
 ensureSelfAttendanceSupport().catch((error) => {
@@ -748,10 +814,14 @@ const DEFAULT_FACE_MATCH_THRESHOLD = Number.isFinite(parsedFaceThreshold)
 const GROUP_FACE_SEARCH_TIMEOUT_MS = Number(
   process.env.GROUP_FACE_SEARCH_TIMEOUT_MS || 8000
 );
+const GROUP_FACE_PROCESS_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.GROUP_FACE_PROCESS_CONCURRENCY || 1)
+);
 const GROUP_DOUBLE_VERIFY_ENABLED =
   process.env.GROUP_DOUBLE_VERIFY_ENABLED === "true";
 const GROUP_FALLBACK_ENABLED =
-  process.env.GROUP_FALLBACK_ENABLED !== "false";
+  process.env.GROUP_FALLBACK_ENABLED === "true";
 
 // --- COST OPTIMIZATION: Individual punch fallback loop ------------------------
 // When SearchFacesByImage returns no match, fallbackMatchByCompare runs a
@@ -1989,9 +2059,31 @@ router.get("/image", async (req, res) => {
   }
 });
 
-router.post("/face-attendance", upload.single("image"), async (req, res) => {
+router.post("/face-attendance", authenticate, upload.single("image"), async (req, res) => {
   try {
     safeDebugLog(`[${new Date().toISOString()}] /face-attendance hit! mode: ${req.body?.groupMode}`);
+    const actorRole = String(req.user?.role || "").trim().toLowerCase();
+    const actorUserId = normalizeId(
+      req.user?.user_id ?? req.user?.id ?? req.user?.userId ?? null
+    );
+    if (!actorUserId) {
+      return res.status(401).json({ error: "Invalid authenticated user." });
+    }
+    if (actorRole !== "supervisor" && actorRole !== "admin") {
+      return res.status(403).json({
+        error: "Only supervisors or admins can mark supervisor attendance.",
+      });
+    }
+    const requestId = normalizeRequestId(
+      req.body?.request_id ?? req.body?.requestId ?? req.headers["x-request-id"]
+    );
+    const cachedResponse = getCachedFaceAttendanceResponse(requestId);
+    if (cachedResponse) {
+      safeDebugLog(
+        `[${new Date().toISOString()}] /face-attendance cache hit for request_id=${requestId}`
+      );
+      return res.status(cachedResponse.status).json(cachedResponse.payload);
+    }
     const {
       punch_type: rawPunchType,
       latitude: rawLatitude,
@@ -2009,9 +2101,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     } = req.body;
     const attendanceDate = resolveAttendanceDate(req.body, req.query);
     const wardId = normalizeId(rawWardId ?? rawWardIdAlt ?? null);
-    const supervisorId = normalizeId(
-      userId ?? req.body?.supervisor_id ?? req.body?.user_id
-    );
+    const supervisorId = actorUserId;
 
     if (!req.file) {
       return res.status(400).json({
@@ -2059,7 +2149,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       rawMode
     );
 
-    console.log("[face-attendance] groupMode:", groupMode, "| mode:", rawMode, "| groupModeRequested:", groupModeRequested);
+    if (ATTENDANCE_VERBOSE_LOGS) {
+      console.log("[face-attendance] groupMode:", groupMode, "| mode:", rawMode, "| groupModeRequested:", groupModeRequested);
+    }
 
     if (groupModeRequested) {
       const groupTrackingCityId = await resolveRequestCityId({
@@ -2079,7 +2171,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       const detectResult = await sendTrackedAttendanceRekognition(detectCommand, groupTracking);
       const faceDetails = detectResult?.FaceDetails ?? [];
 
-      console.log("[face-attendance] Detected faces:", faceDetails.length);
+      if (ATTENDANCE_VERBOSE_LOGS) {
+        console.log("[face-attendance] Detected faces:", faceDetails.length);
+      }
 
       if (!faceDetails.length) {
         return res.status(422).json({
@@ -2116,7 +2210,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
 
       const perFaceResults = await mapLimit(
         faceDetails,
-        2,
+        GROUP_FACE_PROCESS_CONCURRENCY,
         async (faceDetail, index) => {
           const faceIndex = index + 1;
 
@@ -2344,7 +2438,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
           const updated = await processPunch(
             attendance.attendance_id, punchType,
             { buffer: faceImageBuffer },
-            userId, locationPayload,
+            actorUserId, locationPayload,
             {
               employeeId: employeeRecord.emp_id,
               requireFaceMatch: false,      // Already verified by Rekognition above
@@ -2399,14 +2493,18 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         });
       }
 
-      return res.json({
+      return sendFaceAttendanceResponse(
+        res,
+        {
         success: punchedCount > 0,
         mode: "group",
         punch_type: punchType,
         total_faces: faceDetails.length,
         punched_count: punchedCount,
         results,
-      });
+        },
+        { requestId }
+      );
     }
 
     const requestedEmpId = normalizeId(rawEmpId ?? rawEmployeeId);
@@ -2439,7 +2537,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
     // without making any paid Rekognition API call.
     if (isDuplicatePunch(requestedEmpId, punchType, attendanceDate)) {
       console.log(`[face-attendance] Dedup hit: emp_id=${requestedEmpId} punchType=${punchType} date=${attendanceDate} � skipping Rekognition`);
-      return res.status(200).json({
+      return sendFaceAttendanceResponse(
+        res,
+        {
         success: true,
         employee: employeeRecord.name,
         punch_type: punchType,
@@ -2447,7 +2547,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
         face_match_threshold: matchThreshold,
         time: null,
         deduplicated: true, // flag so client knows it was a cached response
-      });
+        },
+        { status: 200, requestId }
+      );
     }
 
     // 2. Search for the face in the collection
@@ -2682,7 +2784,7 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       attendance.attendance_id,
       punchType,
       req.file,
-      userId,
+      actorUserId,
       locationPayload,
       {
         employeeId: empId,
@@ -2709,7 +2811,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       metricDate: attendanceDate,
       attendanceCount: 1,
     });
-    return res.json({
+    return sendFaceAttendanceResponse(
+      res,
+      {
       success: true,
       employee: employeeRecord.name,
       punch_type: punchType,
@@ -2717,7 +2821,9 @@ router.post("/face-attendance", upload.single("image"), async (req, res) => {
       face_match_threshold:
         updated.face_match_threshold ?? matchThreshold,
       time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
-    });
+      },
+      { requestId }
+    );
   } catch (error) {
     console.error("Face attendance error:", error);
     safeDebugLog(`[${new Date().toISOString()}] Face Attendance Route Error: ${error?.stack || error}`);

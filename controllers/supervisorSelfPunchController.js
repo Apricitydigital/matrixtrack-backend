@@ -480,6 +480,53 @@ const approveRequest = async (req, res) => {
       ]);
     }
 
+    // 3d. Sync to employee table (Employee Master)
+    try {
+      let plainAadhar = request.aadhar_number;
+      if (request.aadhar_number) {
+        try {
+          plainAadhar = decryptAadhar(request.aadhar_number);
+        } catch (_e) {
+          plainAadhar = request.aadhar_number;
+        }
+      }
+
+      const empCodeVal = String(request.emp_code || '').trim() || `EMP-${request.mobile ? request.mobile.slice(-6) : request.id.slice(0, 8)}`;
+      const targetWardId = request.kothi_id || request.ward_id || null;
+
+      const { rows: desigRows } = await client.query(
+        "SELECT designation_id FROM designation ORDER BY designation_id ASC LIMIT 1"
+      );
+      const defaultDesignationId = desigRows.length > 0 ? desigRows[0].designation_id : 2;
+
+      const empUpsertQuery = `
+        INSERT INTO employee (emp_code, name, phone, ward_id, designation_id, aadhar_no, aadhar_url, face_embedding, self_attendance_enabled)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+        ON CONFLICT (emp_code) DO UPDATE SET
+          name = EXCLUDED.name,
+          phone = EXCLUDED.phone,
+          ward_id = COALESCE(EXCLUDED.ward_id, employee.ward_id),
+          aadhar_no = COALESCE(EXCLUDED.aadhar_no, employee.aadhar_no),
+          aadhar_url = COALESCE(EXCLUDED.aadhar_url, employee.aadhar_url),
+          face_embedding = COALESCE(EXCLUDED.face_embedding, employee.face_embedding),
+          self_attendance_enabled = true
+      `;
+
+      await client.query(empUpsertQuery, [
+        empCodeVal,
+        request.full_name,
+        request.mobile || '',
+        targetWardId,
+        defaultDesignationId,
+        plainAadhar,
+        request.aadhar_doc_url || null,
+        request.selfie_url || null
+      ]);
+      logger.info(`[Supervisor] Synced approved request ${id} to employee table (Employee Master)`);
+    } catch (empSyncErr) {
+      logger.error(`[Supervisor] Error syncing approved request ${id} to employee table:`, empSyncErr);
+    }
+
 
     // 4. Log the action
     await client.query(`

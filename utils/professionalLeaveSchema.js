@@ -88,6 +88,15 @@ const ensureProfessionalLeaveSchema = async () => {
         `);
 
         await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_notifications_reminder_guard
+          ON professional_notifications (
+            professional_id,
+            type,
+            (COALESCE(metadata ->> 'reminder_date', ''))
+          )
+        `);
+
+        await client.query(`
           CREATE TABLE IF NOT EXISTS professional_holidays (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             holiday_date DATE NOT NULL,

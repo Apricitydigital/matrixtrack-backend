@@ -1,4 +1,5 @@
 const express = require('express');
+const pool = require('../config/db');
 const authenticateProfessional = require('../middleware/professionalAuth');
 
 const { login } = require('../controllers/professionalAuthController');
@@ -21,6 +22,10 @@ const {
   registerPushToken,
   unregisterPushToken,
 } = require("../controllers/professionalPushController");
+const {
+  getMyGeofenceStatus,
+  submitProfessionalGeofenceRequest,
+} = require("../controllers/professionalGeofenceController");
 
 const router = express.Router();
 
@@ -44,6 +49,8 @@ router.post('/attendance/punch-in', punchIn);
 router.post('/attendance/punch-out', punchOut);
 router.get('/attendance/monthly', getMonthlyAttendance);
 router.get('/attendance/status', getTodayStatus);
+router.get('/geofencing/status', getMyGeofenceStatus);
+router.post('/geofencing/request', submitProfessionalGeofenceRequest);
 
 // Professional leave and notifications
 router.post("/leave/request", requestLeave);
@@ -52,6 +59,7 @@ router.get("/leave/balance", getMyLeaveBalance);
 router.get("/notifications", getMyNotifications);
 router.post("/notifications/:id/read", markNotificationRead);
 router.post("/push-token/register", registerPushToken);
+router.post("/push-token/unregister", unregisterPushToken);
 router.get('/reminder-settings', async (req, res) => {
   try {
     const { professional_id } = req.professional;
