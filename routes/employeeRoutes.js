@@ -50,6 +50,7 @@ const resolveFaceImageUrl = (faceEmbedding, empId) => {
 const formatEmployeeRow = (row = {}) => {
   const faceImageUrl = resolveFaceImageUrl(row.face_embedding, row.emp_id);
   const faceRegistered = Boolean(row.face_embedding);
+  const isProfessional = Boolean(row.is_professional || row.self_attendance_enabled);
 
   return {
     ...row,
@@ -58,7 +59,10 @@ const formatEmployeeRow = (row = {}) => {
     face_image_url: faceImageUrl,
     faceImageUrl,
     aadhar_no: row.aadhar_no,
-    aadhar_url: row.aadhar_url
+    aadhar_url: row.aadhar_url,
+    is_professional: isProfessional,
+    isProfessional,
+    employee_type: isProfessional ? "Professional" : "Regular"
   };
 };
 
@@ -97,7 +101,13 @@ router.get(
         ds.designation_name AS designation,
         e.face_embedding,
         e.aadhar_no,
-        e.aadhar_url
+        e.aadhar_url,
+        COALESCE(e.self_attendance_enabled, false) AS self_attendance_enabled,
+        (
+          COALESCE(e.self_attendance_enabled, false) = true OR
+          EXISTS (SELECT 1 FROM professional_employees pe WHERE pe.emp_code = e.emp_code OR pe.mobile = e.phone) OR
+          EXISTS (SELECT 1 FROM self_punch_requests spr WHERE (spr.emp_code = e.emp_code OR spr.mobile = e.phone) AND spr.status = 'approved')
+        ) AS is_professional
       FROM employee e
       LEFT JOIN wards w ON e.ward_id = w.ward_id
       LEFT JOIN zones z ON w.zone_id = z.zone_id

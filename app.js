@@ -462,29 +462,53 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
 
 // =============================================
 // ⏰ PROFESSIONAL PUNCH-IN REMINDER CRON
-// Runs every 30 minutes (between 8:00 AM and 12:00 PM IST)
-// Automatically matches each employee's chosen reminder_time (Default '10:00')
+// Runs every minute and matches each employee's exact chosen reminder_time
+// Duplicate guard inside the query ensures a professional gets only one reminder per day
 // =============================================
 const { runProfessionalPunchInReminder } = require("./utils/professionalPunchInReminder");
-if (isPrimaryCronInstance) {
+const PROFESSIONAL_REMINDER_CRON_ENABLED =
+  process.env.PROFESSIONAL_REMINDER_CRON_ENABLED === "true";
+const PROFESSIONAL_REMINDER_CRON_VERBOSE =
+  process.env.PROFESSIONAL_REMINDER_CRON_VERBOSE === "true";
+let professionalReminderCronRunning = false;
+
+if (PROFESSIONAL_REMINDER_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
-    "0,30 8-12 * * *",
+    "* * * * *",
     async () => {
+      if (professionalReminderCronRunning) {
+        if (PROFESSIONAL_REMINDER_CRON_VERBOSE) {
+          console.log("[ProfessionalReminderCron] Previous run still active, skipping this minute.");
+        }
+        return;
+      }
+
       const nowIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
       const hh = String(nowIST.getHours()).padStart(2, "0");
-      const mm = String(nowIST.getMinutes() >= 30 ? 30 : 0).padStart(2, "0");
+      const mm = String(nowIST.getMinutes()).padStart(2, "0");
       const currentTimeSlot = `${hh}:${mm}`;
 
-      console.log(`[ProfessionalReminderCron] Checking punch-in reminders for time slot: ${currentTimeSlot} IST`);
+      professionalReminderCronRunning = true;
+      if (PROFESSIONAL_REMINDER_CRON_VERBOSE) {
+        console.log(`[ProfessionalReminderCron] Checking punch-in reminders for time slot: ${currentTimeSlot} IST`);
+      }
       try {
-        await runProfessionalPunchInReminder(currentTimeSlot);
+        await runProfessionalPunchInReminder(currentTimeSlot, {
+          verbose: PROFESSIONAL_REMINDER_CRON_VERBOSE,
+        });
       } catch (err) {
         console.error("[ProfessionalReminderCron] Error:", err.message);
+      } finally {
+        professionalReminderCronRunning = false;
       }
     },
     { timezone: "Asia/Kolkata" }
   );
-  console.log("[ProfessionalReminderCron] ✅ Registered — dynamic time slot schedule (8:00 AM - 12:00 PM IST).");
+  console.log("[ProfessionalReminderCron] ✅ Registered — exact reminder_time schedule (every minute, IST).");
+} else {
+  console.log(
+    `[ProfessionalReminderCron] Disabled or non-primary instance - skipping registration (enabled: ${process.env.PROFESSIONAL_REMINDER_CRON_ENABLED}, instance: ${process.env.NODE_APP_INSTANCE || "0"})`
+  );
 }
 
 // =======================

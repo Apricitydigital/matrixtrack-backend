@@ -5,6 +5,7 @@ const { rekognition, DetectFacesCommand, CompareFacesCommand } = require('../con
 const { getSignedS3Url, uploadToS3 } = require('../utils/s3SelfPunch');
 const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSchema');
 const { sendTrackedRekognition, trackSuccessfulAttendanceEvent } = require('../utils/cityTrafficCost');
+const { validateProfessionalGeofenceAccess } = require('./professionalGeofenceController');
 
 let attendanceColumnsEnsured = false;
 
@@ -454,7 +455,24 @@ const punchIn = async (req, res) => {
       return res.status(409).json({ success: false, message: 'You have already punched in today.' });
     }
 
-    // 2. Liveness pre-check to reduce photo spoof attempts
+    // 2. Professional geo-fence validation runs before any face/AWS work.
+    const geofenceValidation = await validateProfessionalGeofenceAccess({
+      professionalId: professional_id,
+      latitude,
+      longitude,
+      clientRef: client,
+    });
+    if (!geofenceValidation.allowed) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        success: false,
+        code: geofenceValidation.code,
+        message: geofenceValidation.message,
+        geofencing: geofenceValidation,
+      });
+    }
+
+    // 3. Liveness pre-check to reduce photo spoof attempts
     const liveness = await runLivenessPrecheck(selfie_base64, {
       livenessFrames: liveness_frames,
       livenessChallenge: liveness_challenge,
@@ -479,7 +497,7 @@ const punchIn = async (req, res) => {
       });
     }
 
-    // 3. Get the reference selfie from professional profile
+    // 4. Get the reference selfie from professional profile
     const profileQuery = `SELECT selfie_url FROM professional_employees WHERE id = $1 AND is_active = true`;
     const profileResult = await client.query(profileQuery, [professional_id]);
 
@@ -490,7 +508,7 @@ const punchIn = async (req, res) => {
 
     const { selfie_url: sourceS3Key } = profileResult.rows[0];
 
-    // 4. Perform Face Verification
+    // 5. Perform Face Verification
     let matchResult;
     try {
       matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80, { cityId: city_id, source: 'professional_punch_in', metricDate: today });
@@ -613,7 +631,23 @@ const punchOut = async (req, res) => {
       });
     }
 
-    // 1. Liveness pre-check to reduce photo spoof attempts
+    // 1. Professional geo-fence validation runs before any face/AWS work.
+    const geofenceValidation = await validateProfessionalGeofenceAccess({
+      professionalId: professional_id,
+      latitude,
+      longitude,
+      clientRef: pool,
+    });
+    if (!geofenceValidation.allowed) {
+      return res.status(403).json({
+        success: false,
+        code: geofenceValidation.code,
+        message: geofenceValidation.message,
+        geofencing: geofenceValidation,
+      });
+    }
+
+    // 2. Liveness pre-check to reduce photo spoof attempts
     const liveness = await runLivenessPrecheck(selfie_base64, {
       livenessFrames: liveness_frames,
       livenessChallenge: liveness_challenge,
@@ -636,7 +670,7 @@ const punchOut = async (req, res) => {
       });
     }
 
-    // 2. Get the reference selfie from professional profile
+    // 3. Get the reference selfie from professional profile
     const profileQuery = `SELECT selfie_url FROM professional_employees WHERE id = $1 AND is_active = true`;
     const profileResult = await pool.query(profileQuery, [professional_id]);
 
@@ -646,7 +680,7 @@ const punchOut = async (req, res) => {
 
     const { selfie_url: sourceS3Key } = profileResult.rows[0];
 
-    // 3. Perform Face Verification before punch out
+    // 4. Perform Face Verification before punch out
     let matchResult;
     try {
       matchResult = await verifyFaceMatch(sourceS3Key, selfie_base64, 80, { cityId: city_id, source: 'professional_punch_out', metricDate: today });

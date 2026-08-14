@@ -31,6 +31,7 @@ const publicSelfPunchRoutes = require("./publicSelfPunchRoutes");
 const supervisorSelfPunchRoutes = require("./supervisorSelfPunchRoutes");
 const professionalRoutes = require("./professionalRoutes");
 const professionalReportsRoutes = require("./professionalReportsRoutes");
+const professionalGeofencingAdminRoutes = require("./professionalGeofencingAdminRoutes");
 const cityCostRoutes = require("./cityCostRoutes");
 
 // Protected Route
@@ -64,6 +65,7 @@ router.use("/professional", professionalRoutes);
 // Mount reports before the main adminRoutes to bypass strict requireAdmin middleware
 // allowing both admins and supervisors to access these specific reporting endpoints.
 router.use("/admin", professionalReportsRoutes);
+router.use("/admin", professionalGeofencingAdminRoutes);
 
 router.use("/assignedWardRoutes", assignedWardRoutes);
 router.use("/assignedKothiRoutes", assignedKothiRoutes);
