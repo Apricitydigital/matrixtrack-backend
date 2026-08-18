@@ -82,13 +82,33 @@ const ensureProfessionalGeofenceSchema = async () => {
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             request_id UUID NOT NULL REFERENCES professional_geofence_requests(id) ON DELETE CASCADE,
             professional_id UUID NOT NULL REFERENCES professional_employees(id) ON DELETE CASCADE,
-            action VARCHAR(24) NOT NULL CHECK (action IN ('submitted', 'approved', 'rejected')),
+            action VARCHAR(24) NOT NULL CHECK (action IN ('submitted', 'approved', 'rejected', 'deleted')),
             actor_type VARCHAR(16) NOT NULL CHECK (actor_type IN ('professional', 'supervisor', 'admin', 'system')),
             actor_user_id INTEGER REFERENCES users(user_id),
             note TEXT,
             metadata JSONB DEFAULT '{}'::jsonb,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
+        `);
+
+        await client.query(`
+          DO $$
+          BEGIN
+            IF EXISTS (
+              SELECT 1
+              FROM pg_constraint
+              WHERE conname = 'professional_geofence_request_logs_action_check'
+            ) THEN
+              ALTER TABLE professional_geofence_request_logs
+              DROP CONSTRAINT professional_geofence_request_logs_action_check;
+            END IF;
+          END $$;
+        `);
+
+        await client.query(`
+          ALTER TABLE professional_geofence_request_logs
+          ADD CONSTRAINT professional_geofence_request_logs_action_check
+          CHECK (action IN ('submitted', 'approved', 'rejected', 'deleted'))
         `);
 
         await client.query(`
