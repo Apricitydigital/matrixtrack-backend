@@ -794,6 +794,99 @@ const updateProfessionalGeofenceRadius = async (req, res) => {
   }
 };
 
+const deleteProfessionalGeofenceRequest = async (req, res) => {
+  const actorId = req.user?.user_id || req.user?.id || req.user?.userId;
+  const { id } = req.params;
+
+  if (!actorId) {
+    return res.status(401).json({ success: false, message: "Unauthorized reviewer context." });
+  }
+
+  const client = await pool.connect();
+  try {
+    await ensureProfessionalGeofenceSchema();
+    await client.query("BEGIN");
+
+    const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, "pe");
+    const scopedParams = [...params, id];
+    const scopedQuery = `
+      ${cte}
+      SELECT
+        pgr.*,
+        pe.full_name,
+        pe.mobile,
+        pe.email
+      FROM professional_geofence_requests pgr
+      JOIN professional_employees pe ON pe.id = pgr.professional_id
+      WHERE pgr.id = $${scopedParams.length}
+        AND pe.is_active = TRUE
+        AND ${whereClause}
+      FOR UPDATE
+    `;
+    const scopedResult = await client.query(scopedQuery, scopedParams);
+    if (scopedResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        success: false,
+        message: "Professional geofence request not found or access denied.",
+      });
+    }
+
+    const requestRow = scopedResult.rows[0];
+
+    if (requestRow.status === "approved") {
+      await client.query(
+        `UPDATE professional_geofences
+         SET is_active = FALSE,
+             updated_at = NOW()
+         WHERE source_request_id = $1`,
+        [id]
+      );
+    }
+
+    await client.query(
+      `INSERT INTO professional_geofence_request_logs (
+        request_id, professional_id, action, actor_type, actor_user_id, note, metadata
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+      [
+        id,
+        requestRow.professional_id,
+        "deleted",
+        String(req.user?.role || "").toLowerCase() === "admin" ? "admin" : "supervisor",
+        actorId,
+        "Request deleted by reviewer",
+        JSON.stringify({
+          deleted_status: requestRow.status,
+          request_radius_meters: requestRow.request_radius_meters || null,
+        }),
+      ]
+    );
+
+    await client.query(
+      `DELETE FROM professional_geofence_requests
+       WHERE id = $1`,
+      [id]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message:
+        requestRow.status === "approved"
+          ? "Approved professional geofence request deleted and linked geofence deactivated."
+          : "Professional geofence request deleted successfully.",
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    logger.error("[ProfessionalGeofence] deleteProfessionalGeofenceRequest error:", error);
+    return res.status(500).json({ success: false, message: "Unable to delete professional geofence request." });
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   getMyGeofenceStatus,
   submitProfessionalGeofenceRequest,
@@ -803,4 +896,5 @@ module.exports = {
   listProfessionalGeofenceRequests,
   reviewProfessionalGeofenceRequest,
   updateProfessionalGeofenceRadius,
+  deleteProfessionalGeofenceRequest,
 };

@@ -7,11 +7,12 @@ const {
   listProfessionalGeofenceRequests,
   reviewProfessionalGeofenceRequest,
   updateProfessionalGeofenceRadius,
+  deleteProfessionalGeofenceRequest,
 } = require("../controllers/professionalGeofenceController");
 
 const router = express.Router();
 const SUPER_ADMIN_EMAIL =
-  process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
+  process.env.SUPER_ADMIN_EMAIL || "admin@gmail.com";
 
 const requireProfessionalGeofenceToggleOwner = (req, res, next) => {
   const email = String(req.user?.email || "").trim().toLowerCase();
@@ -57,6 +58,13 @@ router.patch(
   authenticate,
   authorize("professional-geofencing", "write"),
   updateProfessionalGeofenceRadius
+);
+
+router.delete(
+  "/professional-geofencing/requests/:id",
+  authenticate,
+  authorize("professional-geofencing", "write"),
+  deleteProfessionalGeofenceRequest
 );
 
 module.exports = router;
