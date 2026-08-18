@@ -16,6 +16,16 @@ const APP_JWT_EXPIRES_IN = process.env.APP_JWT_EXPIRES_IN || "45d";
 const JWT_COOKIE_MAX_AGE_MS =
   Number(process.env.JWT_COOKIE_MAX_AGE_MS) || 45 * 24 * 60 * 60 * 1000;
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
+const SUPER_ADMIN_DB_EMAIL = process.env.SUPER_ADMIN_DB_EMAIL || "admin@gmail.com";
+
+const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+const isSuperAdminEmail = (value) => {
+  const email = normalizeEmail(value);
+  return (
+    email === normalizeEmail(SUPER_ADMIN_EMAIL) ||
+    email === normalizeEmail(SUPER_ADMIN_DB_EMAIL)
+  );
+};
 
 const isMobileClient = (req) => {
   const clientHeader = req.headers["x-client-platform"];
@@ -449,9 +459,20 @@ router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    const user = await pool.query("SELECT * FROM users WHERE email = $1", [
-      email,
-    ]);
+    const normalizedEmail = normalizeEmail(email);
+    const loginEmails =
+      normalizedEmail === normalizeEmail(SUPER_ADMIN_EMAIL)
+        ? [normalizeEmail(SUPER_ADMIN_DB_EMAIL), normalizeEmail(SUPER_ADMIN_EMAIL)]
+        : [normalizedEmail];
+
+    const user = await pool.query(
+      `SELECT *
+       FROM users
+       WHERE LOWER(email) = ANY($1::text[])
+       ORDER BY CASE WHEN LOWER(email) = $2 THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [loginEmails, normalizeEmail(SUPER_ADMIN_DB_EMAIL)]
+    );
 
     if (user.rows.length === 0)
       return res.status(400).json({ error: "Invalid credentials" });
@@ -460,7 +481,7 @@ router.post("/login", async (req, res) => {
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
     // ✅ Super admin bypass — SUPER_ADMIN_EMAIL can ALWAYS login
-    const isSuperAdmin = user.rows[0].email === SUPER_ADMIN_EMAIL;
+    const isSuperAdmin = isSuperAdminEmail(user.rows[0].email);
 
     // ✅ Block soft-deleted accounts (except super admin)
     if (!isSuperAdmin && user.rows[0].is_deleted === true) {

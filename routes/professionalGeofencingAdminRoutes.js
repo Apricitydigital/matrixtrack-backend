@@ -12,17 +12,48 @@ const {
 
 const router = express.Router();
 const SUPER_ADMIN_EMAIL =
-  process.env.SUPER_ADMIN_EMAIL || "admin@gmail.com";
+  process.env.SUPER_ADMIN_EMAIL || "mtadmin@apricitydigital.in";
+const SUPER_ADMIN_DB_EMAIL =
+  process.env.SUPER_ADMIN_DB_EMAIL || "admin@gmail.com";
 
-const requireProfessionalGeofenceToggleOwner = (req, res, next) => {
-  const email = String(req.user?.email || "").trim().toLowerCase();
-  if (email !== String(SUPER_ADMIN_EMAIL).trim().toLowerCase()) {
+const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+const isAllowedSuperAdminEmail = (value) => {
+  const email = normalizeEmail(value);
+  return (
+    email === normalizeEmail(SUPER_ADMIN_EMAIL) ||
+    email === normalizeEmail(SUPER_ADMIN_DB_EMAIL)
+  );
+};
+
+const requireProfessionalGeofenceToggleOwner = async (req, res, next) => {
+  try {
+    const userId = req.user?.user_id || req.user?.id || req.user?.userId;
+    const tokenEmail = req.user?.email;
+    let email = tokenEmail;
+
+    if (!email && userId) {
+      const pool = require("../config/db");
+      const userResult = await pool.query(
+        "SELECT email FROM users WHERE user_id = $1 LIMIT 1",
+        [userId]
+      );
+      email = userResult.rows[0]?.email || "";
+    }
+
+    if (isAllowedSuperAdminEmail(email)) {
+      return next();
+    }
+
     return res.status(403).json({
       success: false,
       message: "Only MT Admin can manage professional geofencing toggle.",
     });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to validate professional geofencing access.",
+    });
   }
-  next();
 };
 
 router.get(
