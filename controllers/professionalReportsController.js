@@ -265,77 +265,14 @@ const getAttendanceSummary = async (req, res) => {
       });
     }
 
-    const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, 'pa');
+    // CTE for professional scope to count and filter professionals accurately
+    const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, 'pe');
     
-    let filters = `AND ${whereClause} AND pa.professional_id IN (SELECT id FROM professional_employees WHERE is_active = true)`;
-    let paramCount = params.length;
-    
-    if (dateRange) {
-      paramCount++;
-      filters += ` AND pa.date >= $${paramCount}`;
-      params.push(dateRange.startDate);
-      paramCount++;
-      filters += ` AND pa.date <= $${paramCount}`;
-      params.push(dateRange.endDate);
-    } else if (date) {
-      paramCount++;
-      filters += ` AND pa.date = $${paramCount}`;
-      params.push(date);
-    } else {
-      const [yyyy, mm] = month.split('-');
-      paramCount++;
-      filters += ` AND EXTRACT(YEAR FROM pa.date) = $${paramCount}`;
-      params.push(yyyy);
-      paramCount++;
-      filters += ` AND EXTRACT(MONTH FROM pa.date) = $${paramCount}`;
-      params.push(mm);
-    }
+    let peFilters = `AND ${whereClause} AND pe.is_active = true`;
+    let peParamCount = params.length;
 
-    if (city_id) {
-      paramCount++;
-      filters += ` AND pa.city_id = $${paramCount}`;
-      params.push(city_id);
-    }
-    if (zone_id) {
-      paramCount++;
-      filters += ` AND pa.zone_id = $${paramCount}`;
-      params.push(zone_id);
-    }
-    if (ward_id) {
-      paramCount++;
-      filters += `
-        AND (
-          pa.ward_id = $${paramCount}
-          OR EXISTS (
-            SELECT 1
-            FROM wards w_filter
-            WHERE w_filter.ward_id = $${paramCount}
-              AND w_filter.sector_id = pa.ward_id
-          )
-        )
-      `;
-      params.push(ward_id);
-    }
-    if (professional_id) {
-      paramCount++;
-      filters += ` AND pa.professional_id = $${paramCount}`;
-      params.push(professional_id);
-    }
-    if (kothi_id) {
-      paramCount++;
-      filters += ` AND pa.professional_id IN (SELECT id FROM professional_employees WHERE kothi_id = $${paramCount})`;
-      params.push(kothi_id);
-    }
-
-    // CTE for professional scope to count total professionals accurately
-    const { cte: peCte, whereClause: peWhere, params: peParams } = buildVisibilityScope(req.user, req.cityScope, 'pe');
-    
-    // Total professionals count
-    let peFilters = `AND ${peWhere} AND pe.is_active = true`;
-    let peParamCount = peParams.length;
-    
-    if (city_id) { peParamCount++; peFilters += ` AND pe.city_id = $${peParamCount}`; peParams.push(city_id); }
-    if (zone_id) { peParamCount++; peFilters += ` AND pe.zone_id = $${peParamCount}`; peParams.push(zone_id); }
+    if (city_id) { peParamCount++; peFilters += ` AND pe.city_id = $${peParamCount}`; params.push(city_id); }
+    if (zone_id) { peParamCount++; peFilters += ` AND pe.zone_id = $${peParamCount}`; params.push(zone_id); }
     if (ward_id) {
       peParamCount++;
       peFilters += `
@@ -349,13 +286,40 @@ const getAttendanceSummary = async (req, res) => {
           )
         )
       `;
-      peParams.push(ward_id);
+      params.push(ward_id);
     }
-    if (kothi_id) { peParamCount++; peFilters += ` AND pe.kothi_id = $${peParamCount}`; peParams.push(kothi_id); }
-    if (professional_id) { peParamCount++; peFilters += ` AND pe.id = $${peParamCount}`; peParams.push(professional_id); }
+    if (kothi_id) { peParamCount++; peFilters += ` AND pe.kothi_id = $${peParamCount}`; params.push(kothi_id); }
+    if (professional_id) { peParamCount++; peFilters += ` AND pe.id = $${peParamCount}`; params.push(professional_id); }
+
+    // Date filters on professional_attendance (pa)
+    let paFilters = '';
+    let paParamCount = peParamCount;
+
+    if (dateRange) {
+      paParamCount++;
+      paFilters += ` AND pa.date >= $${paParamCount}`;
+      params.push(dateRange.startDate);
+      paParamCount++;
+      paFilters += ` AND pa.date <= $${paParamCount}`;
+      params.push(dateRange.endDate);
+    } else if (date) {
+      paParamCount++;
+      paFilters += ` AND pa.date = $${paParamCount}`;
+      params.push(date);
+    } else {
+      const [yyyy, mm] = month.split('-');
+      paParamCount++;
+      paFilters += ` AND EXTRACT(YEAR FROM pa.date) = $${paParamCount}`;
+      params.push(yyyy);
+      paParamCount++;
+      paFilters += ` AND EXTRACT(MONTH FROM pa.date) = $${paParamCount}`;
+      params.push(mm);
+    }
+
+    const peCountParams = params.slice(0, peParamCount);
 
     const peCountQuery = `
-      ${peCte}
+      ${cte}
       SELECT COUNT(*) as total FROM professional_employees pe WHERE 1=1 ${peFilters}
     `;
 
@@ -373,7 +337,7 @@ const getAttendanceSummary = async (req, res) => {
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
       LEFT JOIN sectors sec ON pa.ward_id = sec.sector_id
       LEFT JOIN wards w ON pa.ward_id = w.ward_id
-      WHERE 1=1 ${filters}
+      WHERE 1=1 ${peFilters} ${paFilters}
       GROUP BY COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name)
       ORDER BY COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) ASC
     `;
@@ -382,35 +346,38 @@ const getAttendanceSummary = async (req, res) => {
       ${cte}
       SELECT COUNT(DISTINCT pa.professional_id) AS total
       FROM professional_attendance pa
-      WHERE pa.punch_in IS NOT NULL ${filters}
+      JOIN professional_employees pe ON pa.professional_id = pe.id
+      WHERE pa.punch_in IS NOT NULL ${peFilters} ${paFilters}
     `;
 
     const punchedOutProfessionalsQuery = `
       ${cte}
       SELECT COUNT(DISTINCT pa.professional_id) AS total
       FROM professional_attendance pa
-      WHERE pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL ${filters}
+      JOIN professional_employees pe ON pa.professional_id = pe.id
+      WHERE pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL ${peFilters} ${paFilters}
     `;
 
     const punchedOutSystemProfessionalsQuery = `
       ${cte}
       SELECT COUNT(DISTINCT pa.professional_id) AS total
       FROM professional_attendance pa
+      JOIN professional_employees pe ON pa.professional_id = pe.id
       WHERE pa.punch_in IS NOT NULL
         AND pa.punch_out IS NOT NULL
         AND (
           pa.auto_punched_out = true
           OR LOWER(COALESCE(pa.out_address, '')) LIKE '%auto punch%'
-        ) ${filters}
+        ) ${peFilters} ${paFilters}
     `;
 
     let leaveQuery = null;
     let leaveParams = [];
     if (date) {
-      leaveParams = [...peParams, date];
+      leaveParams = [...peCountParams, date];
       const leaveDateIdx = leaveParams.length;
       leaveQuery = `
-        ${peCte}
+        ${cte}
         SELECT COUNT(DISTINCT plr.professional_id) AS total
         FROM professional_leave_requests plr
         JOIN professional_employees pe ON plr.professional_id = pe.id
@@ -435,7 +402,7 @@ const getAttendanceSummary = async (req, res) => {
       punchedOutSystemProfessionalsResult,
       leaveResult
     ] = await Promise.all([
-      runQueryWithTimeout(peCountQuery, peParams),
+      runQueryWithTimeout(peCountQuery, peCountParams),
       runQueryWithTimeout(aggQuery, params),
       runQueryWithTimeout(presentProfessionalsQuery, params),
       runQueryWithTimeout(punchedOutProfessionalsQuery, params),
