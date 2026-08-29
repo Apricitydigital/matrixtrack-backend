@@ -87,6 +87,16 @@ async function runMigrations() {
       console.warn("[Migration] Designation City linkage SQL file not found at:", desigCitySqlPath);
     }
 
+    console.log("[Migration] Running City Traffic Cost migrations...");
+    const cityCostSqlPath = path.join(__dirname, "migrations", "20260709_create_city_traffic_cost_tables.sql");
+    if (fs.existsSync(cityCostSqlPath)) {
+      const cityCostSql = fs.readFileSync(cityCostSqlPath, "utf8");
+      await client.query(cityCostSql);
+      console.log("[Migration] City Traffic Cost migrations ready.");
+    } else {
+      console.warn("[Migration] City Traffic Cost SQL file not found at:", cityCostSqlPath);
+    }
+
     await ensureProfessionalLeaveSchema();
     console.log("[Migration] Professional leave schema ready.");
     await ensureProfessionalPushSchema(client);
