@@ -112,6 +112,9 @@ const getAttendanceList = async (req, res) => {
       params.push(professional_id);
     }
 
+    let paCheckJoin = '';
+    let paCheckOrder = '';
+
     // Count query is based only on professional filters (not date/month attendance filters)
     const countParams = [...params];
 
@@ -120,6 +123,12 @@ const getAttendanceList = async (req, res) => {
       paFilters += ` AND pa.date = $${paramCount}`;
       params.push(date);
       leaveDateParamIndex = paramCount;
+      paCheckJoin = `
+        LEFT JOIN professional_attendance pa_check
+          ON pa_check.professional_id = pe.id
+         AND pa_check.date = $${paramCount}::date
+      `;
+      paCheckOrder = `CASE WHEN pa_check.punch_in IS NOT NULL THEN 0 ELSE 1 END,`;
     } else if (month) {
       // YYYY-MM format
       const [yyyy, mm] = month.split('-');
@@ -129,11 +138,35 @@ const getAttendanceList = async (req, res) => {
       paramCount++;
       paFilters += ` AND EXTRACT(MONTH FROM pa.date) = $${paramCount}`;
       params.push(mm);
+      paCheckJoin = `
+        LEFT JOIN professional_attendance pa_check
+          ON pa_check.professional_id = pe.id
+         AND EXTRACT(YEAR FROM pa_check.date) = $${paramCount - 1}
+         AND EXTRACT(MONTH FROM pa_check.date) = $${paramCount}
+      `;
+      paCheckOrder = `CASE WHEN pa_check.punch_in IS NOT NULL THEN 0 ELSE 1 END,`;
     }
+
+    const distinctCte = `
+      ${cte ? cte + ',' : 'WITH'} distinct_pe AS (
+        SELECT DISTINCT ON (
+          COALESCE(NULLIF(TRIM(pe.mobile), ''), NULLIF(TRIM(pe.emp_code), ''), pe.id::text)
+        ) pe.*
+        FROM professional_employees pe
+        JOIN zones z ON pe.zone_id = z.zone_id
+        JOIN cities c ON pe.city_id = c.city_id
+        ${paCheckJoin}
+        WHERE 1=1 ${peFilters}
+        ORDER BY
+          COALESCE(NULLIF(TRIM(pe.mobile), ''), NULLIF(TRIM(pe.emp_code), ''), pe.id::text),
+          ${paCheckOrder}
+          pe.created_at DESC
+      )
+    `;
 
     const leaveDateExpr = leaveDateParamIndex ? `$${leaveDateParamIndex}::date` : "NULL::date";
     const query = `
-      ${cte}
+      ${distinctCte}
       SELECT
         pa.id as attendance_id,
         pe.id as professional_id,
@@ -167,7 +200,7 @@ const getAttendanceList = async (req, res) => {
         COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
         z.zone_name,
         c.city_name
-      FROM professional_employees pe
+      FROM distinct_pe pe
       LEFT JOIN LATERAL (
         SELECT pa_inner.*
         FROM professional_attendance pa_inner
@@ -197,18 +230,16 @@ const getAttendanceList = async (req, res) => {
       LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
-      WHERE 1=1 ${peFilters}
       ORDER BY COALESCE(pa.date, leave_row.requested_date, DATE '1900-01-01') DESC, pe.full_name ASC
       LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
     `;
 
     const countQuery = `
-      ${cte}
+      ${distinctCte}
       SELECT COUNT(*) as total
-      FROM professional_employees pe
+      FROM distinct_pe pe
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
-      WHERE 1=1 ${peFilters}
     `;
 
     // Add LIMIT and OFFSET to params for the main query
@@ -294,81 +325,123 @@ const getAttendanceSummary = async (req, res) => {
     // Date filters on professional_attendance (pa)
     let paFilters = '';
     let paParamCount = peParamCount;
+    let paCheckJoin = '';
+    let paCheckOrder = '';
 
     if (dateRange) {
       paParamCount++;
-      paFilters += ` AND pa.date >= $${paParamCount}`;
+      const startIdx = paParamCount;
       params.push(dateRange.startDate);
       paParamCount++;
-      paFilters += ` AND pa.date <= $${paParamCount}`;
+      const endIdx = paParamCount;
       params.push(dateRange.endDate);
+      paFilters += ` AND pa.date >= $${startIdx} AND pa.date <= $${endIdx}`;
+      paCheckJoin = `
+        LEFT JOIN professional_attendance pa_check
+          ON pa_check.professional_id = pe.id
+         AND pa_check.date >= $${startIdx}::date
+         AND pa_check.date <= $${endIdx}::date
+      `;
+      paCheckOrder = `CASE WHEN pa_check.punch_in IS NOT NULL THEN 0 ELSE 1 END,`;
     } else if (date) {
       paParamCount++;
-      paFilters += ` AND pa.date = $${paParamCount}`;
+      const dateIdx = paParamCount;
       params.push(date);
+      paFilters += ` AND pa.date = $${dateIdx}`;
+      paCheckJoin = `
+        LEFT JOIN professional_attendance pa_check
+          ON pa_check.professional_id = pe.id
+         AND pa_check.date = $${dateIdx}::date
+      `;
+      paCheckOrder = `CASE WHEN pa_check.punch_in IS NOT NULL THEN 0 ELSE 1 END,`;
     } else {
       const [yyyy, mm] = month.split('-');
       paParamCount++;
-      paFilters += ` AND EXTRACT(YEAR FROM pa.date) = $${paParamCount}`;
+      const yyyyIdx = paParamCount;
       params.push(yyyy);
       paParamCount++;
-      paFilters += ` AND EXTRACT(MONTH FROM pa.date) = $${paParamCount}`;
+      const mmIdx = paParamCount;
       params.push(mm);
+      paFilters += ` AND EXTRACT(YEAR FROM pa.date) = $${yyyyIdx} AND EXTRACT(MONTH FROM pa.date) = $${mmIdx}`;
+      paCheckJoin = `
+        LEFT JOIN professional_attendance pa_check
+          ON pa_check.professional_id = pe.id
+         AND EXTRACT(YEAR FROM pa_check.date) = $${yyyyIdx}
+         AND EXTRACT(MONTH FROM pa_check.date) = $${mmIdx}
+      `;
+      paCheckOrder = `CASE WHEN pa_check.punch_in IS NOT NULL THEN 0 ELSE 1 END,`;
     }
+
+    const distinctCte = `
+      ${cte ? cte + ',' : 'WITH'} distinct_pe AS (
+        SELECT DISTINCT ON (
+          COALESCE(NULLIF(TRIM(pe.mobile), ''), NULLIF(TRIM(pe.emp_code), ''), pe.id::text)
+        ) pe.*
+        FROM professional_employees pe
+        JOIN zones z ON pe.zone_id = z.zone_id
+        JOIN cities c ON pe.city_id = c.city_id
+        ${paCheckJoin}
+        WHERE 1=1 ${peFilters}
+        ORDER BY
+          COALESCE(NULLIF(TRIM(pe.mobile), ''), NULLIF(TRIM(pe.emp_code), ''), pe.id::text),
+          ${paCheckOrder}
+          pe.created_at DESC
+      )
+    `;
 
     const peCountParams = params.slice(0, peParamCount);
 
     const peCountQuery = `
-      ${cte}
-      SELECT COUNT(*) as total FROM professional_employees pe WHERE 1=1 ${peFilters}
+      ${distinctCte}
+      SELECT COUNT(*) as total FROM distinct_pe pe
     `;
 
     // By Ward Aggregation
     const aggQuery = `
-      ${cte}
+      ${distinctCte}
       SELECT
         COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
         COUNT(DISTINCT pa.professional_id) as unique_professionals_present,
         COUNT(pa.id) as total_present_days
       FROM professional_attendance pa
-      JOIN professional_employees pe ON pa.professional_id = pe.id
+      JOIN distinct_pe pe ON pa.professional_id = pe.id
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
       LEFT JOIN sectors sec ON pa.ward_id = sec.sector_id
       LEFT JOIN wards w ON pa.ward_id = w.ward_id
-      WHERE 1=1 ${peFilters} ${paFilters}
+      WHERE 1=1 ${paFilters}
       GROUP BY COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name)
       ORDER BY COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) ASC
     `;
 
     const presentProfessionalsQuery = `
-      ${cte}
+      ${distinctCte}
       SELECT COUNT(DISTINCT pa.professional_id) AS total
       FROM professional_attendance pa
-      JOIN professional_employees pe ON pa.professional_id = pe.id
-      WHERE pa.punch_in IS NOT NULL ${peFilters} ${paFilters}
+      JOIN distinct_pe pe ON pa.professional_id = pe.id
+      WHERE pa.punch_in IS NOT NULL ${paFilters}
     `;
 
     const punchedOutProfessionalsQuery = `
-      ${cte}
+      ${distinctCte}
       SELECT COUNT(DISTINCT pa.professional_id) AS total
       FROM professional_attendance pa
-      JOIN professional_employees pe ON pa.professional_id = pe.id
-      WHERE pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL ${peFilters} ${paFilters}
+      JOIN distinct_pe pe ON pa.professional_id = pe.id
+      WHERE pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL ${paFilters}
     `;
 
     const punchedOutSystemProfessionalsQuery = `
-      ${cte}
+      ${distinctCte}
       SELECT COUNT(DISTINCT pa.professional_id) AS total
       FROM professional_attendance pa
-      JOIN professional_employees pe ON pa.professional_id = pe.id
+      JOIN distinct_pe pe ON pa.professional_id = pe.id
       WHERE pa.punch_in IS NOT NULL
         AND pa.punch_out IS NOT NULL
         AND (
           pa.auto_punched_out = true
           OR LOWER(COALESCE(pa.out_address, '')) LIKE '%auto punch%'
-        ) ${peFilters} ${paFilters}
+        ) ${paFilters}
     `;
 
     let leaveQuery = null;
@@ -377,14 +450,12 @@ const getAttendanceSummary = async (req, res) => {
       leaveParams = [...peCountParams, date];
       const leaveDateIdx = leaveParams.length;
       leaveQuery = `
-        ${cte}
+        ${distinctCte}
         SELECT COUNT(DISTINCT plr.professional_id) AS total
         FROM professional_leave_requests plr
-        JOIN professional_employees pe ON plr.professional_id = pe.id
+        JOIN distinct_pe pe ON plr.professional_id = pe.id
         WHERE plr.requested_date = $${leaveDateIdx}
           AND plr.status = 'approved'
-          AND pe.is_active = true
-          ${peFilters}
           AND NOT EXISTS (
             SELECT 1 FROM professional_attendance pa
             WHERE pa.professional_id = plr.professional_id
@@ -550,8 +621,28 @@ const getDateRangeAttendanceSummary = async (req, res) => {
     const endParam = paramCount + 2;
     const pageParams = [dateRange.startDate, dateRange.endDate, numericLimit, offset];
 
+    const distinctCte = `
+      ${cte ? cte + ',' : 'WITH'} distinct_pe AS (
+        SELECT DISTINCT ON (
+          COALESCE(NULLIF(TRIM(pe.mobile), ''), NULLIF(TRIM(pe.emp_code), ''), pe.id::text)
+        ) pe.*
+        FROM professional_employees pe
+        JOIN zones z ON pe.zone_id = z.zone_id
+        JOIN cities c ON pe.city_id = c.city_id
+        LEFT JOIN professional_attendance pa_check
+          ON pa_check.professional_id = pe.id
+         AND pa_check.date >= $${startParam}::date
+         AND pa_check.date <= $${endParam}::date
+        WHERE 1=1 ${peFilters}
+        ORDER BY
+          COALESCE(NULLIF(TRIM(pe.mobile), ''), NULLIF(TRIM(pe.emp_code), ''), pe.id::text),
+          CASE WHEN pa_check.punch_in IS NOT NULL THEN 0 ELSE 1 END,
+          pe.created_at DESC
+      )
+    `;
+
     const dataQuery = `
-      ${cte}
+      ${distinctCte}
       SELECT
         pe.id AS professional_id,
         pe.full_name,
@@ -594,7 +685,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         -- Working days = total range days - week off days
         ($${endParam}::date - $${startParam}::date + 1) - COALESCE(weekoff_agg.week_off_count, 0) AS working_days
 
-      FROM professional_employees pe
+      FROM distinct_pe pe
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
       LEFT JOIN professional_attendance pa
@@ -645,7 +736,6 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       LEFT JOIN sectors sec ON pe.ward_id = sec.sector_id
       LEFT JOIN wards w ON pe.ward_id = w.ward_id
       LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
-      WHERE 1=1 ${peFilters}
       GROUP BY pe.id, pe.full_name, pe.emp_code, pe.mobile, pe.email,
                COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name),
                COALESCE(wk_req.ward_name, wk.ward_name),
@@ -657,12 +747,11 @@ const getDateRangeAttendanceSummary = async (req, res) => {
     `;
 
     const countQuery = `
-      ${cte}
+      ${distinctCte}
       SELECT COUNT(*) AS total
-      FROM professional_employees pe
+      FROM distinct_pe pe
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
-      WHERE 1=1 ${peFilters}
     `;
 
     const finalParams = [...params, ...pageParams];
@@ -874,26 +963,40 @@ const getEmployeesList = async (req, res) => {
     let filters = `AND ${whereClause}`;
     const paramCount = params.length;
 
+    const distinctCte = `
+      ${cte ? cte + ',' : 'WITH'} distinct_pe AS (
+        SELECT DISTINCT ON (
+          COALESCE(NULLIF(TRIM(pe.mobile), ''), NULLIF(TRIM(pe.emp_code), ''), pe.id::text)
+        ) pe.*
+        FROM professional_employees pe
+        JOIN zones z ON pe.zone_id = z.zone_id
+        JOIN cities c ON pe.city_id = c.city_id
+        WHERE 1=1 ${filters}
+        ORDER BY
+          COALESCE(NULLIF(TRIM(pe.mobile), ''), NULLIF(TRIM(pe.emp_code), ''), pe.id::text),
+          pe.created_at DESC
+      )
+    `;
+
     const query = `
-      ${cte}
+      ${distinctCte}
       SELECT
         pe.id, pe.full_name as name, pe.emp_code, pe.mobile, pe.is_active, pe.face_locked, pe.created_at,
         COALESCE(sec.sector_name, w.ward_name) AS ward_name, z.zone_name, c.city_name,
         wk.ward_name as kothi_name
-      FROM professional_employees pe
+      FROM distinct_pe pe
       LEFT JOIN sectors sec ON pe.ward_id = sec.sector_id
       LEFT JOIN wards w ON pe.ward_id = w.ward_id
       LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
-      WHERE 1=1 ${filters}
       ORDER BY pe.created_at DESC
       LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
     `;
 
     const countQuery = `
-      ${cte}
-      SELECT COUNT(*) as total FROM professional_employees pe WHERE 1=1 ${filters}
+      ${distinctCte}
+      SELECT COUNT(*) as total FROM distinct_pe pe
     `;
 
     const mainParams = [...params, limit, offset];
