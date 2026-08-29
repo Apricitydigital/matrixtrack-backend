@@ -518,6 +518,7 @@ router.get("/active-sessions", async (req, res) => {
        FROM active_sessions s
        JOIN users u ON s.user_id = u.user_id
        WHERE s.is_revoked = FALSE
+         AND s.device ILIKE '%Mozilla%'
        ORDER BY s.logged_in_at DESC`
     );
     res.json(rows);
