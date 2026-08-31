@@ -564,7 +564,7 @@ router.post("/force-logout/:sessionId", requireSuperAdmin, async (req, res) => {
       [req.user.user_id, sessionId]
     );
 
-    // Add to audit log (assuming audit_logs table exists and handles this)
+    // Add to audit log
     try {
         const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
         await pool.query(
@@ -573,7 +573,7 @@ router.post("/force-logout/:sessionId", requireSuperAdmin, async (req, res) => {
           [
             req.user.user_id,
             "FORCE_LOGOUT",
-            `Force logged out admin ${targetUser.name} (${targetUser.email})`,
+            `Force logged out session ID ${sessionId} for admin ${targetUser.name} (${targetUser.email})`,
             clientIp
           ]
         );
@@ -588,4 +588,99 @@ router.post("/force-logout/:sessionId", requireSuperAdmin, async (req, res) => {
   }
 });
 
+// POST /api/admin-management/force-logout-user/:userId
+router.post("/force-logout-user/:userId", requireSuperAdmin, async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const userCheck = await pool.query(
+      "SELECT name, email FROM users WHERE user_id = $1",
+      [userId]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const targetUser = userCheck.rows[0];
+
+    if (targetUser.email === SUPER_ADMIN_EMAIL) {
+      return res.status(403).json({ error: "Cannot force logout sessions for primary Super Admin." });
+    }
+
+    const updateRes = await pool.query(
+      `UPDATE active_sessions 
+       SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() 
+       WHERE user_id = $2 AND is_revoked = FALSE AND (user_id != $1 OR id != COALESCE((SELECT id FROM active_sessions WHERE user_id = $1 ORDER BY logged_in_at DESC LIMIT 1), -1))
+       RETURNING id`,
+      [req.user.user_id, userId]
+    );
+
+    const revokedCount = updateRes.rowCount;
+
+    try {
+      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
+      await pool.query(
+        `INSERT INTO activity_logs (user_id, action, details, ip_address, created_at)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        [
+          req.user.user_id,
+          "FORCE_LOGOUT_ALL_USER",
+          `Force logged out all ${revokedCount} session(s) for user ${targetUser.name} (${targetUser.email})`,
+          clientIp
+        ]
+      );
+    } catch(auditErr) {
+      console.error("Warning: Failed to log user force logout to activity_logs:", auditErr.message);
+    }
+
+    res.json({ message: `Successfully terminated all ${revokedCount} session(s) for ${targetUser.name}.`, count: revokedCount });
+  } catch (error) {
+    console.error("Error force logging out all sessions for user:", error);
+    res.status(500).json({ error: "Failed to revoke all user sessions" });
+  }
+});
+
+// POST /api/admin-management/force-logout-bulk
+router.post("/force-logout-bulk", requireSuperAdmin, async (req, res) => {
+  const { sessionIds } = req.body;
+  if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+    return res.status(400).json({ error: "No session IDs provided for bulk termination." });
+  }
+
+  try {
+    const updateRes = await pool.query(
+      `UPDATE active_sessions 
+       SET is_revoked = TRUE, revoked_by = $1, revoked_at = NOW() 
+       WHERE id = ANY($2::int[]) AND is_revoked = FALSE
+         AND user_id NOT IN (SELECT user_id FROM users WHERE email = $3)
+       RETURNING id`,
+      [req.user.user_id, sessionIds, SUPER_ADMIN_EMAIL]
+    );
+
+    const revokedCount = updateRes.rowCount;
+
+    try {
+      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.connection?.remoteAddress || req.ip || "unknown";
+      await pool.query(
+        `INSERT INTO activity_logs (user_id, action, details, ip_address, created_at)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        [
+          req.user.user_id,
+          "FORCE_LOGOUT_BULK",
+          `Bulk force logged out ${revokedCount} session(s)`,
+          clientIp
+        ]
+      );
+    } catch(auditErr) {
+      console.error("Warning: Failed to log bulk force logout to activity_logs:", auditErr.message);
+    }
+
+    res.json({ message: `Successfully terminated ${revokedCount} selected session(s).`, count: revokedCount });
+  } catch (error) {
+    console.error("Error performing bulk force logout:", error);
+    res.status(500).json({ error: "Failed to perform bulk force logout" });
+  }
+});
+
 module.exports = router;
+
