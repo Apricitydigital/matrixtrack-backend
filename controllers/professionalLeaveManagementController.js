@@ -128,11 +128,47 @@ const getLeaveRequests = async (req, res) => {
     }
     if (ward_id) {
       params.push(ward_id);
-      filters += ` AND pe.ward_id = $${params.length}`;
+      filters += `
+        AND (
+          pe.ward_id = $${params.length}
+          OR EXISTS (
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.ward_id
+              AND w_filter.sector_id = $${params.length}
+          )
+          OR EXISTS (
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.kothi_id
+              AND w_filter.sector_id = $${params.length}
+          )
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (
+                spr_filter.ward_id = $${params.length}
+                OR EXISTS (
+                  SELECT 1 FROM wards w_filter
+                  WHERE w_filter.ward_id = spr_filter.ward_id
+                    AND w_filter.sector_id = $${params.length}
+                )
+              )
+          )
+        )
+      `;
     }
     if (kothi_id) {
       params.push(kothi_id);
-      filters += ` AND pe.kothi_id = $${params.length}`;
+      filters += `
+        AND (
+          pe.kothi_id = $${params.length}
+          OR pe.ward_id = $${params.length}
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (spr_filter.kothi_id = $${params.length} OR spr_filter.ward_id = $${params.length})
+          )
+        )
+      `;
     }
 
     const dataParams = [...params, normalizedLimit, offset];

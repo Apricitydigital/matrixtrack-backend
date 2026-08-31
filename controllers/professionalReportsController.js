@@ -92,10 +92,26 @@ const getAttendanceList = async (req, res) => {
         AND (
           pe.ward_id = $${paramCount}
           OR EXISTS (
-            SELECT 1
-            FROM wards w_filter
-            WHERE w_filter.ward_id = $${paramCount}
-              AND w_filter.sector_id = pe.ward_id
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.ward_id
+              AND w_filter.sector_id = $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.kothi_id
+              AND w_filter.sector_id = $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (
+                spr_filter.ward_id = $${paramCount}
+                OR EXISTS (
+                  SELECT 1 FROM wards w_filter
+                  WHERE w_filter.ward_id = spr_filter.ward_id
+                    AND w_filter.sector_id = $${paramCount}
+                )
+              )
           )
         )
       `;
@@ -103,7 +119,17 @@ const getAttendanceList = async (req, res) => {
     }
     if (kothi_id) {
       paramCount++;
-      peFilters += ` AND pe.kothi_id = $${paramCount}`;
+      peFilters += `
+        AND (
+          pe.kothi_id = $${paramCount}
+          OR pe.ward_id = $${paramCount}
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (spr_filter.kothi_id = $${paramCount} OR spr_filter.ward_id = $${paramCount})
+          )
+        )
+      `;
       params.push(kothi_id);
     }
     if (professional_id) {
@@ -307,16 +333,46 @@ const getAttendanceSummary = async (req, res) => {
         AND (
           pe.ward_id = $${peParamCount}
           OR EXISTS (
-            SELECT 1
-            FROM wards w_filter
-            WHERE w_filter.ward_id = $${peParamCount}
-              AND w_filter.sector_id = pe.ward_id
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.ward_id
+              AND w_filter.sector_id = $${peParamCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.kothi_id
+              AND w_filter.sector_id = $${peParamCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (
+                spr_filter.ward_id = $${peParamCount}
+                OR EXISTS (
+                  SELECT 1 FROM wards w_filter
+                  WHERE w_filter.ward_id = spr_filter.ward_id
+                    AND w_filter.sector_id = $${peParamCount}
+                )
+              )
           )
         )
       `;
       params.push(ward_id);
     }
-    if (kothi_id) { peParamCount++; peFilters += ` AND pe.kothi_id = $${peParamCount}`; params.push(kothi_id); }
+    if (kothi_id) {
+      peParamCount++;
+      peFilters += `
+        AND (
+          pe.kothi_id = $${peParamCount}
+          OR pe.ward_id = $${peParamCount}
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (spr_filter.kothi_id = $${peParamCount} OR spr_filter.ward_id = $${peParamCount})
+          )
+        )
+      `;
+      params.push(kothi_id);
+    }
     if (professional_id) { peParamCount++; peFilters += ` AND pe.id = $${peParamCount}`; params.push(professional_id); }
 
     // Date filters on professional_attendance (pa)
@@ -594,10 +650,26 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         AND (
           pe.ward_id = $${paramCount}
           OR EXISTS (
-            SELECT 1
-            FROM wards w_filter
-            WHERE w_filter.ward_id = $${paramCount}
-              AND w_filter.sector_id = pe.ward_id
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.ward_id
+              AND w_filter.sector_id = $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.kothi_id
+              AND w_filter.sector_id = $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (
+                spr_filter.ward_id = $${paramCount}
+                OR EXISTS (
+                  SELECT 1 FROM wards w_filter
+                  WHERE w_filter.ward_id = spr_filter.ward_id
+                    AND w_filter.sector_id = $${paramCount}
+                )
+              )
           )
         )
       `;
@@ -605,7 +677,17 @@ const getDateRangeAttendanceSummary = async (req, res) => {
     }
     if (kothi_id) {
       paramCount++;
-      peFilters += ` AND pe.kothi_id = $${paramCount}`;
+      peFilters += `
+        AND (
+          pe.kothi_id = $${paramCount}
+          OR pe.ward_id = $${paramCount}
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (spr_filter.kothi_id = $${paramCount} OR spr_filter.ward_id = $${paramCount})
+          )
+        )
+      `;
       params.push(kothi_id);
     }
     if (professional_id) {
@@ -952,13 +1034,96 @@ const getDateRangeAttendanceDetails = async (req, res) => {
  */
 const getEmployeesList = async (req, res) => {
   try {
-    const { page = 1, limit = 50 } = req.query;
-    const offset = (page - 1) * limit;
+    const { city_id, zone_id, ward_id, kothi_id, page = 1, limit = 50, search } = req.query;
+    const numericLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 10000);
+    const numericPage = Math.max(parseInt(page, 10) || 1, 1);
+    const offset = (numericPage - 1) * numericLimit;
 
     const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, 'pe');
     
     let filters = `AND ${whereClause}`;
-    const paramCount = params.length;
+    let paramCount = params.length;
+
+    if (search && String(search).trim()) {
+      paramCount++;
+      const searchPattern = `%${String(search).trim()}%`;
+      filters += `
+        AND (
+          pe.full_name ILIKE $${paramCount}
+          OR pe.emp_code ILIKE $${paramCount}
+          OR pe.mobile ILIKE $${paramCount}
+          OR pe.email ILIKE $${paramCount}
+          OR z.zone_name ILIKE $${paramCount}
+          OR c.city_name ILIKE $${paramCount}
+          OR EXISTS (
+            SELECT 1 FROM wards w_s WHERE w_s.ward_id = pe.ward_id AND w_s.ward_name ILIKE $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM sectors s_s WHERE s_s.sector_id = pe.ward_id AND s_s.sector_name ILIKE $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM wards k_s WHERE k_s.ward_id = pe.kothi_id AND k_s.ward_name ILIKE $${paramCount}
+          )
+        )
+      `;
+      params.push(searchPattern);
+    }
+    if (city_id) {
+      paramCount++;
+      filters += ` AND pe.city_id = $${paramCount}`;
+      params.push(city_id);
+    }
+    if (zone_id) {
+      paramCount++;
+      filters += ` AND pe.zone_id = $${paramCount}`;
+      params.push(zone_id);
+    }
+    if (ward_id) {
+      paramCount++;
+      filters += `
+        AND (
+          pe.ward_id = $${paramCount}
+          OR EXISTS (
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.ward_id
+              AND w_filter.sector_id = $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM wards w_filter
+            WHERE w_filter.ward_id = pe.kothi_id
+              AND w_filter.sector_id = $${paramCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (
+                spr_filter.ward_id = $${paramCount}
+                OR EXISTS (
+                  SELECT 1 FROM wards w_filter
+                  WHERE w_filter.ward_id = spr_filter.ward_id
+                    AND w_filter.sector_id = $${paramCount}
+                )
+              )
+          )
+        )
+      `;
+      params.push(ward_id);
+    }
+    if (kothi_id) {
+      paramCount++;
+      filters += `
+        AND (
+          pe.kothi_id = $${paramCount}
+          OR pe.ward_id = $${paramCount}
+          OR EXISTS (
+            SELECT 1 FROM self_punch_requests spr_filter
+            WHERE spr_filter.id = pe.request_id
+              AND (spr_filter.kothi_id = $${paramCount} OR spr_filter.ward_id = $${paramCount})
+          )
+        )
+      `;
+      params.push(kothi_id);
+    }
 
     const distinctCte = `
       ${cte ? cte + ',' : 'WITH'} distinct_pe AS (
