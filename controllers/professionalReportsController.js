@@ -1066,12 +1066,13 @@ const getDateRangeAttendanceDetails = async (req, res) => {
       dateRange.endDate
     ]);
 
+    const shouldSignPhotos = req.query.include_photos === 'true' || detailsResult.rows.length <= 31;
     const mappedRows = await Promise.all(
       detailsResult.rows.map(async (row) => ({
         ...row,
         hours_worked: row.hours_worked == null ? '' : parseFloat(row.hours_worked).toFixed(2),
-        punch_in_photo_url: row.punch_in_photo_url ? await getSignedS3Url(row.punch_in_photo_url, 900) : null,
-        punch_out_photo_url: row.punch_out_photo_url ? await getSignedS3Url(row.punch_out_photo_url, 900) : null
+        punch_in_photo_url: row.punch_in_photo_url && shouldSignPhotos ? await getSignedS3Url(row.punch_in_photo_url, 900) : (row.punch_in_photo_url || null),
+        punch_out_photo_url: row.punch_out_photo_url && shouldSignPhotos ? await getSignedS3Url(row.punch_out_photo_url, 900) : (row.punch_out_photo_url || null)
       }))
     );
 
