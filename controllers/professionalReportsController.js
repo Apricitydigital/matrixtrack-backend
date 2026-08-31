@@ -115,9 +115,6 @@ const getAttendanceList = async (req, res) => {
     let paCheckJoin = '';
     let paCheckOrder = '';
 
-    // Count query is based only on professional filters (not date/month attendance filters)
-    const countParams = [...params];
-
     if (date) {
       paramCount++;
       paFilters += ` AND pa.date = $${paramCount}`;
@@ -247,7 +244,7 @@ const getAttendanceList = async (req, res) => {
 
     const [dataResult, countResult] = await Promise.all([
       runQueryWithTimeout(query, mainParams),
-      runQueryWithTimeout(countQuery, countParams)
+      runQueryWithTimeout(countQuery, params)
     ]);
 
     const total = parseInt(countResult.rows[0].total, 10);
@@ -447,19 +444,19 @@ const getAttendanceSummary = async (req, res) => {
     let leaveQuery = null;
     let leaveParams = [];
     if (date) {
-      leaveParams = [...peCountParams, date];
-      const leaveDateIdx = leaveParams.length;
+      const dateIdx = paParamCount;
+      leaveParams = params;
       leaveQuery = `
         ${distinctCte}
         SELECT COUNT(DISTINCT plr.professional_id) AS total
         FROM professional_leave_requests plr
         JOIN distinct_pe pe ON plr.professional_id = pe.id
-        WHERE plr.requested_date = $${leaveDateIdx}
+        WHERE plr.requested_date = $${dateIdx}
           AND plr.status = 'approved'
           AND NOT EXISTS (
             SELECT 1 FROM professional_attendance pa
             WHERE pa.professional_id = plr.professional_id
-              AND pa.date = $${leaveDateIdx}
+              AND pa.date = $${dateIdx}
               AND pa.punch_in IS NOT NULL
           )
       `;
@@ -473,7 +470,7 @@ const getAttendanceSummary = async (req, res) => {
       punchedOutSystemProfessionalsResult,
       leaveResult
     ] = await Promise.all([
-      runQueryWithTimeout(peCountQuery, peCountParams),
+      runQueryWithTimeout(peCountQuery, params),
       runQueryWithTimeout(aggQuery, params),
       runQueryWithTimeout(presentProfessionalsQuery, params),
       runQueryWithTimeout(punchedOutProfessionalsQuery, params),
@@ -755,7 +752,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
     `;
 
     const finalParams = [...params, ...pageParams];
-    const countParams = [...params];
+    const countParams = [...params, dateRange.startDate, dateRange.endDate];
 
     const [dataResult, countResult] = await Promise.all([
       runQueryWithTimeout(dataQuery, finalParams),
