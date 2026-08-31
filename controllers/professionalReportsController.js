@@ -31,6 +31,86 @@ const getValidatedDateRange = (startDate, endDate) => {
   return { startDate, endDate };
 };
 
+const buildWardAndKothiFilters = (ward_id, kothi_id, startParamCount, params) => {
+  let sql = '';
+  let paramCount = startParamCount;
+
+  if (ward_id) {
+    paramCount++;
+    sql += `
+      AND (
+        pe.ward_id = $${paramCount}
+        OR pe.kothi_id = $${paramCount}
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE w_filter.ward_id = pe.ward_id
+            AND (w_filter.sector_id = $${paramCount} OR w_filter.ward_id = $${paramCount})
+        )
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE w_filter.ward_id = pe.kothi_id
+            AND (w_filter.sector_id = $${paramCount} OR w_filter.ward_id = $${paramCount})
+        )
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE w_filter.sector_id = pe.ward_id
+            AND w_filter.ward_id = $${paramCount}
+        )
+        OR EXISTS (
+          SELECT 1 FROM self_punch_requests spr_filter
+          WHERE spr_filter.id = pe.request_id
+            AND (
+              spr_filter.ward_id = $${paramCount}
+              OR spr_filter.kothi_id = $${paramCount}
+              OR EXISTS (
+                SELECT 1 FROM wards w_filter
+                WHERE (w_filter.ward_id = spr_filter.ward_id OR w_filter.ward_id = spr_filter.kothi_id)
+                  AND (w_filter.sector_id = $${paramCount} OR w_filter.ward_id = $${paramCount})
+              )
+            )
+        )
+      )
+    `;
+    params.push(ward_id);
+  }
+
+  if (kothi_id) {
+    paramCount++;
+    sql += `
+      AND (
+        pe.kothi_id = $${paramCount}
+        OR pe.ward_id = $${paramCount}
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE (w_filter.ward_id = pe.kothi_id OR w_filter.ward_id = pe.ward_id)
+            AND w_filter.ward_id = $${paramCount}
+        )
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE (w_filter.sector_id = pe.ward_id OR w_filter.sector_id = pe.kothi_id)
+            AND w_filter.ward_id = $${paramCount}
+        )
+        OR EXISTS (
+          SELECT 1 FROM self_punch_requests spr_filter
+          WHERE spr_filter.id = pe.request_id
+            AND (
+              spr_filter.kothi_id = $${paramCount}
+              OR spr_filter.ward_id = $${paramCount}
+              OR EXISTS (
+                SELECT 1 FROM wards w_filter
+                WHERE (w_filter.ward_id = spr_filter.ward_id OR w_filter.ward_id = spr_filter.kothi_id)
+                  AND w_filter.ward_id = $${paramCount}
+              )
+            )
+        )
+      )
+    `;
+    params.push(kothi_id);
+  }
+
+  return { sql, paramCount };
+};
+
 /**
  * @desc    Get paginated list of professional attendance
  * @route   GET /api/admin/professional-attendance
@@ -38,7 +118,6 @@ const getValidatedDateRange = (startDate, endDate) => {
 const getAttendanceList = async (req, res) => {
   try {
     await ensureAttendanceReportColumns();
-    await ensureProfessionalLeaveSchema();
     await ensureProfessionalLeaveSchema();
     const { city_id, zone_id, ward_id, kothi_id, professional_id, date, month, page = 1, limit = 50, search } = req.query;
     const numericLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 10000);
@@ -86,52 +165,11 @@ const getAttendanceList = async (req, res) => {
       peFilters += ` AND pe.zone_id = $${paramCount}`;
       params.push(zone_id);
     }
-    if (ward_id) {
-      paramCount++;
-      peFilters += `
-        AND (
-          pe.ward_id = $${paramCount}
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.ward_id
-              AND w_filter.sector_id = $${paramCount}
-          )
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.kothi_id
-              AND w_filter.sector_id = $${paramCount}
-          )
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (
-                spr_filter.ward_id = $${paramCount}
-                OR EXISTS (
-                  SELECT 1 FROM wards w_filter
-                  WHERE w_filter.ward_id = spr_filter.ward_id
-                    AND w_filter.sector_id = $${paramCount}
-                )
-              )
-          )
-        )
-      `;
-      params.push(ward_id);
-    }
-    if (kothi_id) {
-      paramCount++;
-      peFilters += `
-        AND (
-          pe.kothi_id = $${paramCount}
-          OR pe.ward_id = $${paramCount}
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (spr_filter.kothi_id = $${paramCount} OR spr_filter.ward_id = $${paramCount})
-          )
-        )
-      `;
-      params.push(kothi_id);
-    }
+
+    const geoFilters = buildWardAndKothiFilters(ward_id, kothi_id, paramCount, params);
+    peFilters += geoFilters.sql;
+    paramCount = geoFilters.paramCount;
+
     if (professional_id) {
       paramCount++;
       peFilters += ` AND pe.id = $${paramCount}`;
@@ -219,8 +257,26 @@ const getAttendanceList = async (req, res) => {
         leave_row.reviewed_at AS leave_reviewed_at,
         leave_reviewer.name AS leave_reviewed_by_name,
         pe.selfie_url as profile_selfie_url,
-        COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
-        COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
+        COALESCE(
+          sec_pe.sector_name,
+          sec_w_pe.sector_name,
+          sec_wk.sector_name,
+          sec_req.sector_name,
+          sec_w_req.sector_name,
+          sec.sector_name,
+          sec_w.sector_name,
+          w_pe.ward_name,
+          w_req.ward_name,
+          w.ward_name
+        ) AS ward_name,
+        COALESCE(
+          wk.ward_name,
+          wk_req.ward_name,
+          w_pe.ward_name,
+          w_req.ward_name,
+          w.ward_name,
+          sec_pe.sector_name
+        ) AS kothi_name,
         z.zone_name,
         c.city_name
       FROM distinct_pe pe
@@ -245,12 +301,18 @@ const getAttendanceList = async (req, res) => {
       ) leave_row ON TRUE
       LEFT JOIN users leave_reviewer ON leave_reviewer.user_id = leave_row.reviewed_by
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
+      LEFT JOIN sectors sec_pe ON pe.ward_id = sec_pe.sector_id
+      LEFT JOIN wards w_pe ON pe.ward_id = w_pe.ward_id
+      LEFT JOIN sectors sec_w_pe ON w_pe.sector_id = sec_w_pe.sector_id
+      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      LEFT JOIN sectors sec_wk ON wk.sector_id = sec_wk.sector_id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
+      LEFT JOIN sectors sec_w_req ON w_req.sector_id = sec_w_req.sector_id
       LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
       LEFT JOIN sectors sec ON pa.ward_id = sec.sector_id
       LEFT JOIN wards w ON pa.ward_id = w.ward_id
-      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      LEFT JOIN sectors sec_w ON w.sector_id = sec_w.sector_id
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
       ORDER BY COALESCE(pa.date, leave_row.requested_date, DATE '1900-01-01') DESC, pe.full_name ASC
@@ -327,52 +389,11 @@ const getAttendanceSummary = async (req, res) => {
 
     if (city_id) { peParamCount++; peFilters += ` AND pe.city_id = $${peParamCount}`; params.push(city_id); }
     if (zone_id) { peParamCount++; peFilters += ` AND pe.zone_id = $${peParamCount}`; params.push(zone_id); }
-    if (ward_id) {
-      peParamCount++;
-      peFilters += `
-        AND (
-          pe.ward_id = $${peParamCount}
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.ward_id
-              AND w_filter.sector_id = $${peParamCount}
-          )
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.kothi_id
-              AND w_filter.sector_id = $${peParamCount}
-          )
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (
-                spr_filter.ward_id = $${peParamCount}
-                OR EXISTS (
-                  SELECT 1 FROM wards w_filter
-                  WHERE w_filter.ward_id = spr_filter.ward_id
-                    AND w_filter.sector_id = $${peParamCount}
-                )
-              )
-          )
-        )
-      `;
-      params.push(ward_id);
-    }
-    if (kothi_id) {
-      peParamCount++;
-      peFilters += `
-        AND (
-          pe.kothi_id = $${peParamCount}
-          OR pe.ward_id = $${peParamCount}
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (spr_filter.kothi_id = $${peParamCount} OR spr_filter.ward_id = $${peParamCount})
-          )
-        )
-      `;
-      params.push(kothi_id);
-    }
+
+    const geoFilters = buildWardAndKothiFilters(ward_id, kothi_id, peParamCount, params);
+    peFilters += geoFilters.sql;
+    peParamCount = geoFilters.paramCount;
+
     if (professional_id) { peParamCount++; peFilters += ` AND pe.id = $${peParamCount}`; params.push(professional_id); }
 
     // Date filters on professional_attendance (pa)
@@ -442,8 +463,6 @@ const getAttendanceSummary = async (req, res) => {
       )
     `;
 
-    const peCountParams = params.slice(0, peParamCount);
-
     const peCountQuery = `
       ${distinctCte}
       SELECT COUNT(*) as total FROM distinct_pe pe
@@ -453,19 +472,49 @@ const getAttendanceSummary = async (req, res) => {
     const aggQuery = `
       ${distinctCte}
       SELECT
-        COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
+        COALESCE(
+          sec_pe.sector_name,
+          sec_w_pe.sector_name,
+          sec_wk.sector_name,
+          sec_req.sector_name,
+          sec_w_req.sector_name,
+          sec.sector_name,
+          sec_w.sector_name,
+          w_pe.ward_name,
+          w_req.ward_name,
+          w.ward_name
+        ) AS ward_name,
         COUNT(DISTINCT pa.professional_id) as unique_professionals_present,
         COUNT(pa.id) as total_present_days
       FROM professional_attendance pa
       JOIN distinct_pe pe ON pa.professional_id = pe.id
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
+      LEFT JOIN sectors sec_pe ON pe.ward_id = sec_pe.sector_id
+      LEFT JOIN wards w_pe ON pe.ward_id = w_pe.ward_id
+      LEFT JOIN sectors sec_w_pe ON w_pe.sector_id = sec_w_pe.sector_id
+      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      LEFT JOIN sectors sec_wk ON wk.sector_id = sec_wk.sector_id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
+      LEFT JOIN sectors sec_w_req ON w_req.sector_id = sec_w_req.sector_id
+      LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
       LEFT JOIN sectors sec ON pa.ward_id = sec.sector_id
       LEFT JOIN wards w ON pa.ward_id = w.ward_id
+      LEFT JOIN sectors sec_w ON w.sector_id = sec_w.sector_id
       WHERE 1=1 ${paFilters}
-      GROUP BY COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name)
-      ORDER BY COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) ASC
+      GROUP BY COALESCE(
+        sec_pe.sector_name,
+        sec_w_pe.sector_name,
+        sec_wk.sector_name,
+        sec_req.sector_name,
+        sec_w_req.sector_name,
+        sec.sector_name,
+        sec_w.sector_name,
+        w_pe.ward_name,
+        w_req.ward_name,
+        w.ward_name
+      )
+      ORDER BY 1 ASC
     `;
 
     const presentProfessionalsQuery = `
@@ -644,52 +693,11 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       peFilters += ` AND pe.zone_id = $${paramCount}`;
       params.push(zone_id);
     }
-    if (ward_id) {
-      paramCount++;
-      peFilters += `
-        AND (
-          pe.ward_id = $${paramCount}
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.ward_id
-              AND w_filter.sector_id = $${paramCount}
-          )
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.kothi_id
-              AND w_filter.sector_id = $${paramCount}
-          )
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (
-                spr_filter.ward_id = $${paramCount}
-                OR EXISTS (
-                  SELECT 1 FROM wards w_filter
-                  WHERE w_filter.ward_id = spr_filter.ward_id
-                    AND w_filter.sector_id = $${paramCount}
-                )
-              )
-          )
-        )
-      `;
-      params.push(ward_id);
-    }
-    if (kothi_id) {
-      paramCount++;
-      peFilters += `
-        AND (
-          pe.kothi_id = $${paramCount}
-          OR pe.ward_id = $${paramCount}
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (spr_filter.kothi_id = $${paramCount} OR spr_filter.ward_id = $${paramCount})
-          )
-        )
-      `;
-      params.push(kothi_id);
-    }
+
+    const geoFilters = buildWardAndKothiFilters(ward_id, kothi_id, paramCount, params);
+    peFilters += geoFilters.sql;
+    paramCount = geoFilters.paramCount;
+
     if (professional_id) {
       paramCount++;
       peFilters += ` AND pe.id = $${paramCount}`;
@@ -728,8 +736,26 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         pe.emp_code,
         pe.mobile,
         pe.email,
-        COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
-        COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
+        COALESCE(
+          sec_pe.sector_name,
+          sec_w_pe.sector_name,
+          sec_wk.sector_name,
+          sec_req.sector_name,
+          sec_w_req.sector_name,
+          sec.sector_name,
+          sec_w.sector_name,
+          w_pe.ward_name,
+          w_req.ward_name,
+          w.ward_name
+        ) AS ward_name,
+        COALESCE(
+          wk.ward_name,
+          wk_req.ward_name,
+          w_pe.ward_name,
+          w_req.ward_name,
+          w.ward_name,
+          sec_pe.sector_name
+        ) AS kothi_name,
         z.zone_name,
         c.city_name,
 
@@ -809,15 +835,39 @@ const getDateRangeAttendanceSummary = async (req, res) => {
           )
       ) holiday_agg ON TRUE
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
+      LEFT JOIN sectors sec_pe ON pe.ward_id = sec_pe.sector_id
+      LEFT JOIN wards w_pe ON pe.ward_id = w_pe.ward_id
+      LEFT JOIN sectors sec_w_pe ON w_pe.sector_id = sec_w_pe.sector_id
+      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      LEFT JOIN sectors sec_wk ON wk.sector_id = sec_wk.sector_id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
+      LEFT JOIN sectors sec_w_req ON w_req.sector_id = sec_w_req.sector_id
       LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
-      LEFT JOIN sectors sec ON pe.ward_id = sec.sector_id
-      LEFT JOIN wards w ON pe.ward_id = w.ward_id
-      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      LEFT JOIN sectors sec ON pa.ward_id = sec.sector_id
+      LEFT JOIN wards w ON pa.ward_id = w.ward_id
+      LEFT JOIN sectors sec_w ON w.sector_id = sec_w.sector_id
       GROUP BY pe.id, pe.full_name, pe.emp_code, pe.mobile, pe.email,
-               COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name),
-               COALESCE(wk_req.ward_name, wk.ward_name),
+               COALESCE(
+                 sec_pe.sector_name,
+                 sec_w_pe.sector_name,
+                 sec_wk.sector_name,
+                 sec_req.sector_name,
+                 sec_w_req.sector_name,
+                 sec.sector_name,
+                 sec_w.sector_name,
+                 w_pe.ward_name,
+                 w_req.ward_name,
+                 w.ward_name
+               ),
+               COALESCE(
+                 wk.ward_name,
+                 wk_req.ward_name,
+                 w_pe.ward_name,
+                 w_req.ward_name,
+                 w.ward_name,
+                 sec_pe.sector_name
+               ),
                z.zone_name, c.city_name,
                leave_agg.leave_days, leave_agg.latest_reviewer_name,
                weekoff_agg.week_off_count, holiday_agg.holiday_days
@@ -961,8 +1011,26 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         plr.review_note AS leave_review_note,
         plr.reviewed_at AS leave_reviewed_at,
         leave_reviewer.name AS leave_reviewed_by_name,
-        COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
-        COALESCE(wk_req.ward_name, wk.ward_name) as kothi_name,
+        COALESCE(
+          sec_pe.sector_name,
+          sec_w_pe.sector_name,
+          sec_wk.sector_name,
+          sec_req.sector_name,
+          sec_w_req.sector_name,
+          sec.sector_name,
+          sec_w.sector_name,
+          w_pe.ward_name,
+          w_req.ward_name,
+          w.ward_name
+        ) AS ward_name,
+        COALESCE(
+          wk.ward_name,
+          wk_req.ward_name,
+          w_pe.ward_name,
+          w_req.ward_name,
+          w.ward_name,
+          sec_pe.sector_name
+        ) AS kothi_name,
         z.zone_name,
         c.city_name
       FROM calendar_days cd
@@ -975,12 +1043,18 @@ const getDateRangeAttendanceDetails = async (req, res) => {
        AND plr.requested_date = cd.date
       LEFT JOIN users leave_reviewer ON leave_reviewer.user_id = plr.reviewed_by
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
+      LEFT JOIN sectors sec_pe ON pe.ward_id = sec_pe.sector_id
+      LEFT JOIN wards w_pe ON pe.ward_id = w_pe.ward_id
+      LEFT JOIN sectors sec_w_pe ON w_pe.sector_id = sec_w_pe.sector_id
+      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      LEFT JOIN sectors sec_wk ON wk.sector_id = sec_wk.sector_id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
+      LEFT JOIN sectors sec_w_req ON w_req.sector_id = sec_w_req.sector_id
       LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
-      LEFT JOIN sectors sec ON pe.ward_id = sec.sector_id
-      LEFT JOIN wards w ON pe.ward_id = w.ward_id
-      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      LEFT JOIN sectors sec ON pa.ward_id = sec.sector_id
+      LEFT JOIN wards w ON pa.ward_id = w.ward_id
+      LEFT JOIN sectors sec_w ON w.sector_id = sec_w.sector_id
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
       ORDER BY cd.date DESC, pa.punch_in DESC NULLS LAST
@@ -1078,52 +1152,10 @@ const getEmployeesList = async (req, res) => {
       filters += ` AND pe.zone_id = $${paramCount}`;
       params.push(zone_id);
     }
-    if (ward_id) {
-      paramCount++;
-      filters += `
-        AND (
-          pe.ward_id = $${paramCount}
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.ward_id
-              AND w_filter.sector_id = $${paramCount}
-          )
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.kothi_id
-              AND w_filter.sector_id = $${paramCount}
-          )
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (
-                spr_filter.ward_id = $${paramCount}
-                OR EXISTS (
-                  SELECT 1 FROM wards w_filter
-                  WHERE w_filter.ward_id = spr_filter.ward_id
-                    AND w_filter.sector_id = $${paramCount}
-                )
-              )
-          )
-        )
-      `;
-      params.push(ward_id);
-    }
-    if (kothi_id) {
-      paramCount++;
-      filters += `
-        AND (
-          pe.kothi_id = $${paramCount}
-          OR pe.ward_id = $${paramCount}
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (spr_filter.kothi_id = $${paramCount} OR spr_filter.ward_id = $${paramCount})
-          )
-        )
-      `;
-      params.push(kothi_id);
-    }
+
+    const geoFilters = buildWardAndKothiFilters(ward_id, kothi_id, paramCount, params);
+    filters += geoFilters.sql;
+    paramCount = geoFilters.paramCount;
 
     const distinctCte = `
       ${cte ? cte + ',' : 'WITH'} distinct_pe AS (
@@ -1144,12 +1176,34 @@ const getEmployeesList = async (req, res) => {
       ${distinctCte}
       SELECT
         pe.id, pe.full_name as name, pe.emp_code, pe.mobile, pe.is_active, pe.face_locked, pe.created_at,
-        COALESCE(sec.sector_name, w.ward_name) AS ward_name, z.zone_name, c.city_name,
-        wk.ward_name as kothi_name
+        COALESCE(
+          sec_pe.sector_name,
+          sec_w_pe.sector_name,
+          sec_wk.sector_name,
+          sec_req.sector_name,
+          sec_w_req.sector_name,
+          w_pe.ward_name,
+          w_req.ward_name
+        ) AS ward_name,
+        z.zone_name, c.city_name,
+        COALESCE(
+          wk.ward_name,
+          wk_req.ward_name,
+          w_pe.ward_name,
+          w_req.ward_name,
+          sec_pe.sector_name
+        ) as kothi_name
       FROM distinct_pe pe
-      LEFT JOIN sectors sec ON pe.ward_id = sec.sector_id
-      LEFT JOIN wards w ON pe.ward_id = w.ward_id
+      LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
+      LEFT JOIN sectors sec_pe ON pe.ward_id = sec_pe.sector_id
+      LEFT JOIN wards w_pe ON pe.ward_id = w_pe.ward_id
+      LEFT JOIN sectors sec_w_pe ON w_pe.sector_id = sec_w_pe.sector_id
       LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      LEFT JOIN sectors sec_wk ON wk.sector_id = sec_wk.sector_id
+      LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
+      LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
+      LEFT JOIN sectors sec_w_req ON w_req.sector_id = sec_w_req.sector_id
+      LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
       ORDER BY pe.created_at DESC

@@ -83,6 +83,86 @@ const resolveHolidayAccessScope = async (req) => {
   };
 };
 
+const buildWardAndKothiFilters = (ward_id, kothi_id, startParamCount, params) => {
+  let sql = '';
+  let paramCount = startParamCount;
+
+  if (ward_id) {
+    paramCount++;
+    sql += `
+      AND (
+        pe.ward_id = $${paramCount}
+        OR pe.kothi_id = $${paramCount}
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE w_filter.ward_id = pe.ward_id
+            AND (w_filter.sector_id = $${paramCount} OR w_filter.ward_id = $${paramCount})
+        )
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE w_filter.ward_id = pe.kothi_id
+            AND (w_filter.sector_id = $${paramCount} OR w_filter.ward_id = $${paramCount})
+        )
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE w_filter.sector_id = pe.ward_id
+            AND w_filter.ward_id = $${paramCount}
+        )
+        OR EXISTS (
+          SELECT 1 FROM self_punch_requests spr_filter
+          WHERE spr_filter.id = pe.request_id
+            AND (
+              spr_filter.ward_id = $${paramCount}
+              OR spr_filter.kothi_id = $${paramCount}
+              OR EXISTS (
+                SELECT 1 FROM wards w_filter
+                WHERE (w_filter.ward_id = spr_filter.ward_id OR w_filter.ward_id = spr_filter.kothi_id)
+                  AND (w_filter.sector_id = $${paramCount} OR w_filter.ward_id = $${paramCount})
+              )
+            )
+        )
+      )
+    `;
+    params.push(ward_id);
+  }
+
+  if (kothi_id) {
+    paramCount++;
+    sql += `
+      AND (
+        pe.kothi_id = $${paramCount}
+        OR pe.ward_id = $${paramCount}
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE (w_filter.ward_id = pe.kothi_id OR w_filter.ward_id = pe.ward_id)
+            AND w_filter.ward_id = $${paramCount}
+        )
+        OR EXISTS (
+          SELECT 1 FROM wards w_filter
+          WHERE (w_filter.sector_id = pe.ward_id OR w_filter.sector_id = pe.kothi_id)
+            AND w_filter.ward_id = $${paramCount}
+        )
+        OR EXISTS (
+          SELECT 1 FROM self_punch_requests spr_filter
+          WHERE spr_filter.id = pe.request_id
+            AND (
+              spr_filter.kothi_id = $${paramCount}
+              OR spr_filter.ward_id = $${paramCount}
+              OR EXISTS (
+                SELECT 1 FROM wards w_filter
+                WHERE (w_filter.ward_id = spr_filter.ward_id OR w_filter.ward_id = spr_filter.kothi_id)
+                  AND w_filter.ward_id = $${paramCount}
+              )
+            )
+        )
+      )
+    `;
+    params.push(kothi_id);
+  }
+
+  return { sql, paramCount };
+};
+
 const getLeaveRequests = async (req, res) => {
   const {
     status,
@@ -126,50 +206,9 @@ const getLeaveRequests = async (req, res) => {
       params.push(zone_id);
       filters += ` AND pe.zone_id = $${params.length}`;
     }
-    if (ward_id) {
-      params.push(ward_id);
-      filters += `
-        AND (
-          pe.ward_id = $${params.length}
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.ward_id
-              AND w_filter.sector_id = $${params.length}
-          )
-          OR EXISTS (
-            SELECT 1 FROM wards w_filter
-            WHERE w_filter.ward_id = pe.kothi_id
-              AND w_filter.sector_id = $${params.length}
-          )
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (
-                spr_filter.ward_id = $${params.length}
-                OR EXISTS (
-                  SELECT 1 FROM wards w_filter
-                  WHERE w_filter.ward_id = spr_filter.ward_id
-                    AND w_filter.sector_id = $${params.length}
-                )
-              )
-          )
-        )
-      `;
-    }
-    if (kothi_id) {
-      params.push(kothi_id);
-      filters += `
-        AND (
-          pe.kothi_id = $${params.length}
-          OR pe.ward_id = $${params.length}
-          OR EXISTS (
-            SELECT 1 FROM self_punch_requests spr_filter
-            WHERE spr_filter.id = pe.request_id
-              AND (spr_filter.kothi_id = $${params.length} OR spr_filter.ward_id = $${params.length})
-          )
-        )
-      `;
-    }
+
+    const geoFilters = buildWardAndKothiFilters(ward_id, kothi_id, params.length, params);
+    filters += geoFilters.sql;
 
     const dataParams = [...params, normalizedLimit, offset];
     const dataQuery = `
@@ -189,18 +228,35 @@ const getLeaveRequests = async (req, res) => {
         reviewer.name AS reviewed_by_name,
         c.city_name,
         z.zone_name,
-        COALESCE(sec_req.sector_name, w_req.ward_name, sec.sector_name, w.ward_name) AS ward_name,
-        COALESCE(wk_req.ward_name, wk.ward_name) AS kothi_name
+        COALESCE(
+          sec_pe.sector_name,
+          sec_w_pe.sector_name,
+          sec_wk.sector_name,
+          sec_req.sector_name,
+          sec_w_req.sector_name,
+          w_pe.ward_name,
+          w_req.ward_name
+        ) AS ward_name,
+        COALESCE(
+          wk.ward_name,
+          wk_req.ward_name,
+          w_pe.ward_name,
+          w_req.ward_name,
+          sec_pe.sector_name
+        ) AS kothi_name
       FROM professional_leave_requests plr
       JOIN professional_employees pe ON pe.id = plr.professional_id
       LEFT JOIN users reviewer ON reviewer.user_id = plr.reviewed_by
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
+      LEFT JOIN sectors sec_pe ON pe.ward_id = sec_pe.sector_id
+      LEFT JOIN wards w_pe ON pe.ward_id = w_pe.ward_id
+      LEFT JOIN sectors sec_w_pe ON w_pe.sector_id = sec_w_pe.sector_id
+      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
+      LEFT JOIN sectors sec_wk ON wk.sector_id = sec_wk.sector_id
       LEFT JOIN sectors sec_req ON spr.ward_id = sec_req.sector_id
       LEFT JOIN wards w_req ON spr.ward_id = w_req.ward_id
+      LEFT JOIN sectors sec_w_req ON w_req.sector_id = sec_w_req.sector_id
       LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
-      LEFT JOIN sectors sec ON pe.ward_id = sec.sector_id
-      LEFT JOIN wards w ON pe.ward_id = w.ward_id
-      LEFT JOIN wards wk ON pe.kothi_id = wk.ward_id
       LEFT JOIN zones z ON pe.zone_id = z.zone_id
       LEFT JOIN cities c ON pe.city_id = c.city_id
       WHERE 1=1 ${filters}
