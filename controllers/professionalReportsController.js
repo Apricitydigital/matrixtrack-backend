@@ -39,33 +39,33 @@ const buildWardAndKothiFilters = (ward_id, kothi_id, startParamCount, params) =>
     paramCount++;
     sql += `
       AND (
-        pe.ward_id = $${paramCount}
-        OR pe.kothi_id = $${paramCount}
+        pe.ward_id::text = $${paramCount}::text
+        OR pe.kothi_id::text = $${paramCount}::text
         OR EXISTS (
           SELECT 1 FROM wards w_filter
-          WHERE w_filter.ward_id = pe.ward_id
-            AND (w_filter.sector_id = $${paramCount} OR w_filter.ward_id = $${paramCount})
+          WHERE w_filter.ward_id::text = pe.ward_id::text
+            AND (w_filter.sector_id::text = $${paramCount}::text OR w_filter.ward_id::text = $${paramCount}::text)
         )
         OR EXISTS (
           SELECT 1 FROM wards w_filter
-          WHERE w_filter.ward_id = pe.kothi_id
-            AND (w_filter.sector_id = $${paramCount} OR w_filter.ward_id = $${paramCount})
+          WHERE w_filter.ward_id::text = pe.kothi_id::text
+            AND (w_filter.sector_id::text = $${paramCount}::text OR w_filter.ward_id::text = $${paramCount}::text)
         )
         OR EXISTS (
           SELECT 1 FROM wards w_filter
-          WHERE w_filter.sector_id = pe.ward_id
-            AND w_filter.ward_id = $${paramCount}
+          WHERE w_filter.sector_id::text = pe.ward_id::text
+            AND w_filter.ward_id::text = $${paramCount}::text
         )
         OR EXISTS (
           SELECT 1 FROM self_punch_requests spr_filter
           WHERE spr_filter.id = pe.request_id
             AND (
-              spr_filter.ward_id = $${paramCount}
-              OR spr_filter.kothi_id = $${paramCount}
+              spr_filter.ward_id::text = $${paramCount}::text
+              OR spr_filter.kothi_id::text = $${paramCount}::text
               OR EXISTS (
                 SELECT 1 FROM wards w_filter
-                WHERE (w_filter.ward_id = spr_filter.ward_id OR w_filter.ward_id = spr_filter.kothi_id)
-                  AND (w_filter.sector_id = $${paramCount} OR w_filter.ward_id = $${paramCount})
+                WHERE (w_filter.ward_id::text = spr_filter.ward_id::text OR w_filter.ward_id::text = spr_filter.kothi_id::text)
+                  AND (w_filter.sector_id::text = $${paramCount}::text OR w_filter.ward_id::text = $${paramCount}::text)
               )
             )
         )
@@ -78,28 +78,28 @@ const buildWardAndKothiFilters = (ward_id, kothi_id, startParamCount, params) =>
     paramCount++;
     sql += `
       AND (
-        pe.kothi_id = $${paramCount}
-        OR pe.ward_id = $${paramCount}
+        pe.kothi_id::text = $${paramCount}::text
+        OR pe.ward_id::text = $${paramCount}::text
         OR EXISTS (
           SELECT 1 FROM wards w_filter
-          WHERE (w_filter.ward_id = pe.kothi_id OR w_filter.ward_id = pe.ward_id)
-            AND w_filter.ward_id = $${paramCount}
+          WHERE (w_filter.ward_id::text = pe.kothi_id::text OR w_filter.ward_id::text = pe.ward_id::text)
+            AND w_filter.ward_id::text = $${paramCount}::text
         )
         OR EXISTS (
           SELECT 1 FROM wards w_filter
-          WHERE (w_filter.sector_id = pe.ward_id OR w_filter.sector_id = pe.kothi_id)
-            AND w_filter.ward_id = $${paramCount}
+          WHERE (w_filter.sector_id::text = pe.ward_id::text OR w_filter.sector_id::text = pe.kothi_id::text)
+            AND w_filter.ward_id::text = $${paramCount}::text
         )
         OR EXISTS (
           SELECT 1 FROM self_punch_requests spr_filter
           WHERE spr_filter.id = pe.request_id
             AND (
-              spr_filter.kothi_id = $${paramCount}
-              OR spr_filter.ward_id = $${paramCount}
+              spr_filter.kothi_id::text = $${paramCount}::text
+              OR spr_filter.ward_id::text = $${paramCount}::text
               OR EXISTS (
                 SELECT 1 FROM wards w_filter
-                WHERE (w_filter.ward_id = spr_filter.ward_id OR w_filter.ward_id = spr_filter.kothi_id)
-                  AND w_filter.ward_id = $${paramCount}
+                WHERE (w_filter.ward_id::text = spr_filter.ward_id::text OR w_filter.ward_id::text = spr_filter.kothi_id::text)
+                  AND w_filter.ward_id::text = $${paramCount}::text
               )
             )
         )
@@ -371,7 +371,7 @@ const getAttendanceList = async (req, res) => {
 const getAttendanceSummary = async (req, res) => {
   try {
     await ensureAttendanceReportColumns();
-    const { city_id, zone_id, ward_id, kothi_id, professional_id, date, month, start_date, end_date } = req.query;
+    const { city_id, zone_id, ward_id, kothi_id, professional_id, date, month, start_date, end_date, search } = req.query;
     const dateRange = getValidatedDateRange(start_date, end_date);
 
     if (!dateRange && !date && (!month || !/^\d{4}-\d{2}$/.test(month))) {
@@ -386,6 +386,31 @@ const getAttendanceSummary = async (req, res) => {
     
     let peFilters = `AND ${whereClause} AND pe.is_active = true`;
     let peParamCount = params.length;
+
+    if (search && String(search).trim()) {
+      peParamCount++;
+      const searchPattern = `%${String(search).trim()}%`;
+      peFilters += `
+        AND (
+          pe.full_name ILIKE $${peParamCount}
+          OR pe.emp_code ILIKE $${peParamCount}
+          OR pe.mobile ILIKE $${peParamCount}
+          OR pe.email ILIKE $${peParamCount}
+          OR z.zone_name ILIKE $${peParamCount}
+          OR c.city_name ILIKE $${peParamCount}
+          OR EXISTS (
+            SELECT 1 FROM wards w_s WHERE w_s.ward_id = pe.ward_id AND w_s.ward_name ILIKE $${peParamCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM sectors s_s WHERE s_s.sector_id = pe.ward_id AND s_s.sector_name ILIKE $${peParamCount}
+          )
+          OR EXISTS (
+            SELECT 1 FROM wards k_s WHERE k_s.ward_id = pe.kothi_id AND k_s.ward_name ILIKE $${peParamCount}
+          )
+        )
+      `;
+      params.push(searchPattern);
+    }
 
     if (city_id) { peParamCount++; peFilters += ` AND pe.city_id = $${peParamCount}`; params.push(city_id); }
     if (zone_id) { peParamCount++; peFilters += ` AND pe.zone_id = $${peParamCount}`; params.push(zone_id); }
