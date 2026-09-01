@@ -73,11 +73,11 @@ router.post("/", async (req, res) => {
   }
 });
 
-// Update an existing admin's permissions
+// Update an existing admin's details & permissions
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { permissions, name, phone, emp_code, password, custom_login_policy, custom_max_devices } = req.body;
+    const { permissions, name, email, phone, emp_code, password, custom_login_policy, custom_max_devices } = req.body;
 
     // Safety: never allow changing core details of super admin via this route
     const targetCheck = await pool.query("SELECT email FROM users WHERE user_id = $1", [id]);
@@ -85,6 +85,10 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ error: "Admin not found" });
     }
     const targetEmail = targetCheck.rows[0]?.email;
+
+    if (email && email.trim() !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
+    }
 
     let queryText = "";
     let queryParams = [];
@@ -105,14 +109,25 @@ router.put("/:id", async (req, res) => {
         queryText = `UPDATE users 
                      SET permissions = COALESCE($1, permissions),
                          name = COALESCE($2, name),
-                         phone = COALESCE($3, phone),
-                         emp_code = COALESCE($4, emp_code),
-                         password_hash = $5,
-                         custom_login_policy = $6,
-                         custom_max_devices = $7
-                     WHERE user_id = $8 AND role = 'admin'
+                         email = COALESCE($3, email),
+                         phone = COALESCE($4, phone),
+                         emp_code = COALESCE($5, emp_code),
+                         password_hash = $6,
+                         custom_login_policy = $7,
+                         custom_max_devices = $8
+                     WHERE user_id = $9 AND role = 'admin'
                      RETURNING user_id, name, emp_code, email, phone, role, permissions, custom_login_policy, custom_max_devices, created_at`;
-        queryParams = [permissions, name, phone, emp_code && emp_code.trim() !== "" ? emp_code.trim() : null, password_hash, custom_login_policy || null, custom_max_devices || null, id];
+        queryParams = [
+          permissions,
+          name,
+          email && email.trim() !== "" ? email.trim() : null,
+          phone,
+          emp_code && emp_code.trim() !== "" ? emp_code.trim() : null,
+          password_hash,
+          custom_login_policy || null,
+          custom_max_devices || null,
+          id
+        ];
       }
     } else {
       if (targetEmail === SUPER_ADMIN_EMAIL) {
@@ -126,13 +141,23 @@ router.put("/:id", async (req, res) => {
         queryText = `UPDATE users 
                      SET permissions = COALESCE($1, permissions),
                          name = COALESCE($2, name),
-                         phone = COALESCE($3, phone),
-                         emp_code = COALESCE($4, emp_code),
-                         custom_login_policy = $5,
-                         custom_max_devices = $6
-                     WHERE user_id = $7 AND role = 'admin'
+                         email = COALESCE($3, email),
+                         phone = COALESCE($4, phone),
+                         emp_code = COALESCE($5, emp_code),
+                         custom_login_policy = $6,
+                         custom_max_devices = $7
+                     WHERE user_id = $8 AND role = 'admin'
                      RETURNING user_id, name, emp_code, email, phone, role, permissions, custom_login_policy, custom_max_devices, created_at`;
-        queryParams = [permissions, name, phone, emp_code && emp_code.trim() !== "" ? emp_code.trim() : null, custom_login_policy || null, custom_max_devices || null, id];
+        queryParams = [
+          permissions,
+          name,
+          email && email.trim() !== "" ? email.trim() : null,
+          phone,
+          emp_code && emp_code.trim() !== "" ? emp_code.trim() : null,
+          custom_login_policy || null,
+          custom_max_devices || null,
+          id
+        ];
       }
     }
 
@@ -145,7 +170,7 @@ router.put("/:id", async (req, res) => {
     res.json(rows[0]);
   } catch (error) {
     if (error.code === '23505') {
-      return res.status(409).json({ error: "Employee code already exists" });
+      return res.status(409).json({ error: "Email or Employee code already exists" });
     }
     console.error("Error updating admin:", error);
     res.status(500).json({ error: "Failed to update admin" });
