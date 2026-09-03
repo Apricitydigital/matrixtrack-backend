@@ -30,7 +30,12 @@ const getNowIST = () =>
  *  - punch_in_time was >= AUTO_PUNCHOUT_HOURS hours ago
  * Then sets punch_out_time = NOW() and marks auto_punched_out = true
  */
-const AUTO_PUNCHOUT_HOURS = parseInt(process.env.AUTO_PUNCHOUT_HOURS || "9", 10);
+const configuredAutoPunchOutHours = Number.parseInt(process.env.AUTO_PUNCHOUT_HOURS || "9", 10);
+const AUTO_PUNCHOUT_HOURS = Number.isInteger(configuredAutoPunchOutHours)
+  && configuredAutoPunchOutHours >= 1
+  && configuredAutoPunchOutHours <= 24
+  ? configuredAutoPunchOutHours
+  : 9;
 
 async function runAutoPunchOut() {
   const today = getTodayIST();
@@ -58,18 +63,48 @@ async function runAutoPunchOut() {
         WHERE a.date::date = $1::date
           AND a.punch_in_time IS NOT NULL
           AND a.punch_out_time IS NULL
-          AND ((NOW() AT TIME ZONE 'Asia/Kolkata') - a.punch_in_time) >= INTERVAL '${AUTO_PUNCHOUT_HOURS} hours'
+          AND ((NOW() AT TIME ZONE 'Asia/Kolkata') - a.punch_in_time) >= make_interval(hours => $2)
         RETURNING a.attendance_id, a.emp_id, a.duration
       )
       SELECT u.attendance_id, u.duration, e.name AS emp_name, e.emp_code
       FROM updated u
       JOIN employee e ON u.emp_id = e.emp_id`,
-      [today]
+      [today, AUTO_PUNCHOUT_HOURS]
     );
 
     const updatedRecords = updateResult.rows;
 
-    if (updatedRecords.length === 0) {
+    // Professional field workers use a separate attendance table. The old
+    // scheduler only processed regular employees, leaving professional rows
+    // open forever.
+    const professionalUpdateResult = await client.query(
+      `WITH updated AS (
+        UPDATE professional_attendance pa
+        SET
+          punch_out = NOW(),
+          auto_punched_out = true,
+          out_address = 'Auto Punch-Out (System)'
+        WHERE pa.date = $1::date
+          AND pa.punch_in IS NOT NULL
+          AND pa.punch_out IS NULL
+          AND (NOW() - pa.punch_in) >= make_interval(hours => $2)
+        RETURNING pa.id, pa.professional_id, pa.punch_in, pa.punch_out
+      )
+      SELECT
+        u.id,
+        u.professional_id,
+        u.punch_in,
+        u.punch_out,
+        pe.full_name,
+        pe.emp_code
+      FROM updated u
+      JOIN professional_employees pe ON pe.id = u.professional_id`,
+      [today, AUTO_PUNCHOUT_HOURS]
+    );
+
+    const updatedProfessionals = professionalUpdateResult.rows;
+
+    if (updatedRecords.length === 0 && updatedProfessionals.length === 0) {
       console.log(`[AutoPunchOut] ✅ No employees need auto punch-out.`);
       return { processed: 0, failed: 0 };
     }
@@ -83,9 +118,17 @@ async function runAutoPunchOut() {
     }
 
     console.log(
-      `[AutoPunchOut] 🏁 Done | Success: ${updatedRecords.length} | Failed: 0`
+      `[AutoPunchOut] 🏁 Done | Success: ${updatedRecords.length + updatedProfessionals.length} | Failed: 0`
     );
-    return { processed: updatedRecords.length, failed: 0 };
+    if (updatedProfessionals.length > 0) {
+      console.log(`[AutoPunchOut] Batch updated ${updatedProfessionals.length} professional(s).`);
+    }
+    return {
+      processed: updatedRecords.length + updatedProfessionals.length,
+      regularProcessed: updatedRecords.length,
+      professionalProcessed: updatedProfessionals.length,
+      failed: 0,
+    };
   } catch (err) {
     console.error("[AutoPunchOut] 💥 Scheduler error:", err.message);
     return { processed: 0, error: err.message };

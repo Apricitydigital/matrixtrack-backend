@@ -24,6 +24,10 @@ const ensureAttendanceReportColumns = async () => {
 
 const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 
+const getTodayInIST = () => (
+  new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+);
+
 const getValidatedDateRange = (startDate, endDate) => {
   if (!startDate || !endDate) return null;
   if (!isIsoDate(startDate) || !isIsoDate(endDate)) return null;
@@ -614,10 +618,17 @@ const getAttendanceSummary = async (req, res) => {
     aggResult.rows.forEach(r => totalPresentDays += parseInt(r.total_present_days, 10));
 
     const uniquePresentProfessionals = parseInt(presentProfessionalsResult.rows?.[0]?.total || 0, 10);
-    const punchedOutProfessionals = parseInt(punchedOutProfessionalsResult.rows?.[0]?.total || 0, 10);
+    const totalPunchedOutProfessionals = parseInt(punchedOutProfessionalsResult.rows?.[0]?.total || 0, 10);
     const punchedOutSystemProfessionals = parseInt(punchedOutSystemProfessionalsResult.rows?.[0]?.total || 0, 10);
     const leaveProfessionals = parseInt(leaveResult.rows?.[0]?.total || 0, 10);
-    const inProgressProfessionals = Math.max(uniquePresentProfessionals - punchedOutProfessionals, 0);
+    const punchedOutProfessionals = Math.max(totalPunchedOutProfessionals - punchedOutSystemProfessionals, 0);
+    const isToday = date === getTodayInIST();
+    const notPunchedOutProfessionals = isToday
+      ? punchedOutSystemProfessionals
+      : Math.max(uniquePresentProfessionals - punchedOutProfessionals, 0);
+    const inProgressProfessionals = isToday
+      ? Math.max(uniquePresentProfessionals - totalPunchedOutProfessionals, 0)
+      : 0;
     const absentProfessionals = Math.max(totalProfessionals - uniquePresentProfessionals - leaveProfessionals, 0);
 
     const avgRate = totalProfessionals > 0
@@ -632,8 +643,10 @@ const getAttendanceSummary = async (req, res) => {
         unique_present_professionals: uniquePresentProfessionals,
         leave_professionals: leaveProfessionals,
         absent_professionals: absentProfessionals,
-        punched_out_professionals: punchedOutProfessionals,
+        punched_out_professionals: totalPunchedOutProfessionals,
+        manual_punched_out_professionals: punchedOutProfessionals,
         punched_out_system_professionals: punchedOutSystemProfessionals,
+        not_punched_out_professionals: notPunchedOutProfessionals,
         in_progress_professionals: inProgressProfessionals,
         total_present_days: totalPresentDays,
         avg_attendance_rate: parseFloat(avgRate),
@@ -785,10 +798,23 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         c.city_name,
 
         -- Attendance & leave
-        COUNT(pa.id) AS attendance_count,
+        COUNT(pa.id) FILTER (WHERE pa.punch_in IS NOT NULL) AS attendance_count,
         COALESCE(leave_agg.leave_days, 0) AS leave_days,
         leave_agg.latest_reviewer_name AS leave_reviewed_by_name,
-        COUNT(pa.id) FILTER (WHERE pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL) AS completed_days,
+        COUNT(pa.id) FILTER (
+          WHERE pa.punch_in IS NOT NULL
+            AND pa.punch_out IS NOT NULL
+            AND COALESCE(pa.auto_punched_out, false) = false
+            AND LOWER(COALESCE(pa.out_address, '')) NOT LIKE '%auto punch%'
+        ) AS completed_days,
+        COUNT(pa.id) FILTER (
+          WHERE pa.punch_in IS NOT NULL
+            AND (
+              pa.punch_out IS NULL
+              OR COALESCE(pa.auto_punched_out, false) = true
+              OR LOWER(COALESCE(pa.out_address, '')) LIKE '%auto punch%'
+            )
+        ) AS not_punched_out_days,
         ROUND(
           COALESCE(
             SUM(
@@ -924,6 +950,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         const attendanceDays  = parseInt(row.attendance_count || 0, 10);
         const leaveDays       = parseInt(row.leave_days || 0, 10);
         const completedDays   = parseInt(row.completed_days || 0, 10);
+        const notPunchedOutDays = parseInt(row.not_punched_out_days || 0, 10);
         const totalRangeDays  = parseInt(row.total_range_days || 0, 10);
         const weekOffDays     = parseInt(row.week_off_days_count || 0, 10);
         const holidayDays     = parseInt(row.holiday_days || 0, 10);
@@ -941,6 +968,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
           leave_days:              leaveDays,
           leave_reviewed_by_name:  row.leave_reviewed_by_name || null,
           completed_days:          completedDays,
+          not_punched_out_days:    notPunchedOutDays,
           total_hours_worked:      parseFloat(row.total_hours_worked || 0).toFixed(2),
           total_range_days:        totalRangeDays,
           week_off_days_count:     weekOffDays,
@@ -1101,8 +1129,19 @@ const getDateRangeAttendanceDetails = async (req, res) => {
       }))
     );
 
+    const isAutoPunchOut = (item) => (
+      item.auto_punched_out === true
+      || String(item.auto_punched_out || '').toLowerCase() === 'true'
+      || String(item.out_address || '').toLowerCase().includes('auto punch')
+    );
     const totalDays = mappedRows.length;
-    const completedDays = mappedRows.filter((item) => item.hours_worked).length;
+    const attendanceDays = mappedRows.filter((item) => item.punch_in).length;
+    const completedDays = mappedRows.filter(
+      (item) => item.punch_in && item.punch_out && !isAutoPunchOut(item)
+    ).length;
+    const notPunchedOutDays = mappedRows.filter(
+      (item) => item.punch_in && (!item.punch_out || isAutoPunchOut(item))
+    ).length;
     const totalHours = mappedRows.reduce((acc, item) => acc + (parseFloat(item.hours_worked) || 0), 0);
     const leaveApprovedDays = mappedRows.filter((item) => item.leave_status === "approved").length;
     const leavePendingDays = mappedRows.filter((item) => item.leave_status === "pending").length;
@@ -1115,7 +1154,9 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         start_date: dateRange.startDate,
         end_date: dateRange.endDate,
         total_days: totalDays,
+        attendance_days: attendanceDays,
         completed_days: completedDays,
+        not_punched_out_days: notPunchedOutDays,
         leave_approved_days: leaveApprovedDays,
         leave_pending_days: leavePendingDays,
         total_hours_worked: totalHours.toFixed(2),
