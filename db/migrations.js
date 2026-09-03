@@ -211,6 +211,52 @@ async function runMigrations() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_max_devices INTEGER DEFAULT NULL`);
     console.log("[Migration] ✅ users 2FA and login policy columns ready.");
 
+    // ── External API Keys table ─────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS api_keys (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        key_hash TEXT NOT NULL UNIQUE,
+        key_prefix VARCHAR(16) NOT NULL,
+        full_key_secret TEXT,
+        name VARCHAR(255) NOT NULL,
+        created_by INTEGER REFERENCES users(user_id),
+        city_id INTEGER DEFAULT NULL,
+        zone_id INTEGER DEFAULT NULL,
+        ward_id INTEGER DEFAULT NULL,
+        scopes TEXT[] NOT NULL DEFAULT '{attendance:read}',
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        rate_limit_per_minute INT NOT NULL DEFAULT 100,
+        allowed_ips TEXT[],
+        last_used_at TIMESTAMPTZ,
+        total_requests BIGINT NOT NULL DEFAULT 0,
+        expires_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS full_key_secret TEXT`);
+    await client.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS zone_id INTEGER DEFAULT NULL`);
+    await client.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS ward_id INTEGER DEFAULT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys (key_hash)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys (key_prefix)`);
+    console.log("[Migration] ✅ api_keys table ready.");
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS api_key_usage_logs (
+        id BIGSERIAL PRIMARY KEY,
+        api_key_id UUID REFERENCES api_keys(id) ON DELETE CASCADE,
+        endpoint TEXT NOT NULL,
+        method VARCHAR(10) NOT NULL,
+        response_status INT,
+        ip_address INET,
+        user_agent TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_api_key_logs_created ON api_key_usage_logs (created_at)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_api_key_logs_key ON api_key_usage_logs (api_key_id)`);
+    console.log("[Migration] ✅ api_key_usage_logs table ready.");
+
     console.log("[Migration] All migrations complete.");
   } catch (err) {
     console.error("[Migration] Migration error (non-fatal):", err.message);

@@ -462,10 +462,14 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
 
 // =============================================
 // ⏰ PROFESSIONAL PUNCH-IN REMINDER CRON
-// Runs every minute and matches each employee's exact chosen reminder_time
-// Duplicate guard inside the query ensures a professional gets only one reminder per day
+// Runs every minute in a short 10:00 AM IST window so a brief restart cannot miss the reminder.
+// Duplicate guard inside the query ensures a professional gets only one reminder per day.
 // =============================================
-const { runProfessionalPunchInReminder } = require("./utils/professionalPunchInReminder");
+const {
+  FIXED_REMINDER_TIME,
+  REMINDER_CATCH_UP_UNTIL,
+  runProfessionalPunchInReminder,
+} = require("./utils/professionalPunchInReminder");
 const PROFESSIONAL_REMINDER_CRON_ENABLED =
   process.env.PROFESSIONAL_REMINDER_CRON_ENABLED === "true";
 const PROFESSIONAL_REMINDER_CRON_VERBOSE =
@@ -488,12 +492,19 @@ if (PROFESSIONAL_REMINDER_CRON_ENABLED && isPrimaryCronInstance) {
       const mm = String(nowIST.getMinutes()).padStart(2, "0");
       const currentTimeSlot = `${hh}:${mm}`;
 
+      // Run at 10:00 AM IST or on the first available minute after 10:00.
+      // The DB duplicate guard keeps this to one reminder per professional/day.
+      if (
+        currentTimeSlot < FIXED_REMINDER_TIME ||
+        currentTimeSlot > REMINDER_CATCH_UP_UNTIL
+      ) return;
+
       professionalReminderCronRunning = true;
       if (PROFESSIONAL_REMINDER_CRON_VERBOSE) {
         console.log(`[ProfessionalReminderCron] Checking punch-in reminders for time slot: ${currentTimeSlot} IST`);
       }
       try {
-        await runProfessionalPunchInReminder(currentTimeSlot, {
+        await runProfessionalPunchInReminder({
           verbose: PROFESSIONAL_REMINDER_CRON_VERBOSE,
         });
       } catch (err) {
@@ -504,7 +515,10 @@ if (PROFESSIONAL_REMINDER_CRON_ENABLED && isPrimaryCronInstance) {
     },
     { timezone: "Asia/Kolkata" }
   );
-  console.log("[ProfessionalReminderCron] ✅ Registered — exact reminder_time schedule (every minute, IST).");
+  console.log(
+    `[ProfessionalReminderCron] Registered - fixed ${FIXED_REMINDER_TIME} IST schedule ` +
+    `(catch-up through ${REMINDER_CATCH_UP_UNTIL}).`
+  );
 } else {
   console.log(
     `[ProfessionalReminderCron] Disabled or non-primary instance - skipping registration (enabled: ${process.env.PROFESSIONAL_REMINDER_CRON_ENABLED}, instance: ${process.env.NODE_APP_INSTANCE || "0"})`
@@ -560,6 +574,10 @@ app.get("/", (req, res) => {
 // Mount IP Blocking Middleware
 const ipBlockMiddleware = require("./middleware/ipBlockMiddleware");
 app.use("/api", ipBlockMiddleware);
+
+// ── External API (API Key auth — no JWT, separate from internal routes) ────
+const externalApiRoutes = require("./routes/externalApiRoutes");
+app.use("/api/v1/external", externalApiRoutes);
 
 // Mount Global Audit Logger Middleware (Asynchronous S3 logging)
 const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");

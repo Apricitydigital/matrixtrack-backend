@@ -2,10 +2,10 @@ const pool = require("../config/db");
 const { ensureProfessionalLeaveSchema } = require("./professionalLeaveSchema");
 const { sendPushToProfessionals } = require("./professionalPushService");
 const REMINDER_JOB_LOCK_ID = 913421;
-const DEFAULT_BATCH_SIZE = Math.max(
-  50,
-  Number(process.env.PROFESSIONAL_REMINDER_BATCH_SIZE || 500)
-);
+const configuredBatchSize = Number(process.env.PROFESSIONAL_REMINDER_BATCH_SIZE || 500);
+const DEFAULT_BATCH_SIZE = Number.isFinite(configuredBatchSize)
+  ? Math.min(1000, Math.max(50, Math.floor(configuredBatchSize)))
+  : 500;
 const REMINDER_SMS_ENABLED =
   process.env.PROFESSIONAL_REMINDER_SMS_ENABLED === "true";
 
@@ -81,7 +81,10 @@ const REMINDER_MESSAGES = [
   },
 ];
 
-const runProfessionalPunchInReminder = async (targetTime = null, options = {}) => {
+const FIXED_REMINDER_TIME = "10:00";
+const REMINDER_CATCH_UP_UNTIL = "10:15";
+
+const runProfessionalPunchInReminder = async (options = {}) => {
   const { verbose = false } = options;
   const client = await pool.connect();
   try {
@@ -94,18 +97,20 @@ const runProfessionalPunchInReminder = async (targetTime = null, options = {}) =
       if (verbose) {
         console.log("[ProfessionalReminderCron] DB lock not acquired, skipping this run.");
       }
-      return { sentCount: 0, pushSent: 0, pushFailed: 0, pushInvalidated: 0, skipped: true };
+      return {
+        sentCount: 0,
+        pushSent: 0,
+        pushFailed: 0,
+        pushInvalidated: 0,
+        pushNoDestination: 0,
+        skipped: true,
+      };
     }
 
     // Pick one message randomly daily
     const selectedReminder = REMINDER_MESSAGES[Math.floor(Math.random() * REMINDER_MESSAGES.length)];
 
-    let timeFilter = "";
     const params = [selectedReminder.title, selectedReminder.message];
-    if (targetTime) {
-      params.push(targetTime);
-      timeFilter = ` AND COALESCE(pe.reminder_time, '10:00') = $3`;
-    }
 
     const baseInsertQuery = `
       WITH ist_today AS (
@@ -116,8 +121,6 @@ const runProfessionalPunchInReminder = async (targetTime = null, options = {}) =
         FROM professional_employees pe
         CROSS JOIN ist_today
         WHERE pe.is_active = true
-          AND COALESCE(pe.reminder_enabled, true) = true
-          ${timeFilter}
           AND NOT EXISTS (
             SELECT 1
             FROM professional_attendance pa
@@ -139,7 +142,7 @@ const runProfessionalPunchInReminder = async (targetTime = null, options = {}) =
               AND COALESCE(pn.metadata ->> 'reminder_date', '') = ist_today.day::text
           )
         ORDER BY pe.id
-        LIMIT $4
+        LIMIT $3
       )
       INSERT INTO professional_notifications (
         professional_id,
@@ -167,6 +170,7 @@ const runProfessionalPunchInReminder = async (targetTime = null, options = {}) =
     let pushSent = 0;
     let pushFailed = 0;
     let pushInvalidated = 0;
+    let pushNoDestination = 0;
     let batchCount = 0;
 
     while (true) {
@@ -183,6 +187,7 @@ const runProfessionalPunchInReminder = async (targetTime = null, options = {}) =
         pushSent += pushResult.sent || 0;
         pushFailed += pushResult.failed || 0;
         pushInvalidated += pushResult.invalidated || 0;
+        pushNoDestination += pushResult.noDestination || 0;
       } catch (pushError) {
         console.warn("[ProfessionalReminderCron] Push send failed:", pushError.message);
       }
@@ -219,12 +224,21 @@ const runProfessionalPunchInReminder = async (targetTime = null, options = {}) =
       if (currentBatchCount < DEFAULT_BATCH_SIZE) break;
     }
 
-    if (verbose || sentCount > 0 || pushFailed > 0 || pushInvalidated > 0) {
+    if (verbose || sentCount > 0 || pushFailed > 0 || pushInvalidated > 0 || pushNoDestination > 0) {
       console.log(
-        `[ProfessionalReminderCron] In-app reminders: ${sentCount}, batches: ${batchCount}, push sent: ${pushSent}, push failed: ${pushFailed}, push invalidated: ${pushInvalidated}`
+        `[ProfessionalReminderCron] In-app reminders: ${sentCount}, batches: ${batchCount}, ` +
+        `push sent: ${pushSent}, push failed: ${pushFailed}, ` +
+        `push invalidated: ${pushInvalidated}, no destination: ${pushNoDestination}`
       );
     }
-    return { sentCount, batchCount, pushSent, pushFailed, pushInvalidated };
+    return {
+      sentCount,
+      batchCount,
+      pushSent,
+      pushFailed,
+      pushInvalidated,
+      pushNoDestination,
+    };
   } catch (error) {
     console.error("[ProfessionalReminderCron] Failed:", error.message);
     throw error;
@@ -236,4 +250,8 @@ const runProfessionalPunchInReminder = async (targetTime = null, options = {}) =
   }
 };
 
-module.exports = { runProfessionalPunchInReminder };
+module.exports = {
+  FIXED_REMINDER_TIME,
+  REMINDER_CATCH_UP_UNTIL,
+  runProfessionalPunchInReminder,
+};

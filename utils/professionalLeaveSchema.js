@@ -16,6 +16,15 @@ const ensureProfessionalLeaveSchema = async () => {
             ADD COLUMN IF NOT EXISTS reminder_enabled BOOLEAN DEFAULT TRUE;
         `);
 
+        // Professional punch-in reminders are globally fixed at 10:00 AM IST.
+        await client.query(`
+          UPDATE professional_employees
+          SET reminder_time = '10:00',
+              reminder_enabled = TRUE
+          WHERE reminder_time IS DISTINCT FROM '10:00'
+             OR reminder_enabled IS DISTINCT FROM TRUE
+        `);
+
         await client.query(`
           CREATE INDEX IF NOT EXISTS idx_prof_emp_active_reminder
           ON professional_employees (is_active, reminder_enabled, reminder_time)

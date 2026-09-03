@@ -18,6 +18,7 @@ const {
   markNotificationRead,
 } = require("../controllers/professionalLeaveController");
 const { getMyLeaveBalance } = require('../controllers/professionalLeaveAllocationsController');
+const { sendPushToProfessionals } = require('../utils/professionalPushService');
 const {
   registerPushToken,
   unregisterPushToken,
@@ -64,7 +65,7 @@ router.get('/reminder-settings', async (req, res) => {
   try {
     const { professional_id } = req.professional;
     const result = await pool.query(
-      `SELECT COALESCE(reminder_enabled, true) AS reminder_enabled, COALESCE(reminder_time, '10:00') AS reminder_time FROM professional_employees WHERE id = $1`,
+      `SELECT true AS reminder_enabled, '10:00' AS reminder_time FROM professional_employees WHERE id = $1`,
       [professional_id]
     );
     if (result.rows.length === 0) {
@@ -79,14 +80,12 @@ router.get('/reminder-settings', async (req, res) => {
 router.post('/reminder-settings', async (req, res) => {
   try {
     const { professional_id } = req.professional;
-    const { reminder_enabled, reminder_time } = req.body;
-    
     await pool.query(
       `UPDATE professional_employees 
-       SET reminder_enabled = COALESCE($1, reminder_enabled),
-           reminder_time = COALESCE($2, reminder_time)
-       WHERE id = $3`,
-      [typeof reminder_enabled === 'boolean' ? reminder_enabled : null, reminder_time || null, professional_id]
+       SET reminder_enabled = TRUE,
+           reminder_time = '10:00'
+       WHERE id = $1`,
+      [professional_id]
     );
 
     res.json({ success: true, message: 'Notification reminder settings updated successfully' });
@@ -99,12 +98,44 @@ const { runProfessionalPunchInReminder } = require('../utils/professionalPunchIn
 
 router.post('/notifications/trigger-reminders', async (req, res) => {
   try {
-    const { target_time } = req.body || {};
-    const result = await runProfessionalPunchInReminder(target_time || null);
+    if (process.env.PROFESSIONAL_REMINDER_MANUAL_TRIGGER_ENABLED !== 'true') {
+      return res.status(403).json({
+        success: false,
+        message: 'Bulk reminder trigger is disabled. Use the self test-push endpoint for testing.',
+      });
+    }
+    const result = await runProfessionalPunchInReminder();
     res.json({ success: true, message: 'Punch-in reminders dispatched', result });
   } catch (error) {
     console.error('Failed to trigger reminders:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Sends a real device push only to the currently authenticated professional.
+router.post('/notifications/test-push', async (req, res) => {
+  try {
+    const professionalId = req.professional?.professional_id;
+    const result = await sendPushToProfessionals([{
+      professional_id: professionalId,
+      type: 'push-test',
+      title: 'MatrixTrack Test Notification',
+      message: 'Push notifications are working on this device.',
+      metadata: { category: 'test' },
+    }]);
+
+    if (!result.sent) {
+      return res.status(409).json({
+        success: false,
+        message: 'No active push destination was available for this professional.',
+        result,
+      });
+    }
+
+    res.json({ success: true, message: 'Test push sent.', result });
+  } catch (error) {
+    console.error('[ProfessionalPush] Test push failed:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

@@ -10,8 +10,26 @@ const pool = require("../config/db");
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const EXPO_TOKEN_PREFIXES = ["ExponentPushToken[", "ExpoPushToken["];
+const boundedInteger = (value, fallback, min, max) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+};
+const SNS_PUSH_CONCURRENCY = boundedInteger(
+  process.env.PROFESSIONAL_PUSH_SNS_CONCURRENCY,
+  20,
+  1,
+  50
+);
+const EXPO_PUSH_CONCURRENCY = boundedInteger(
+  process.env.PROFESSIONAL_PUSH_EXPO_CONCURRENCY,
+  3,
+  1,
+  10
+);
 const snsClient = new SNSClient({
   region: process.env.AWS_REGION || "ap-south-1",
+  maxAttempts: boundedInteger(process.env.PROFESSIONAL_PUSH_AWS_MAX_ATTEMPTS, 3, 1, 5),
   credentials:
     process.env.AWS_ACCESS_KEY && process.env.AWS_SECRET_ACCESS_KEY
       ? {
@@ -179,7 +197,24 @@ const chunkArray = (items = [], size = 100) => {
   return chunks;
 };
 
-const ensureProfessionalPushSchema = async (clientRef = pool) => {
+const runWithConcurrency = async (items, concurrency, worker) => {
+  if (!Array.isArray(items) || items.length === 0) return;
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+
+  const runners = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) return;
+      await worker(items[currentIndex], currentIndex);
+    }
+  });
+
+  await Promise.all(runners);
+};
+
+const applyProfessionalPushSchema = async (clientRef) => {
   await clientRef.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
   await clientRef.query(`
     CREATE TABLE IF NOT EXISTS professional_push_tokens (
@@ -211,6 +246,20 @@ const ensureProfessionalPushSchema = async (clientRef = pool) => {
     CREATE INDEX IF NOT EXISTS idx_prof_push_prof_active
     ON professional_push_tokens (professional_id, is_active, updated_at DESC)
   `);
+};
+
+let pushSchemaPromise = null;
+const ensureProfessionalPushSchema = (clientRef = pool) => {
+  // Migration transactions pass their own client and must execute on that client.
+  if (clientRef !== pool) return applyProfessionalPushSchema(clientRef);
+
+  if (!pushSchemaPromise) {
+    pushSchemaPromise = applyProfessionalPushSchema(pool).catch((error) => {
+      pushSchemaPromise = null;
+      throw error;
+    });
+  }
+  return pushSchemaPromise;
 };
 
 const registerProfessionalPushToken = async ({
@@ -269,7 +318,7 @@ const unregisterProfessionalPushToken = async ({ professionalId, expoPushToken }
 
 const sendPushToProfessionals = async (notifications = []) => {
   if (!Array.isArray(notifications) || notifications.length === 0) {
-    return { sent: 0, failed: 0, invalidated: 0 };
+    return { sent: 0, failed: 0, invalidated: 0, noDestination: 0 };
   }
 
   await ensureProfessionalPushSchema();
@@ -277,7 +326,7 @@ const sendPushToProfessionals = async (notifications = []) => {
     new Set(notifications.map((n) => n.professional_id).filter(Boolean))
   );
   if (professionalIds.length === 0) {
-    return { sent: 0, failed: 0, invalidated: 0 };
+    return { sent: 0, failed: 0, invalidated: 0, noDestination: 0 };
   }
 
   const tokenRows = await pool.query(
@@ -288,7 +337,7 @@ const sendPushToProfessionals = async (notifications = []) => {
   );
 
   if (tokenRows.rows.length === 0) {
-    return { sent: 0, failed: 0, invalidated: 0 };
+    return { sent: 0, failed: 0, invalidated: 0, noDestination: professionalIds.length };
   }
 
   const tokenMap = new Map();
@@ -297,9 +346,9 @@ const sendPushToProfessionals = async (notifications = []) => {
     if (!tokenMap.has(key)) tokenMap.set(key, []);
     tokenMap.get(key).push(row);
   });
-
   const messages = [];
   const snsMessages = [];
+  const professionalsWithDestination = new Set();
   notifications.forEach((item) => {
     const tokens = tokenMap.get(String(item.professional_id)) || [];
     tokens.forEach((tokenRow) => {
@@ -319,6 +368,7 @@ const sendPushToProfessionals = async (notifications = []) => {
           priority: "high",
           channelId: "default",
         });
+        professionalsWithDestination.add(String(item.professional_id));
         return;
       }
 
@@ -328,19 +378,27 @@ const sendPushToProfessionals = async (notifications = []) => {
           provider: provider || normalizePushProvider("", tokenRow.platform, tokenRow.expo_push_token),
           item,
         });
+        professionalsWithDestination.add(String(item.professional_id));
       }
     });
   });
+  const noDestination = professionalIds.reduce(
+    (count, professionalId) =>
+      count + (professionalsWithDestination.has(String(professionalId)) ? 0 : 1),
+    0
+  );
 
   const invalidTokens = new Set();
   let sent = 0;
   let failed = 0;
+  let snsFailed = 0;
   const invalidEndpoints = new Set();
+  const snsErrorSamples = [];
 
   if (messages.length > 0) {
     const chunks = chunkArray(messages, 100);
 
-    for (const chunk of chunks) {
+    await runWithConcurrency(chunks, EXPO_PUSH_CONCURRENCY, async (chunk) => {
       try {
         const response = await axios.post(EXPO_PUSH_URL, chunk, {
           headers: {
@@ -350,24 +408,25 @@ const sendPushToProfessionals = async (notifications = []) => {
           timeout: 12000,
         });
         const tickets = Array.isArray(response?.data?.data) ? response.data.data : [];
-        tickets.forEach((ticket, index) => {
+        chunk.forEach((message, index) => {
+          const ticket = tickets[index];
           if (ticket?.status === "ok") {
             sent += 1;
             return;
           }
           failed += 1;
           if (ticket?.details?.error === "DeviceNotRegistered") {
-            invalidTokens.add(chunk[index]?.to);
+            invalidTokens.add(message?.to);
           }
         });
       } catch (error) {
         failed += chunk.length;
         console.warn("[PushService] Expo push send failed:", error.message);
       }
-    }
+    });
   }
 
-  for (const snsMessage of snsMessages) {
+  await runWithConcurrency(snsMessages, SNS_PUSH_CONCURRENCY, async (snsMessage) => {
     try {
       const payload = buildSnsPublishPayload(snsMessage.item, snsMessage.provider);
       await snsClient.send(
@@ -379,11 +438,21 @@ const sendPushToProfessionals = async (notifications = []) => {
       sent += 1;
     } catch (error) {
       failed += 1;
-      if (String(error?.code || "").includes("EndpointDisabled")) {
+      snsFailed += 1;
+      const errorCode = String(error?.name || error?.code || "");
+      if (errorCode.includes("EndpointDisabled")) {
         invalidEndpoints.add(snsMessage.endpointArn);
       }
-      console.warn("[PushService] SNS mobile push failed:", error.message);
+      if (snsErrorSamples.length < 5) {
+        snsErrorSamples.push(`${errorCode || "Error"}: ${error.message}`);
+      }
     }
+  });
+
+  if (snsErrorSamples.length > 0) {
+    console.warn(
+      `[PushService] SNS failures: ${snsFailed}; sample(s): ${snsErrorSamples.join(" | ")}`
+    );
   }
 
   if (invalidTokens.size > 0) {
@@ -404,7 +473,12 @@ const sendPushToProfessionals = async (notifications = []) => {
     );
   }
 
-  return { sent, failed, invalidated: invalidTokens.size + invalidEndpoints.size };
+  return {
+    sent,
+    failed,
+    invalidated: invalidTokens.size + invalidEndpoints.size,
+    noDestination,
+  };
 };
 
 module.exports = {

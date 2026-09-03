@@ -503,18 +503,17 @@ router.delete("/block-ip/:ip", async (req, res) => {
 
 // Middleware to check super admin
 const requireSuperAdmin = (req, res, next) => {
-  // We identify super admin by email or a specific role/permission if available
-  // Fallback: check if they have super admin rights, here we use email based on previous context
-  if (req.user?.email === SUPER_ADMIN_EMAIL || req.user?.role === 'super_admin' || req.user?.customPermissions?.role_type === 'super_admin') {
+  const email = (req.user?.email || "").toLowerCase();
+  const isSuperEmail = email === SUPER_ADMIN_EMAIL.toLowerCase() || email === "admin@gmail.com";
+  const isSuperRole = req.user?.role === 'super_admin' || req.user?.customPermissions?.role_type === 'super_admin';
+  if (isSuperEmail || isSuperRole) {
      next();
   } else {
-     // If not explicitly super admin by role, but email is admin@gmail.com, allow
-     // To be safe, we'll fetch from db to confirm if needed, or rely on token.
-     // For now, let's just query the db to be absolutely sure since this is a sensitive action.
-     pool.query("SELECT email, role, permissions FROM users WHERE user_id = $1", [req.user.user_id])
+     pool.query("SELECT email, role, permissions FROM users WHERE user_id = $1", [req.user?.user_id])
        .then(result => {
           const u = result.rows[0];
-          if (u && (u.email === SUPER_ADMIN_EMAIL || u.role === 'super_admin' || u.permissions?.role_type === 'super_admin')) {
+          const dbEmail = (u?.email || "").toLowerCase();
+          if (u && (dbEmail === SUPER_ADMIN_EMAIL.toLowerCase() || dbEmail === "admin@gmail.com" || u.role === 'super_admin' || u.permissions?.role_type === 'super_admin')) {
              next();
           } else {
              res.status(403).json({ error: "Access denied. Super Admin role required for this action." });
@@ -707,5 +706,296 @@ router.post("/force-logout-bulk", requireSuperAdmin, async (req, res) => {
   }
 });
 
-module.exports = router;
+// ══════════════════════════════════════════════════
+// EXTERNAL API KEY MANAGEMENT
+// ══════════════════════════════════════════════════
+const { generateApiKey } = require("../utils/apiKeyUtils");
+const { invalidateApiKeyCache } = require("../middleware/apiKeyAuth");
 
+const resolveApiKeyScope = async ({ cityId, zoneId, wardId }) => {
+  let resolvedCityId = cityId || null;
+  let resolvedZoneId = zoneId || null;
+  const resolvedWardId = wardId || null;
+
+  if (resolvedWardId) {
+    const { rows } = await pool.query(
+      `SELECT w.ward_id, z.zone_id, z.city_id
+       FROM wards w
+       JOIN zones z ON w.zone_id = z.zone_id
+       WHERE w.ward_id = $1`,
+      [resolvedWardId]
+    );
+    if (rows.length === 0) throw new Error("INVALID_WARD_SCOPE");
+    if (resolvedZoneId && String(resolvedZoneId) !== String(rows[0].zone_id)) {
+      throw new Error("WARD_ZONE_SCOPE_MISMATCH");
+    }
+    if (resolvedCityId && String(resolvedCityId) !== String(rows[0].city_id)) {
+      throw new Error("WARD_CITY_SCOPE_MISMATCH");
+    }
+    resolvedZoneId = rows[0].zone_id;
+    resolvedCityId = rows[0].city_id;
+  } else if (resolvedZoneId) {
+    const { rows } = await pool.query(
+      `SELECT zone_id, city_id FROM zones WHERE zone_id = $1`,
+      [resolvedZoneId]
+    );
+    if (rows.length === 0) throw new Error("INVALID_ZONE_SCOPE");
+    if (resolvedCityId && String(resolvedCityId) !== String(rows[0].city_id)) {
+      throw new Error("ZONE_CITY_SCOPE_MISMATCH");
+    }
+    resolvedCityId = rows[0].city_id;
+  } else if (resolvedCityId) {
+    const { rows } = await pool.query(
+      `SELECT city_id FROM cities WHERE city_id = $1`,
+      [resolvedCityId]
+    );
+    if (rows.length === 0) throw new Error("INVALID_CITY_SCOPE");
+  }
+
+  return {
+    cityId: resolvedCityId,
+    zoneId: resolvedZoneId,
+    wardId: resolvedWardId,
+  };
+};
+
+// GET /api/admin-management/api-keys — List all API keys
+router.get("/api-keys", requireSuperAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         ak.id, ak.key_prefix, ak.full_key_secret, ak.name, ak.city_id, ak.zone_id, ak.ward_id,
+         c.city_name, z.zone_name, w.ward_name,
+         ak.scopes, ak.is_active, ak.rate_limit_per_minute,
+         ak.allowed_ips, ak.last_used_at, ak.total_requests,
+         ak.expires_at, ak.created_at,
+         u.name AS created_by_name
+       FROM api_keys ak
+       LEFT JOIN cities c ON ak.city_id = c.city_id
+       LEFT JOIN zones z ON ak.zone_id = z.zone_id
+       LEFT JOIN wards w ON ak.ward_id = w.ward_id
+       LEFT JOIN users u ON ak.created_by = u.user_id
+       ORDER BY ak.created_at DESC`
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error("[API Keys] Error listing keys:", error);
+    res.status(500).json({ error: "Failed to fetch API keys" });
+  }
+});
+
+// POST /api/admin-management/api-keys — Create a new API key
+router.post("/api-keys", requireSuperAdmin, async (req, res) => {
+  try {
+    const {
+      name,
+      city_id = null,
+      zone_id = null,
+      ward_id = null,
+      scopes = ["attendance:read"],
+      rate_limit_per_minute = 100,
+      allowed_ips = null,
+      expires_at = null,
+    } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "Key name is required." });
+    }
+
+    let resolvedScope;
+    try {
+      resolvedScope = await resolveApiKeyScope({
+        cityId: city_id,
+        zoneId: zone_id,
+        wardId: ward_id,
+      });
+    } catch (scopeError) {
+      return res.status(400).json({
+        error: "Selected city, zone, and ward must belong to the same hierarchy.",
+        code: scopeError.message,
+      });
+    }
+
+    const env = process.env.NODE_ENV === "production" ? "live" : "test";
+    const { fullKey, prefix, hash } = generateApiKey(env);
+
+    const { rows } = await pool.query(
+      `INSERT INTO api_keys (key_hash, key_prefix, full_key_secret, name, created_by, city_id, zone_id, ward_id, scopes, rate_limit_per_minute, allowed_ips, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING id, key_prefix, full_key_secret, name, city_id, zone_id, ward_id, scopes, is_active, rate_limit_per_minute, allowed_ips, expires_at, created_at`,
+      [
+        hash,
+        prefix,
+        fullKey,
+        name.trim(),
+        req.user.user_id,
+        resolvedScope.cityId,
+        resolvedScope.zoneId,
+        resolvedScope.wardId,
+        scopes,
+        rate_limit_per_minute,
+        allowed_ips,
+        expires_at,
+      ]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "API key created successfully.",
+      api_key: fullKey,
+      data: rows[0],
+    });
+  } catch (error) {
+    console.error("[API Keys] Error creating key:", error);
+    res.status(500).json({ error: "Failed to create API key" });
+  }
+});
+
+// PUT /api/admin-management/api-keys/:id — Update key settings (name, scopes, IPs, rate limit)
+router.put("/api-keys/:id", requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, scopes, rate_limit_per_minute, allowed_ips, expires_at, city_id } = req.body;
+
+    const { rows } = await pool.query(
+      `UPDATE api_keys SET
+         name = COALESCE($1, name),
+         scopes = COALESCE($2, scopes),
+         rate_limit_per_minute = COALESCE($3, rate_limit_per_minute),
+         allowed_ips = $4,
+         expires_at = $5,
+         city_id = $6,
+         updated_at = NOW()
+       WHERE id = $7
+       RETURNING id, key_prefix, name, city_id, scopes, is_active, rate_limit_per_minute, allowed_ips, expires_at, updated_at`,
+      [name, scopes, rate_limit_per_minute, allowed_ips || null, expires_at || null, city_id ?? null, id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "API key not found." });
+    }
+
+    invalidateApiKeyCache();
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error("[API Keys] Error updating key:", error);
+    res.status(500).json({ error: "Failed to update API key" });
+  }
+});
+
+// POST /api/admin-management/api-keys/:id/revoke — Revoke an API key
+router.post("/api-keys/:id/revoke", requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { rows } = await pool.query(
+      `UPDATE api_keys SET is_active = false, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, key_prefix, name, is_active`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "API key not found." });
+    }
+
+    invalidateApiKeyCache();
+    res.json({ success: true, message: "API key revoked.", data: rows[0] });
+  } catch (error) {
+    console.error("[API Keys] Error revoking key:", error);
+    res.status(500).json({ error: "Failed to revoke API key" });
+  }
+});
+
+// POST /api/admin-management/api-keys/:id/activate — Re-activate a revoked key
+router.post("/api-keys/:id/activate", requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { rows } = await pool.query(
+      `UPDATE api_keys SET is_active = true, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, key_prefix, name, is_active`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "API key not found." });
+    }
+
+    invalidateApiKeyCache();
+    res.json({ success: true, message: "API key re-activated.", data: rows[0] });
+  } catch (error) {
+    console.error("[API Keys] Error activating key:", error);
+    res.status(500).json({ error: "Failed to activate API key" });
+  }
+});
+
+// DELETE /api/admin-management/api-keys/:id — Permanently delete a key
+router.delete("/api-keys/:id", requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { rowCount } = await pool.query(
+      `DELETE FROM api_keys WHERE id = $1`,
+      [id]
+    );
+
+    if (rowCount === 0) {
+      return res.status(404).json({ error: "API key not found." });
+    }
+
+    invalidateApiKeyCache();
+    res.json({ success: true, message: "API key permanently deleted." });
+  } catch (error) {
+    console.error("[API Keys] Error deleting key:", error);
+    res.status(500).json({ error: "Failed to delete API key" });
+  }
+});
+
+// GET /api/admin-management/api-keys/:id/usage — View usage logs for a key
+router.get("/api-keys/:id/usage", requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const offset = (page - 1) * limit;
+
+    const [keyResult, logsResult, countResult] = await Promise.all([
+      pool.query(
+        `SELECT id, key_prefix, name, total_requests, last_used_at FROM api_keys WHERE id = $1`,
+        [id]
+      ),
+      pool.query(
+        `SELECT endpoint, method, response_status, ip_address, user_agent, created_at
+         FROM api_key_usage_logs
+         WHERE api_key_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [id, limit, offset]
+      ),
+      pool.query(
+        `SELECT COUNT(*) as total FROM api_key_usage_logs WHERE api_key_id = $1`,
+        [id]
+      ),
+    ]);
+
+    if (keyResult.rows.length === 0) {
+      return res.status(404).json({ error: "API key not found." });
+    }
+
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    res.json({
+      success: true,
+      key: keyResult.rows[0],
+      logs: logsResult.rows,
+      pagination: { page, limit, total, total_pages: Math.ceil(total / limit) },
+    });
+  } catch (error) {
+    console.error("[API Keys] Error fetching usage:", error);
+    res.status(500).json({ error: "Failed to fetch API key usage" });
+  }
+});
+
+module.exports = router;
