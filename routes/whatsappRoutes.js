@@ -10,10 +10,56 @@ const {
 const {
   sendDailyBulletinWhatsAppNew,
 } = require("../utils/msg91DailyBulletinNew");
+const {
+  sendZoneCommissionerWhatsAppReport,
+} = require("../utils/msg91ZoneCommissionerReport");
+
+const {
+  getReportSettings,
+  setReportStatus,
+} = require("../utils/whatsappSettings");
 
 const router = express.Router();
 
 router.use(authenticateUser);
+router.use((req, res, next) => {
+  if (String(req.user?.role).toLowerCase() !== 'admin') return res.status(403).json({ error: 'Admin access required.' });
+  next();
+});
+
+// Settings Endpoints
+router.get("/settings", async (req, res) => {
+  try {
+    const settings = await getReportSettings();
+    const { zoneRecipients } = require('../utils/zoneBriefScheduler');
+    res.json({
+      success: true, settings, zoneSchedules: [1, 2, 3, 4, 5].map(n => ({
+        reportId: 'zone-commissioner-zone-' + n,
+        enabled: process.env.WHATSAPP_CRON_ENABLED === 'true' && zoneRecipients(n).length > 0,
+        recipientsCount: zoneRecipients(n).length,
+        recipients: zoneRecipients(n)
+      }))
+    });
+  } catch (error) {
+    console.error("Error fetching WhatsApp report settings:", error);
+    res.status(500).json({ error: "Unable to fetch WhatsApp report settings." });
+  }
+});
+
+router.post("/settings", async (req, res) => {
+  const { reportId, reportName, status } = req.body || {};
+  if (!reportId || !status) {
+    return res.status(400).json({ error: "reportId and status are required." });
+  }
+
+  try {
+    const updated = await setReportStatus(reportId, reportName, status);
+    res.json({ success: true, setting: updated });
+  } catch (error) {
+    console.error("Error updating WhatsApp report setting:", error);
+    res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : "Unable to update WhatsApp report setting." });
+  }
+});
 
 router.post("/report", async (req, res) => {
   const { phoneNumber } = req.body || {};
@@ -71,6 +117,14 @@ router.post("/report-new", async (req, res) => {
 });
 
 router.post("/daily-bulletin", async (req, res) => {
+  const enabled = await isReportEnabled("daily-city-report");
+  if (!enabled) {
+    return res.status(403).json({
+      error: "Daily PMC Workforce Status WhatsApp report is currently disabled/paused.",
+      disabled: true,
+    });
+  }
+
   const { phoneNumber, date } = req.body || {};
 
   if (!phoneNumber || !String(phoneNumber).trim()) {
@@ -147,6 +201,72 @@ router.post("/daily-bulletin", async (req, res) => {
       details: error.response?.data,
     });
   }
+});
+
+router.post("/zone-commissioner", async (req, res) => {
+  const { phoneNumber, zoneName, zoneData } = req.body || {};
+  const targetZone = zoneName || zoneData?.zoneName || "Zone 1";
+  if (!phoneNumber || !String(phoneNumber).trim()) {
+    return res.status(400).json({ error: "phoneNumber is required." });
+  }
+
+  try {
+    const result = await sendZoneCommissionerWhatsAppReport({
+      phoneNumber,
+      zoneName: targetZone,
+      zoneData,
+    });
+
+    res.json({
+      message: `${targetZone} Commissioner WhatsApp Report sent successfully!`,
+      phoneNumber: result.phoneNumber,
+      reportData: result.reportData,
+      providerResponse: result.providerResponse,
+    });
+  } catch (error) {
+    console.error("Zone Commissioner WhatsApp send error:", error);
+    res.status(error.statusCode || error.response?.status || 500).json({
+      error: error.message || "Unable to send Zone Commissioner report.",
+      details: error.response?.data,
+    });
+  }
+});
+
+router.post("/zone-commissioner/send-all-zones", async (req, res) => {
+  const { phoneNumber, dateISO } = req.body || {};
+
+  if (!phoneNumber || !String(phoneNumber).trim()) {
+    return res.status(400).json({ error: "phoneNumber is required." });
+  }
+
+  const zones = ["Zone 1", "Zone 2", "Zone 3", "Zone 4", "Zone 5"];
+  const results = [];
+  const errors = [];
+
+  for (const zone of zones) {
+    try {
+      const result = await sendZoneCommissionerWhatsAppReport({
+        phoneNumber,
+        zoneName: zone,
+        zoneData: { zoneName: zone, dateISO },
+      });
+      results.push({
+        zone,
+        success: true,
+        reportData: result.reportData,
+        requestId: result.providerResponse?.request_id,
+      });
+    } catch (err) {
+      console.error(`Failed to send Zone Commissioner report for ${zone}:`, err.message);
+      errors.push({ zone, success: false, error: err.message });
+    }
+  }
+
+  res.json({
+    message: `${results.length} reports queued; ${errors.length} reports blocked or failed.`,
+    results,
+    errors,
+  });
 });
 
 module.exports = router;
