@@ -1,5 +1,5 @@
+const { guardedReportPost } = require('./whatsappSettings');
 const pool = require("../config/db");
-const axios = require("axios");
 
 const BASE_URL = (process.env.MSG91_WHATSAPP_BASE_URL || "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk").replace(/\/+$/, "");
 const AUTH_KEY = process.env.MSG91_WHATSAPP_AUTH_KEY || process.env.MSG91_AUTH_KEY;
@@ -16,6 +16,7 @@ const normalizePhoneNumber = (phoneNumber = "") => {
 };
 
 const REPORT_CITY = "Pune";
+const DEPARTMENT = "Road Sweeping Staff- PMC";
 const REPORT_TIMEZONE = "Asia/Kolkata";
 
 const formatNum = (num) => {
@@ -29,7 +30,7 @@ const getReportDates = (overrideDate) => {
     const istNow = new Date(nowUtc.toLocaleString("en-US", { timeZone: REPORT_TIMEZONE }));
     const yesterday = new Date(istNow);
     yesterday.setDate(yesterday.getDate() - 1);
-    
+
     const yyyy = yesterday.getFullYear();
     const mm = String(yesterday.getMonth() + 1).padStart(2, "0");
     const dd = String(yesterday.getDate()).padStart(2, "0");
@@ -70,12 +71,14 @@ const generateDailyBulletinData = async (overrideDate) => {
     JOIN wards w ON e.ward_id = w.ward_id
     JOIN zones z ON w.zone_id = z.zone_id
     JOIN cities c ON z.city_id = c.city_id
+    JOIN designation des ON des.designation_id = e.designation_id
+    JOIN department dept ON dept.department_id = des.department_id
     LEFT JOIN attendance_summary att ON att.emp_id = e.emp_id
     WHERE c.city_name = $2
-      AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
+      AND dept.department_name = $3
   `;
 
-  const cityResult = await pool.query(cityQuery, [isoDate, REPORT_CITY]);
+  const cityResult = await pool.query(cityQuery, [isoDate, REPORT_CITY, DEPARTMENT]);
   const cityRow = cityResult.rows[0] || {};
 
   const cityRegistered = parseInt(cityRow.total_face_registered || 0, 10);
@@ -107,14 +110,16 @@ const generateDailyBulletinData = async (overrideDate) => {
     JOIN wards w ON e.ward_id = w.ward_id
     JOIN zones z ON w.zone_id = z.zone_id
     JOIN cities c ON z.city_id = c.city_id
+    JOIN designation des ON des.designation_id = e.designation_id
+    JOIN department dept ON dept.department_id = des.department_id
     LEFT JOIN attendance_summary att ON att.emp_id = e.emp_id
     WHERE c.city_name = $2
-      AND (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL)
+      AND dept.department_name = $3
     GROUP BY z.zone_name, z.zone_id
     ORDER BY z.zone_name
   `;
 
-  const { rows } = await pool.query(zoneQuery, [isoDate, REPORT_CITY]);
+  const { rows } = await pool.query(zoneQuery, [isoDate, REPORT_CITY, DEPARTMENT]);
 
   if (!rows || rows.length === 0) {
     throw new Error(`No data found for Pune on date ${isoDate}.`);
@@ -177,8 +182,8 @@ const generateDailyBulletinData = async (overrideDate) => {
 
   let keyObservation = "";
   if (strongZones.length > 0) {
-    const formattedStrong = strongZones.length === 1 
-      ? strongZones[0] 
+    const formattedStrong = strongZones.length === 1
+      ? strongZones[0]
       : `${strongZones.slice(0, -1).join(", ")} and ${strongZones[strongZones.length - 1]}`;
     keyObservation = `${formattedStrong} delivered strong attendance performance above 65%, while ${lowestZone.zoneName} recorded the lowest turnout today and may require focused follow-up at ward level.`;
   } else {
@@ -186,8 +191,8 @@ const generateDailyBulletinData = async (overrideDate) => {
   }
 
   const bottomZones = [...zonesData].sort((a, b) => a.presentRate - b.presentRate).slice(0, 2);
-  const tomorrowFocusZonesStr = bottomZones.length >= 2 
-    ? `${bottomZones[0].zoneName} and ${bottomZones[1].zoneName}` 
+  const tomorrowFocusZonesStr = bottomZones.length >= 2
+    ? `${bottomZones[0].zoneName} and ${bottomZones[1].zoneName}`
     : lowestZone.zoneName;
 
   const secondLowestZone = bottomZones[1] || lowestZone;
@@ -282,54 +287,54 @@ const sendDailyBulletinWhatsAppNew = async ({ phoneNumber, date }) => {
     body_1: { type: "text", value: String(data.date).trim() },
     body_2: { type: "text", value: String(data.statusText).trim() },
     body_3: { type: "text", value: String(data.statusDesc).trim() },
-    
+
     body_4: { type: "text", value: String(data.cityRegistered).trim() },
     body_5: { type: "text", value: String(data.cityPresent).trim() },
     body_6: { type: "text", value: String(data.cityLeave).trim() },
     body_7: { type: "text", value: String(data.cityAbsent).trim() },
-    
+
     // Zone Overview List
     body_8: { type: "text", value: String(getOverviewText(0)).trim() || "-" },
     body_9: { type: "text", value: String(getOverviewText(1)).trim() || "-" },
     body_10: { type: "text", value: String(getOverviewText(2)).trim() || "-" },
     body_11: { type: "text", value: String(getOverviewText(3)).trim() || "-" },
     body_12: { type: "text", value: String(getOverviewText(4)).trim() || "-" },
-    
+
     // Detailed Zone 1
     body_13: { type: "text", value: String(z0.zoneName).trim() || "-" },
     body_14: { type: "text", value: String(formatNum(z0.registered)).trim() },
     body_15: { type: "text", value: String(formatNum(z0.present)).trim() },
     body_16: { type: "text", value: String(formatNum(z0.leave)).trim() },
     body_17: { type: "text", value: String(formatNum(z0.absent)).trim() },
-    
+
     // Detailed Zone 2
     body_18: { type: "text", value: String(z1.zoneName).trim() || "-" },
     body_19: { type: "text", value: String(formatNum(z1.registered)).trim() },
     body_20: { type: "text", value: String(formatNum(z1.present)).trim() },
     body_21: { type: "text", value: String(formatNum(z1.leave)).trim() },
     body_22: { type: "text", value: String(formatNum(z1.absent)).trim() },
-    
+
     // Detailed Zone 3
     body_23: { type: "text", value: String(z2.zoneName).trim() || "-" },
     body_24: { type: "text", value: String(formatNum(z2.registered)).trim() },
     body_25: { type: "text", value: String(formatNum(z2.present)).trim() },
     body_26: { type: "text", value: String(formatNum(z2.leave)).trim() },
     body_27: { type: "text", value: String(formatNum(z2.absent)).trim() },
-    
+
     // Detailed Zone 4
     body_28: { type: "text", value: String(z3.zoneName).trim() || "-" },
     body_29: { type: "text", value: String(formatNum(z3.registered)).trim() },
     body_30: { type: "text", value: String(formatNum(z3.present)).trim() },
     body_31: { type: "text", value: String(formatNum(z3.leave)).trim() },
     body_32: { type: "text", value: String(formatNum(z3.absent)).trim() },
-    
+
     // Detailed Zone 5
     body_33: { type: "text", value: String(z4.zoneName).trim() || "-" },
     body_34: { type: "text", value: String(formatNum(z4.registered)).trim() },
     body_35: { type: "text", value: String(formatNum(z4.present)).trim() },
     body_36: { type: "text", value: String(formatNum(z4.leave)).trim() },
     body_37: { type: "text", value: String(formatNum(z4.absent)).trim() },
-    
+
     body_38: { type: "text", value: String(data.keyObservation).trim() },
     body_39: { type: "text", value: String(data.tomorrowFocusZonesStr).trim() },
     body_40: { type: "text", value: String(data.manualPunchZonesStr).trim() },
@@ -363,7 +368,7 @@ const sendDailyBulletinWhatsAppNew = async ({ phoneNumber, date }) => {
     authkey: AUTH_KEY,
   };
 
-  const response = await axios.post(`${BASE_URL}/`, payload, {
+  const response = await guardedReportPost('daily-city-report', `${BASE_URL}/`, payload, {
     headers,
     timeout: 15000,
   });

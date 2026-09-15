@@ -17,6 +17,7 @@ const {
 const {
   getReportSettings,
   setReportStatus,
+  isReportEnabled,
 } = require("../utils/whatsappSettings");
 
 const router = express.Router();
