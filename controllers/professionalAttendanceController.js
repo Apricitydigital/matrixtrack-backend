@@ -6,6 +6,7 @@ const { getSignedS3Url, uploadToS3 } = require('../utils/s3SelfPunch');
 const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSchema');
 const { sendTrackedRekognition, trackSuccessfulAttendanceEvent } = require('../utils/cityTrafficCost');
 const { validateProfessionalGeofenceAccess } = require('./professionalGeofenceController');
+const { logUserConsent } = require('./consentController');
 
 let attendanceColumnsEnsured = false;
 
@@ -520,8 +521,8 @@ const punchIn = async (req, res) => {
     if (!matchResult.isMatch) {
       await client.query('ROLLBACK');
       logger.warn(`[Attendance] Face match failed for ${professional_id}. Confidence: ${matchResult.confidence}`);
-      return res.status(403).json({ 
-        success: false, 
+      return res.status(403).json({
+        success: false,
         message: 'Face not recognized. Please ensure good lighting and try again.',
         confidence: matchResult.confidence
       });
@@ -577,7 +578,17 @@ const punchIn = async (req, res) => {
     ]);
 
     await client.query('COMMIT');
-    
+
+    // Log Professional Self Biometric Consent (DPDP Act Compliance)
+    await logUserConsent({
+      userId: professional_id,
+      consentType: 'BIOMETRIC_FACE_AND_AADHAR',
+      actorType: 'SELF',
+      consentGiven: true,
+      ipAddress: req.ip,
+      deviceInfo: req.headers['user-agent'] || 'Professional Mobile App'
+    }).catch(err => logger.warn('[ProfessionalAttendance] Consent log warning:', err.message));
+
     logger.info(`[Attendance] Professional ${professional_id} punched in successfully.`);
     trackSuccessfulAttendanceEvent({
       cityId: city_id,
@@ -744,9 +755,9 @@ const punchOut = async (req, res) => {
     ]);
 
     if (rows.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'No open punch-in record found for today. You may have already punched out.' 
+      return res.status(404).json({
+        success: false,
+        message: 'No open punch-in record found for today. You may have already punched out.'
       });
     }
 
@@ -759,8 +770,8 @@ const punchOut = async (req, res) => {
       attendanceCount: 1,
     });
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       punch_out_time: rows[0].punch_out,
       hours_worked: parseFloat(rows[0].hours_worked).toFixed(2)
     });
@@ -904,7 +915,7 @@ const getMonthlyAttendance = async (req, res) => {
         }
         // If neither punch_in nor punch_out, status stays 'absent'
 
-        
+
         records.push({
           date: dStr,
           punch_in: record.punch_in,
@@ -914,7 +925,7 @@ const getMonthlyAttendance = async (req, res) => {
           leave: leaveByDate[dStr] || null,
           holiday: holidayByDate[dStr] || null,
         });
-        
+
         if (status === 'present') totalPresent++;
         else if (status === 'half-day') totalHalfDay++;
         totalWorkingDays++;
