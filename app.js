@@ -488,8 +488,10 @@ const {
   REMINDER_CATCH_UP_UNTIL,
   runProfessionalPunchInReminder,
 } = require("./utils/professionalPunchInReminder");
+const instanceId = process.env.NODE_APP_INSTANCE || "0";
+const isPrimaryCronInstance = instanceId === "0";
 const PROFESSIONAL_REMINDER_CRON_ENABLED =
-  process.env.PROFESSIONAL_REMINDER_CRON_ENABLED === "true";
+  process.env.PROFESSIONAL_REMINDER_CRON_ENABLED !== "false";
 const PROFESSIONAL_REMINDER_CRON_VERBOSE =
   process.env.PROFESSIONAL_REMINDER_CRON_VERBOSE === "true";
 let professionalReminderCronRunning = false;
