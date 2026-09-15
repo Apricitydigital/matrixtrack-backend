@@ -13,12 +13,19 @@ const {
 const {
   sendZoneCommissionerWhatsAppReport,
 } = require("../utils/msg91ZoneCommissionerReport");
+const {
+  sendHmsDailyBulletin,
+} = require("../utils/msg91HmsDailyBulletin");
 
 const {
   getReportSettings,
   setReportStatus,
   isReportEnabled,
 } = require("../utils/whatsappSettings");
+const {
+  getAllSchedules,
+  saveSchedule,
+} = require("../utils/whatsappScheduleConfig");
 
 const router = express.Router();
 
@@ -31,15 +38,23 @@ router.use((req, res, next) => {
 // Settings Endpoints
 router.get("/settings", async (req, res) => {
   try {
-    const settings = await getReportSettings();
-    const { zoneRecipients } = require('../utils/zoneBriefScheduler');
+    const [settings, schedules] = await Promise.all([
+      getReportSettings(),
+      getAllSchedules(),
+    ]);
+    const schedMap = Object.fromEntries(schedules.map(s => [s.report_id, s]));
     res.json({
-      success: true, settings, zoneSchedules: [1, 2, 3, 4, 5].map(n => ({
-        reportId: 'zone-commissioner-zone-' + n,
-        enabled: process.env.WHATSAPP_CRON_ENABLED === 'true' && zoneRecipients(n).length > 0,
-        recipientsCount: zoneRecipients(n).length,
-        recipients: zoneRecipients(n)
-      }))
+      success: true,
+      settings,
+      zoneSchedules: [1, 2, 3, 4, 5].map(n => {
+        const cfg = schedMap[`zone-commissioner-zone-${n}`];
+        return {
+          reportId: `zone-commissioner-zone-${n}`,
+          enabled: !!(cfg?.send_time && (cfg?.days_of_week || []).length > 0 && cfg?.recipients),
+          recipientsCount: cfg?.recipients ? cfg.recipients.split(',').filter(Boolean).length : 0,
+          recipients: cfg?.recipients ? cfg.recipients.split(',').map(s => s.trim()).filter(Boolean) : [],
+        };
+      }),
     });
   } catch (error) {
     console.error("Error fetching WhatsApp report settings:", error);
@@ -204,6 +219,37 @@ router.post("/daily-bulletin", async (req, res) => {
   }
 });
 
+router.post("/hms-daily-bulletin", async (req, res) => {
+  const enabled = await isReportEnabled("hms-daily-bulletin");
+  if (!enabled) {
+    return res.status(403).json({
+      error: "HMS Daily City Bulletin is currently disabled/paused.",
+      disabled: true,
+    });
+  }
+
+  const { phoneNumber, date } = req.body || {};
+  if (!phoneNumber || !String(phoneNumber).trim()) {
+    return res.status(400).json({ error: "phoneNumber is required." });
+  }
+
+  try {
+    const result = await sendHmsDailyBulletin({ phoneNumber, date });
+    res.json({
+      message: "HMS Daily City Bulletin sent successfully!",
+      phoneNumber: result.phoneNumber,
+      reportData: result.reportData,
+      providerResponse: result.providerResponse,
+    });
+  } catch (error) {
+    console.error("HMS Daily Bulletin send error:", error);
+    res.status(error.statusCode || error.response?.status || 500).json({
+      error: error.message || "Unable to send HMS Daily City Bulletin.",
+      details: error.response?.data,
+    });
+  }
+});
+
 router.post("/zone-commissioner", async (req, res) => {
   const { phoneNumber, zoneName, zoneData } = req.body || {};
   const targetZone = zoneName || zoneData?.zoneName || "Zone 1";
@@ -268,6 +314,31 @@ router.post("/zone-commissioner/send-all-zones", async (req, res) => {
     results,
     errors,
   });
+});
+
+// ── Schedule Config Endpoints ────────────────────────────────────────────────
+/** GET /api/whatsapp/schedule-config  — returns all 7 report schedule configs */
+router.get("/schedule-config", async (req, res) => {
+  try {
+    const schedules = await getAllSchedules();
+    res.json({ success: true, schedules });
+  } catch (error) {
+    console.error("Error fetching schedule config:", error);
+    res.status(500).json({ error: "Unable to fetch schedule configuration." });
+  }
+});
+
+/** POST /api/whatsapp/schedule-config  — save / update a single report schedule */
+router.post("/schedule-config", async (req, res) => {
+  const { reportId, reportName, recipients, send_time, days_of_week } = req.body || {};
+  if (!reportId) return res.status(400).json({ error: "reportId is required." });
+  try {
+    const updated = await saveSchedule(reportId, { reportName, recipients, send_time, days_of_week });
+    res.json({ success: true, schedule: updated });
+  } catch (error) {
+    console.error("Error saving schedule config:", error);
+    res.status(error.statusCode || 500).json({ error: error.message || "Unable to save schedule." });
+  }
 });
 
 module.exports = router;

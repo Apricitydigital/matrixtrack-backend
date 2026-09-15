@@ -174,6 +174,7 @@ const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
 // const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
 const { sendDailyBulletinWhatsAppNew } = require("./utils/MT Daily Bulletin SWM pune");
+const { isReportEnabled } = require("./utils/whatsappSettings");
 
 const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
 const hasSentTodayDailyFinal = (key) => {
@@ -193,11 +194,23 @@ const markSentTodayDailyFinal = (key) => {
 };
 
 const WHATSAPP_CRON_ENABLED = process.env.WHATSAPP_CRON_ENABLED === "true";
+const { runScheduledWhatsAppReports } = require('./utils/whatsappCronScheduler');
 if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
+  // Flexible DB-driven scheduler — reads send_time + days_of_week per report every minute
+  cron.schedule('* * * * *', async () => {
+    try { await runScheduledWhatsAppReports(); }
+    catch (err) { console.error('[WhatsApp Sched Cron]', err.message); }
+  }, { timezone: 'Asia/Kolkata' });
+  console.log('[WhatsApp Sched Cron] Registered — polling every minute for DB-configured schedules.');
   cron.schedule(
     "30 09 * * *",
     async () => {
       console.log('[WhatsApp Daily Final Cron] Daily final attendance report triggered');
+      if (!(await isReportEnabled("daily-final-report"))) {
+        console.log('[WhatsApp Daily Final Cron] Report is PAUSED/DISABLED in settings; skipping dispatch.');
+        return;
+      }
+
       const client = await pool.connect();
       let lockAcquired = false;
       const FINAL_DAILY_LOCK_ID = 812350; // Unique ID
@@ -263,6 +276,11 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
   // Helper to trigger SWM daily bulletin report
   const triggerDailyBulletinNew = async (triggerName, lockId, targetDate) => {
     console.log(`[WhatsApp Daily V2 Cron] Daily V2 bulletin report triggered for ${triggerName}`);
+    if (!(await isReportEnabled("daily-city-report"))) {
+      console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Report is PAUSED/DISABLED in settings; skipping dispatch.`);
+      return;
+    }
+
     const client = await pool.connect();
     let lockAcquired = false;
     try {
