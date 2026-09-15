@@ -60,6 +60,17 @@ router.post(
 
       if (result.rowCount === 0) return res.status(404).json({ error: "Supervisor not found" });
 
+      // Record Supervisor Proxy Consent (DPDP Act)
+      const { logUserConsent } = require("../controllers/consentController");
+      await logUserConsent({
+        userId,
+        consentType: 'AADHAR_VERIFICATION',
+        actorType: 'SUPERVISOR_PROXY',
+        supervisorId: req.user?.user_id || 0,
+        consentGiven: true,
+        ipAddress: req.ip
+      }).catch(err => console.error("[SupervisorAadhar] Consent log error:", err));
+
       return res.json({
         message: "Aadhar document uploaded successfully",
         aadhar_doc_url: aadharDocUrl,

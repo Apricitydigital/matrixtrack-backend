@@ -6,6 +6,7 @@ const { encryptAadhar } = require('../utils/encryption');
 const { uploadToS3, deleteFromS3 } = require('../utils/s3SelfPunch');
 const socketio = require('../utils/socket');
 const { trackCityTraffic, getIstDateKey } = require('../utils/cityTrafficCost');
+const { logUserConsent } = require('./consentController');
 
 // Multer memory storage to hold files before uploading to S3
 const storage = multer.memoryStorage();
@@ -172,7 +173,7 @@ const validateInput = (reqBody, reqFiles) => {
   if (!full_name || !sanitizeString(full_name)) errors.full_name = "Full name is required.";
 
   if (!emp_code || !String(emp_code).trim()) errors.emp_code = "Employee code is required.";
-  
+
   if (!mobile || !/^\d{10}$/.test(mobile)) {
     errors.mobile = "Mobile must be a valid 10-digit number.";
   }
@@ -188,7 +189,7 @@ const validateInput = (reqBody, reqFiles) => {
   if (!city_id || isNaN(parseInt(city_id, 10))) errors.city_id = "Valid city_id is required.";
   if (!zone_id || isNaN(parseInt(zone_id, 10))) errors.zone_id = "Valid zone_id is required.";
   if (!ward_id || isNaN(parseInt(ward_id, 10))) errors.ward_id = "Valid ward_id (sector in DB) is required.";
-  
+
   // kothi_id is optional at UI level, but if provided must be integer
   if (reqBody.kothi_id && isNaN(parseInt(reqBody.kothi_id, 10))) {
     errors.kothi_id = "Valid kothi_id (ward in DB) is required if provided.";
@@ -294,9 +295,9 @@ const submitRequest = async (req, res) => {
     if (duplicateCheck.rowCount > 0) {
       await client.query('ROLLBACK');
       logger.info('[SelfPunch] Duplicate request rejected', { ward_id, ip: req.ip });
-      return res.status(409).json({ 
-        success: false, 
-        message: 'A request for this Aadhar number at this location is already pending or approved.' 
+      return res.status(409).json({
+        success: false,
+        message: 'A request for this Aadhar number at this location is already pending or approved.'
       });
     }
 
@@ -328,7 +329,7 @@ const submitRequest = async (req, res) => {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending')
       RETURNING id;
     `;
-    
+
     logger.info('[SelfPunch] Final location mapping', {
       requested_ward_id: parseInt(ward_id, 10),
       stored_ward_id: safeWardId,
@@ -351,6 +352,19 @@ const submitRequest = async (req, res) => {
       sanitizedEmpCode
     ]);
 
+    // 4b. Record Biometric & Aadhaar Consent Log (DPDP Act Compliance)
+    await logUserConsent({
+      mobile,
+      empCode: sanitizedEmpCode,
+      consentType: 'BIOMETRIC_FACE_AND_AADHAR',
+      actorType: req.body.supervisor_id ? 'SUPERVISOR_PROXY' : 'SELF',
+      supervisorId: req.body.supervisor_id || 0,
+      consentGiven: true,
+      languageUsed: req.body.language || 'en',
+      ipAddress: req.ip,
+      deviceInfo: req.headers['user-agent'] || ''
+    }, client);
+
     // 5. Insert Log Entry
     const submitActorType = await resolveSubmitActorType(client);
     if (submitActorType) {
@@ -372,9 +386,9 @@ const submitRequest = async (req, res) => {
       // Emitting to everyone for now, but ideally we'd target supervisors connected to this ward room
       // To target specifically:
       // io.to(`ward_${ward_id}`).emit('new_self_punch_request', { request_id: requestId, ward_id });
-      
-      io.emit('new_self_punch_request', { 
-        request_id: requestId, 
+
+      io.emit('new_self_punch_request', {
+        request_id: requestId,
         ward_id: safeWardId,
         zone_id: parseInt(zone_id, 10)
       });

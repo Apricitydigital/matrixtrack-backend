@@ -601,7 +601,9 @@ app.use("/api/v1/external", externalApiRoutes);
 const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");
 app.use("/api", auditLoggerMiddleware);
 
-// Auth Routes
+// Auth & Consent Routes
+const consentRoutes = require("./routes/consentRoutes");
+app.use("/api/consent", consentRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/otp", otpRoutes);
 
