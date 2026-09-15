@@ -22,8 +22,8 @@ const istNow = () => {
     const str = n.toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' });
     const [datePart, timePart] = str.split(' ');
     const [hh, mm] = timePart.split(':');
-    const dayIdx = new Date(`${datePart}T${timePart}+05:30`).getDay();
-    return { hhmm: `${hh}:${mm}`, day: DAY_NAMES[dayIdx], date: datePart };
+    const day = n.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
+    return { hhmm: `${hh}:${mm}`, day, date: datePart };
 };
 
 /** Dispatch a single configured report to all configured recipients. */
