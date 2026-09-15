@@ -1,7 +1,10 @@
 'use strict';
 /**
  * whatsappScheduleConfig.js
- * DB-backed per-report schedule: recipients, send_time (HH:MM IST), days_of_week
+ * Pattern B: In-Memory RAM Caching + DB Persistence
+ *
+ * Polling checks read from Node.js RAM memory (0 DB queries per minute).
+ * Saving updates PostgreSQL DB AND refreshes RAM memory cache instantly.
  */
 
 const pool = require('../config/db');
@@ -19,7 +22,10 @@ const SCHEDULABLE_REPORTS = [
 const VALID_IDS = new Set(SCHEDULABLE_REPORTS.map(r => r.id));
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+// Pattern B: In-memory RAM cache initialized lazily or on server startup
+let scheduleCache = null;
 let tableReady = null;
+
 const ensureTable = async () => {
     if (!tableReady) {
         tableReady = pool.query(`
@@ -46,27 +52,36 @@ const ensureTable = async () => {
     return tableReady;
 };
 
-const getAllSchedules = async () => {
+/** Load schedules from DB into RAM cache. */
+const loadCacheFromDb = async () => {
     await ensureTable();
     const { rows } = await pool.query(
         `SELECT report_id, report_name, recipients, send_time, days_of_week, updated_at
          FROM whatsapp_schedule_config ORDER BY report_id`
     );
-    return rows;
+    scheduleCache = rows;
+    return scheduleCache;
+};
+
+/**
+ * Pattern B: Fast In-Memory read (0 DB queries when cached).
+ * Forces DB refresh only if bypassCache is true.
+ */
+const getAllSchedules = async (bypassCache = false) => {
+    if (!scheduleCache || bypassCache) {
+        return await loadCacheFromDb();
+    }
+    return scheduleCache;
 };
 
 const getSchedule = async (reportId) => {
-    await ensureTable();
-    const { rows } = await pool.query(
-        'SELECT * FROM whatsapp_schedule_config WHERE report_id = $1', [reportId]
-    );
-    return rows[0] || null;
+    const schedules = await getAllSchedules();
+    return schedules.find(s => s.report_id === reportId) || null;
 };
 
 /**
  * Save/update a report schedule.
- * @param {string} reportId
- * @param {{ reportName?, recipients: string, send_time: string, days_of_week: string[] }} data
+ * Updates DB AND refreshes in-memory RAM cache.
  */
 const saveSchedule = async (reportId, { reportName, recipients, send_time, days_of_week }) => {
     if (!VALID_IDS.has(reportId)) throw Object.assign(new Error('Unknown report ID.'), { statusCode: 400 });
@@ -74,6 +89,7 @@ const saveSchedule = async (reportId, { reportName, recipients, send_time, days_
     const validDays = (days_of_week || []).filter(d => DAYS.includes(d));
     const safeRecipients = String(recipients || '').trim();
     await ensureTable();
+
     const { rows } = await pool.query(
         `INSERT INTO whatsapp_schedule_config (report_id, report_name, recipients, send_time, days_of_week, updated_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
@@ -92,6 +108,9 @@ const saveSchedule = async (reportId, { reportName, recipients, send_time, days_
             validDays,
         ]
     );
+
+    // Refresh RAM cache after save
+    await loadCacheFromDb();
     return rows[0];
 };
 
@@ -103,4 +122,4 @@ const parseRecipients = (str = '') =>
         .map(d => d.length === 10 ? '91' + d : d)
         .filter(d => /^[1-9]\d{9,14}$/.test(d));
 
-module.exports = { getAllSchedules, getSchedule, saveSchedule, parseRecipients, SCHEDULABLE_REPORTS, DAYS };
+module.exports = { getAllSchedules, getSchedule, saveSchedule, parseRecipients, loadCacheFromDb, SCHEDULABLE_REPORTS, DAYS };
