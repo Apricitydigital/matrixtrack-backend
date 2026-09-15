@@ -1,4 +1,4 @@
-const axios = require("axios");
+const { guardedReportPost } = require('./whatsappSettings');
 const pool = require("../config/db");
 
 const BASE_URL = (process.env.MSG91_WHATSAPP_BASE_URL || "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk").replace(/\/+$/, "");
@@ -142,7 +142,7 @@ const sendDailyWhatsAppReportNew = async ({ phoneNumber }) => {
     },
   };
 
-  const response = await axios.post(`${BASE_URL}/`, payload, {
+  const response = await guardedReportPost('daily-final-report', `${BASE_URL}/`, payload, {
     headers: {
       "Content-Type": "application/json",
       authkey: AUTH_KEY,

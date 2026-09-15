@@ -1,3 +1,4 @@
+const { guardedReportPost } = require('./whatsappSettings');
 /**
  * ============================================================
  *  MatrixTrack – Supervisor Daily Report (WhatsApp)
@@ -11,7 +12,6 @@
  * ============================================================
  */
 
-const axios = require("axios");
 const pool = require("../config/db");
 
 // ── Config ──────────────────────────────────────────────────
@@ -316,7 +316,7 @@ const sendSupervisorDailyReport = async () => {
       for (const mobile of SUPERVISOR_REPORT_RECIPIENTS) {
         const payload = buildPayload(mobile, sup, today, week, rankData);
 
-        await axios.post(`${BASE_URL}/`, payload, {
+        await guardedReportPost('supervisor-daily-report', `${BASE_URL}/`, payload, {
           headers: {
             "Content-Type": "application/json",
             authkey: AUTH_KEY,

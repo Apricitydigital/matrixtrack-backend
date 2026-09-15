@@ -1,4 +1,4 @@
-const axios = require("axios");
+const { guardedReportPost } = require('./whatsappSettings');
 const pool = require("../config/db");
 require("dotenv").config();
 
@@ -225,7 +225,7 @@ const sendWeeklyWhatsAppReport = async ({ phoneNumber }) => {
     },
   };
 
-  const response = await axios.post(BASE_URL, payload, {
+  const response = await guardedReportPost('weekly-report', BASE_URL, payload, {
     headers: { "Content-Type": "application/json", authkey: AUTH_KEY },
     timeout: 20000,
   });

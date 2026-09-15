@@ -1,4 +1,4 @@
-const axios = require("axios");
+const { guardedReportPost } = require('./whatsappSettings');
 const pool = require("../config/db");
 const {
   claimWhatsAppDispatch,
@@ -186,7 +186,7 @@ const sendDailyWhatsAppReportFinal = async ({ phoneNumber, useDispatchGuard = fa
   };
 
   try {
-    const response = await axios.post(`${BASE_URL}/`, payload, {
+    const response = await guardedReportPost('daily-final-report', `${BASE_URL}/`, payload, {
       headers: {
         "Content-Type": "application/json",
         authkey: AUTH_KEY,

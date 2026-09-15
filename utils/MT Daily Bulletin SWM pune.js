@@ -1,5 +1,5 @@
+const { guardedReportPost } = require('./whatsappSettings');
 const pool = require("../config/db");
-const axios = require("axios");
 const {
   claimWhatsAppDispatch,
   releaseWhatsAppDispatch,
@@ -379,7 +379,7 @@ const sendDailyBulletinWhatsAppNew = async ({ phoneNumber, date, useDispatchGuar
   };
 
   try {
-    const response = await axios.post(`${BASE_URL}/`, payload, {
+    const response = await guardedReportPost('daily-city-report', `${BASE_URL}/`, payload, {
       headers,
       timeout: 15000,
     });

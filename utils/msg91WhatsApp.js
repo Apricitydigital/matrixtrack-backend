@@ -1,3 +1,4 @@
+const { guardedReportPost } = require('./whatsappSettings');
 const axios = require("axios");
 const jwt = require("jsonwebtoken");
 
@@ -455,7 +456,7 @@ const sendDailyWhatsAppReport = async ({ phoneNumber }) => {
   const reportData = await buildReportData();
   const payload = buildPayload(normalizedPhone, reportData);
 
-  const response = await axios.post(`${BASE_URL}/`, payload, {
+  const response = await guardedReportPost('daily-final-report', `${BASE_URL}/`, payload, {
     headers: {
       "Content-Type": "application/json",
       authkey: AUTH_KEY,
