@@ -1,6 +1,7 @@
 const express = require("express");
 const authenticate = require("../middleware/authMiddleware");
 const { authorize } = require("../middleware/permissionMiddleware");
+const { attachCityScope } = require("../middleware/cityScope");
 const {
   getProfessionalGeofenceSettings,
   updateProfessionalGeofenceSettings,
@@ -73,6 +74,7 @@ router.patch(
 router.get(
   "/professional-geofencing/requests",
   authenticate,
+  attachCityScope,
   authorize("professional-geofencing", "view"),
   listProfessionalGeofenceRequests
 );
@@ -80,6 +82,7 @@ router.get(
 router.patch(
   "/professional-geofencing/requests/:id",
   authenticate,
+  attachCityScope,
   authorize("professional-geofencing", "write"),
   reviewProfessionalGeofenceRequest
 );
@@ -87,6 +90,7 @@ router.patch(
 router.patch(
   "/professional-geofencing/requests/:id/radius",
   authenticate,
+  attachCityScope,
   authorize("professional-geofencing", "write"),
   updateProfessionalGeofenceRadius
 );
@@ -94,6 +98,7 @@ router.patch(
 router.delete(
   "/professional-geofencing/requests/:id",
   authenticate,
+  attachCityScope,
   authorize("professional-geofencing", "write"),
   deleteProfessionalGeofenceRequest
 );
