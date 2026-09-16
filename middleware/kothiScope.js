@@ -16,7 +16,7 @@ const attachKothiScope = async (req, res, next) => {
       allowCityFallback: true,
     });
     req.kothiScope = {
-      all: Array.isArray(scope.ids) ? false : Boolean(scope.all),
+      all: Boolean(scope.all),
       ids: Array.isArray(scope.ids) ? scope.ids : [],
     };
     next();
