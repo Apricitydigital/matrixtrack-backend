@@ -173,7 +173,7 @@ const markSentTodayWeekly = (key) => {
 const { sendWeeklyWhatsAppReport } = require("./utils/msg91WhatsAppWeekly");
 // const { sendSupervisorDailyReport } = require("./utils/msg91SupervisorDailyReport");
 const { sendDailyWhatsAppReportFinal } = require("./utils/msg91MatrixtrackDailyReport");
-const { sendDailyBulletinWhatsAppNew } = require("./utils/MT Daily Bulletin SWM pune");
+
 const { isReportEnabled } = require("./utils/whatsappSettings");
 
 const LAST_RUN_FILE_DAILY_FINAL = path.join(__dirname, "whatsapp_report_daily_final_last_run.txt");
@@ -270,89 +270,7 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
     }
   );
 
-  // =============================================
-  // NEW DAILY BULLETIN REPORT (V2) - ISOLATED
-  // =============================================
-  // Helper to trigger SWM daily bulletin report
-  const triggerDailyBulletinNew = async (triggerName, lockId, targetDate) => {
-    console.log(`[WhatsApp Daily V2 Cron] Daily V2 bulletin report triggered for ${triggerName}`);
-    if (!(await isReportEnabled("daily-city-report"))) {
-      console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Report is PAUSED/DISABLED in settings; skipping dispatch.`);
-      return;
-    }
-
-    const client = await pool.connect();
-    let lockAcquired = false;
-    try {
-      const { rows } = await client.query("SELECT pg_try_advisory_lock($1) AS locked", [lockId]);
-      lockAcquired = Boolean(rows[0]?.locked);
-
-      if (!lockAcquired) {
-        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Another instance is handling V2 send; skipping.`);
-        return;
-      }
-
-      const runKey = `${todayKey()}-${triggerName}`;
-      const runClaimed = await markCronRunStarted(client, "daily_v2_bulletin", runKey);
-      if (!runClaimed) {
-        console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Already claimed today for ${triggerName}, skipping.`);
-        return;
-      }
-
-      // You can add, remove, or edit phone numbers in this list to configure who receives the reports.
-      const recipientsV2 = [
-        "918827232995",
-        "919111899909",//aditi ma'am
-        "919371222202",//saheb sir
-        "918007773301",//varule sir 
-        "919229499999", //md sir 
-        "918349733213",
-        "919131042937"];
-
-      const reportDate = targetDate || todayKey();
-
-      try {
-        const result = await sendDailyBulletinWhatsAppNew({
-          phoneNumber: recipientsV2,
-          date: reportDate, // Shared for the SAME DATE
-          useDispatchGuard: true,
-        });
-        if (result.skipped) {
-          console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Duplicate suppressed for date:`, result.reportData.date);
-        } else {
-          console.log(`[WhatsApp Daily V2 Cron - ${triggerName}] Sent PMC SWM V2 Daily Bulletin in bulk to:`, recipientsV2.join(", "), 'for date:', result.reportData.date);
-        }
-      } catch (error) {
-        console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Failed bulk send V2:`, error.message);
-      }
-
-      await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
-      lockAcquired = false;
-    } catch (err) {
-      console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Cron error:`, err.message);
-    } finally {
-      if (lockAcquired) {
-        try {
-          await client.query("SELECT pg_advisory_unlock($1)", [lockId]);
-        } catch (unlockErr) {
-          console.error(`[WhatsApp Daily V2 Cron - ${triggerName}] Unlock error:`, unlockErr.message);
-        }
-      }
-      client.release();
-    }
-  };
-
-  // ⏰ Trigger: 9:00 AM IST (Sends yesterday's bulletin report)
-  cron.schedule(
-    "00 09 * * *",
-    async () => {
-      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-      await triggerDailyBulletinNew("9am", 812352, yesterday);
-    },
-    {
-      timezone: "Asia/Kolkata",
-    }
-  );
+  // City bulletin scheduling is owned by whatsappCronScheduler and DB settings.
 
   // Weekly Performance Report Cron (Every Monday at 10:00 AM IST)
   cron.schedule(
@@ -488,8 +406,6 @@ const {
   REMINDER_CATCH_UP_UNTIL,
   runProfessionalPunchInReminder,
 } = require("./utils/professionalPunchInReminder");
-const instanceId = process.env.NODE_APP_INSTANCE || "0";
-const isPrimaryCronInstance = instanceId === "0";
 const PROFESSIONAL_REMINDER_CRON_ENABLED =
   process.env.PROFESSIONAL_REMINDER_CRON_ENABLED !== "false";
 const PROFESSIONAL_REMINDER_CRON_VERBOSE =

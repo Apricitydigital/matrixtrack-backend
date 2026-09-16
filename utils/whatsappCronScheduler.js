@@ -34,7 +34,8 @@ const dispatchReport = async (cfg) => {
         return;
     }
 
-    const enabled = await isReportEnabled(cfg.report_id.startsWith('zone-commissioner-zone-') ? cfg.report_id : cfg.report_id);
+    const enabled = await isReportEnabled(cfg.report_id);
+    if (cfg.report_id.startsWith('zone-commissioner-zone-') && !(await isReportEnabled('zone-commissioner'))) return;
     if (!enabled) {
         console.log(`[WASched] ${cfg.report_id}: disabled in settings, skipping.`);
         return;
@@ -66,7 +67,7 @@ const dispatchReport = async (cfg) => {
         const identity = { reportName: 'daily-city-report', reportDate: dateISO, recipientKey: 'bulk' };
         if (!(await claimWhatsAppDispatch(identity))) return;
         try {
-            await sendDailyBulletinWhatsAppNew({ phoneNumber: recipients });
+            await sendDailyBulletinWhatsAppNew({ phoneNumber: recipients, date: dateISO });
             console.log(`[WASched] daily-city-report: bulk sent to ${recipients.length} recipients for ${dateISO}`);
         } catch (err) {
             if (err.code === 'REPORT_DISABLED') await releaseWhatsAppDispatch(identity);
@@ -80,7 +81,7 @@ const dispatchReport = async (cfg) => {
         const identity = { reportName: 'hms-daily-bulletin', reportDate: dateISO, recipientKey: 'bulk' };
         if (!(await claimWhatsAppDispatch(identity))) return;
         try {
-            await sendHmsDailyBulletin({ phoneNumber: recipients });
+            await sendHmsDailyBulletin({ phoneNumber: recipients, date: dateISO });
             console.log(`[WASched] hms-daily-bulletin: bulk sent to ${recipients.length} recipients for ${dateISO}`);
         } catch (err) {
             if (err.code === 'REPORT_DISABLED') await releaseWhatsAppDispatch(identity);

@@ -1,3 +1,4 @@
+const { dailyDates } = require('./reportDates');
 const { guardedReportPost } = require('./whatsappSettings');
 const pool = require("../config/db");
 const {
@@ -16,25 +17,7 @@ const REPORT_CITY = "Pune";
 const REPORT_TIMEZONE = "Asia/Kolkata";
 const DISPATCH_REPORT_NAME = "matrixtrack_daily_final";
 
-const getReportDates = () => {
-  const nowUtc = new Date();
-  const istNow = new Date(nowUtc.toLocaleString("en-US", { timeZone: REPORT_TIMEZONE }));
-
-  // Use YESTERDAY's date for the daily report (Today - 1 day)
-  const reportDate = new Date(istNow);
-  reportDate.setDate(reportDate.getDate() - 1);
-
-  const isoDate = reportDate.toISOString().slice(0, 10);
-  const displayDate = reportDate.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: REPORT_TIMEZONE,
-  });
-
-  return { isoDate, displayDate };
-};
-
+const getReportDates = () => dailyDates();
 const normalizePhoneNumber = (phoneNumber = "") => {
   const digits = String(phoneNumber).replace(/[^\d]/g, "");
   if (!digits) return "";

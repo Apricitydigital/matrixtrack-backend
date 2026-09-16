@@ -43,7 +43,7 @@ WITH scoped AS (
     JOIN designation des ON des.designation_id = e.designation_id
     JOIN department dept ON dept.department_id = des.department_id
     LEFT JOIN sectors s ON s.sector_id = w.sector_id AND s.zone_id = z.zone_id
-    WHERE c.city_name ILIKE '%Pune%'
+    WHERE c.city_name = 'Pune'
       AND LOWER(z.zone_name) = LOWER($2)
       AND ($3::int IS NULL OR z.zone_id = $3)
       AND dept.department_name = $4

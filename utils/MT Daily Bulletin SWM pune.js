@@ -1,3 +1,4 @@
+const { dailyDates } = require('./reportDates');
 const { guardedReportPost } = require('./whatsappSettings');
 const pool = require("../config/db");
 const {
@@ -27,24 +28,7 @@ const formatNum = (num) => {
   return Number(num || 0).toLocaleString("en-IN");
 };
 
-const getReportDates = (overrideDate) => {
-  let targetDateStr = overrideDate;
-  if (!targetDateStr) {
-    const now = new Date();
-    const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
-    istTime.setDate(istTime.getDate() - 1); // Yesterday
-    targetDateStr = istTime.toISOString().split("T")[0];
-  }
-  const reportDate = new Date(`${targetDateStr}T00:00:00+05:30`);
-  const displayDate = reportDate.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: REPORT_TIMEZONE,
-  });
-  return { isoDate: targetDateStr, displayDate };
-};
-
+const getReportDates = overrideDate => dailyDates(overrideDate);
 const hasMeaningfulBulletinData = (data) => {
   const totals = [
     data?.cityRegistered,

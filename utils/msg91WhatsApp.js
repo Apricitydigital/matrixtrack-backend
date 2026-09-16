@@ -1,3 +1,4 @@
+const { dailyDates } = require('./reportDates');
 const { guardedReportPost } = require('./whatsappSettings');
 const axios = require("axios");
 const jwt = require("jsonwebtoken");
@@ -51,25 +52,7 @@ const normalizePhoneNumber = (phoneNumber = "") => {
   return digits;
 };
 
-const getReportDateIST = () => {
-  const nowUtc = new Date();
-  const istNow = new Date(
-    nowUtc.toLocaleString("en-US", { timeZone: REPORT_TIMEZONE })
-  );
-  istNow.setDate(istNow.getDate() - 1);
-  const isoDate = istNow.toISOString().slice(0, 10);
-  const displayDate = new Date(`${isoDate}T00:00:00+05:30`).toLocaleDateString(
-    "en-IN",
-    {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      timeZone: REPORT_TIMEZONE,
-    }
-  );
-  return { isoDate, displayDate };
-};
-
+const getReportDateIST = () => dailyDates();
 const buildServiceHeaders = () => {
   const token = jwt.sign(
     {

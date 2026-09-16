@@ -1,0 +1,14 @@
+﻿const test=require('node:test');const assert=require('node:assert/strict');const {createSettingsStore}=require('../utils/whatsappSettings');
+function fixture(statuses={}) {
+ let sends=0;let reads=0;const statements=[];
+ const client={query:async(sql,args)=>{statements.push(sql);if(sql.includes('FOR UPDATE'))return {rows:args[0].map(report_id=>({report_id,status:statuses[report_id]||'active'}))};return {rows:[]};},release(){statements.push('RELEASE');}};
+ const db={query:async(sql,args)=>{if(sql.startsWith('SELECT status')){reads++;return {rows:[{status:statuses[args[0]]||'active'}]};}return {rows:[]};},connect:async()=>client};
+ const store=createSettingsStore(db,{post:async()=>{sends++;return {data:{status:'success'}};}});
+ return {store,db,client,statements,get sends(){return sends;},get reads(){return reads;}};
+}
+test('inactive zone blocks the transport for every entry point',async()=>{const f=fixture({'zone-commissioner-zone-2':'inactive'});await assert.rejects(f.store.guardedReportPost(['zone-commissioner','zone-commissioner-zone-2'],'test'),{code:'REPORT_DISABLED'});assert.equal(f.sends,0);assert.ok(f.statements.includes('ROLLBACK'));});
+test('master pause blocks an active zone',async()=>{const f=fixture({'zone-commissioner':'inactive'});await assert.rejects(f.store.guardedReportPost(['zone-commissioner','zone-commissioner-zone-1'],'test'),{code:'REPORT_DISABLED'});assert.equal(f.sends,0);});
+test('database failure never falls back to sending, initialization retries',async()=>{const f=fixture();const original=f.db.query;f.db.query=async()=>{throw Error('offline');};assert.equal(await f.store.isReportEnabled('daily-city-report'),false);await assert.rejects(f.store.guardedReportPost('daily-city-report','test'));assert.equal(f.sends,0);f.db.query=original;await f.store.guardedReportPost('daily-city-report','test');assert.equal(f.sends,1);});
+test('send is inside row-lock transaction, committed before release',async()=>{const f=fixture();await f.store.guardedReportPost('daily-final-report','test');assert.equal(f.sends,1);assert.equal(f.statements[0],'BEGIN');assert.match(f.statements[1],/FOR UPDATE/);assert.deepEqual(f.statements.slice(-2),['COMMIT','RELEASE']);});
+test('unknown reports and invalid statuses cannot silently enable sending',async()=>{const f=fixture();await assert.rejects(f.store.setReportStatus('wrong','Wrong','active'),{statusCode:400});await assert.rejects(f.store.setReportStatus('weekly-report','Weekly','typo'),{statusCode:400});});
+test('missing locked settings rows block sending',async()=>{const f=fixture();const original=f.client.query;f.client.query=async(sql,args)=>sql.includes('FOR UPDATE')?{rows:[]}:original(sql,args);await assert.rejects(f.store.guardedReportPost('weekly-report','test'),{code:'REPORT_DISABLED'});assert.equal(f.sends,0);});

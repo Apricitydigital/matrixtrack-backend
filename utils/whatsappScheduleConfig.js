@@ -3,7 +3,7 @@
  * whatsappScheduleConfig.js
  * Pattern B: In-Memory RAM Caching + DB Persistence
  *
- * Polling checks read from Node.js RAM memory (0 DB queries per minute).
+ * Scheduler and API reads refresh from DB so all processes observe saved changes.
  * Saving updates PostgreSQL DB AND refreshes RAM memory cache instantly.
  */
 
@@ -65,9 +65,9 @@ const loadCacheFromDb = async () => {
 
 /**
  * Pattern B: Fast In-Memory read (0 DB queries when cached).
- * Forces DB refresh only if bypassCache is true.
+ * Refreshes by default; stale process-local schedules must not drive dispatch.
  */
-const getAllSchedules = async (bypassCache = false) => {
+const getAllSchedules = async (bypassCache = true) => {
     if (!scheduleCache || bypassCache) {
         return await loadCacheFromDb();
     }
@@ -85,9 +85,12 @@ const getSchedule = async (reportId) => {
  */
 const saveSchedule = async (reportId, { reportName, recipients, send_time, days_of_week }) => {
     if (!VALID_IDS.has(reportId)) throw Object.assign(new Error('Unknown report ID.'), { statusCode: 400 });
-    if (!/^\d{2}:\d{2}$/.test(send_time)) throw Object.assign(new Error('send_time must be HH:MM.'), { statusCode: 400 });
-    const validDays = (days_of_week || []).filter(d => DAYS.includes(d));
-    const safeRecipients = String(recipients || '').trim();
+    if (typeof send_time !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(send_time)) throw Object.assign(new Error('send_time must be HH:MM.'), { statusCode: 400 });
+    if (!Array.isArray(days_of_week) || days_of_week.some(d => !DAYS.includes(d))) throw Object.assign(new Error('days_of_week must contain valid day names.'), {statusCode:400});
+    const validDays = [...new Set(days_of_week)];
+    const rawRecipients = String(recipients || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (rawRecipients.some(s => !/^[+\d\s()-]+$/.test(s) || parseRecipients(s).length !== 1)) throw Object.assign(new Error('Each recipient must be a valid phone number.'), {statusCode:400});
+    const safeRecipients = [...new Set(rawRecipients.flatMap(s => parseRecipients(s)))].join(',');
     await ensureTable();
 
     const { rows } = await pool.query(
