@@ -11,16 +11,9 @@ const attachKothiScope = async (req, res, next) => {
       return next();
     }
 
-    // Admin has access to all Kothis
-    if (req.user.role && req.user.role.toLowerCase() === "admin") {
-      req.kothiScope = { all: true, ids: [] };
-      return next();
-    }
-
-    // Supervisors/Users get filtered by their assignments
-    const scope = await fetchUserKothiAccess(req.user.user_id, {
+    const scope = await fetchUserKothiAccess(req.user, {
       allowZoneFallback: true,
-      allowCityFallback: false,
+      allowCityFallback: true,
     });
     req.kothiScope = {
       all: Array.isArray(scope.ids) ? false : Boolean(scope.all),
@@ -51,7 +44,7 @@ const buildKothiFilterClause = (scope, alias, params) => {
   const nextParams = [...params, scope.ids];
   const placeholder = `$${nextParams.length}`;
   const clausePrefix = params.length > 0 ? "AND" : "WHERE";
-  
+
   return {
     clause: `${clausePrefix} ${alias}.ward_id = ANY(${placeholder})`,
     params: nextParams,

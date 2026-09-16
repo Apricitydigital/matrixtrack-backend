@@ -86,9 +86,9 @@ const fetchCitiesFromAssignments = async (userId, includeCityMetadata = false) =
     ids,
     cities: includeCityMetadata
       ? rows.map((row) => ({
-          city_id: row.city_id,
-          city_name: row.city_name,
-        }))
+        city_id: row.city_id,
+        city_name: row.city_name,
+      }))
       : [],
   };
 };
@@ -116,7 +116,7 @@ const fetchUserCityAccess = async (user, options = {}) => {
       [userId]
     );
     const dbPermissions = userRows[0]?.permissions;
-    if (dbPermissions && Array.isArray(dbPermissions.assigned_cities)) {
+    if (dbPermissions && Array.isArray(dbPermissions.assigned_cities) && dbPermissions.assigned_cities.length > 0) {
       const assignedIds = normalizeCityIds(dbPermissions.assigned_cities);
       if (includeCityMetadata) {
         if (assignedIds.length === 0) {

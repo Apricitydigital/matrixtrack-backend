@@ -5,19 +5,15 @@ const buildZoneScopeForUser = async (user) => {
     return { all: false, ids: [] };
   }
 
-  if (user.role && String(user.role).toLowerCase() === "admin") {
-    return { all: true, ids: [] };
-  }
-
-  const scope = await fetchUserZoneAccess(user, { allowCityFallback: false });
+  const scope = await fetchUserZoneAccess(user, { allowCityFallback: true });
   const ids = Array.isArray(scope.ids)
     ? scope.ids
-        .map((zoneId) => Number(zoneId))
-        .filter((zoneId) => Number.isFinite(zoneId))
+      .map((zoneId) => Number(zoneId))
+      .filter((zoneId) => Number.isFinite(zoneId))
     : [];
 
   return {
-    all: false,
+    all: Boolean(scope.all),
     ids,
   };
 };

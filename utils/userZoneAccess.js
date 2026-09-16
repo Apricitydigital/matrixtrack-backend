@@ -41,6 +41,54 @@ const fetchUserZoneAccess = async (user, options = {}) => {
     return { ids: [], zones: [] };
   }
 
+  const role = (typeof user === "object" && user !== null ? user.role : null) || null;
+
+  if (role && typeof role === "string" && role.toLowerCase() === "admin") {
+    const { rows: userRows } = await pool.query(
+      "SELECT permissions FROM users WHERE user_id = $1",
+      [userId]
+    );
+    const dbPermissions = userRows[0]?.permissions;
+
+    if (dbPermissions && Array.isArray(dbPermissions.assigned_zones) && dbPermissions.assigned_zones.length > 0) {
+      const assignedZoneIds = normalizeZoneIds(dbPermissions.assigned_zones);
+      if (includeZoneMetadata) {
+        if (assignedZoneIds.length === 0) return { all: false, ids: [], zones: [] };
+        const { rows } = await pool.query(
+          `SELECT z.zone_id, z.zone_name, z.city_id, c.city_name
+           FROM zones z JOIN cities c ON c.city_id = z.city_id
+           WHERE z.zone_id = ANY($1::int[]) ORDER BY z.zone_name ASC`,
+          [assignedZoneIds]
+        );
+        return { all: false, ids: assignedZoneIds, zones: rows };
+      }
+      return { all: false, ids: assignedZoneIds };
+    }
+
+    if (dbPermissions && Array.isArray(dbPermissions.assigned_cities) && dbPermissions.assigned_cities.length > 0) {
+      const assignedCityIds = dbPermissions.assigned_cities.map(Number).filter(Number.isFinite);
+      const { rows } = await pool.query(
+        `SELECT z.zone_id, z.zone_name, z.city_id, c.city_name
+         FROM zones z JOIN cities c ON c.city_id = z.city_id
+         WHERE z.city_id = ANY($1::int[]) ORDER BY z.zone_name ASC`,
+        [assignedCityIds]
+      );
+      const ids = normalizeZoneIds(rows.map((r) => r.zone_id));
+      if (includeZoneMetadata) return { all: false, ids, zones: rows };
+      return { all: false, ids };
+    }
+
+    if (includeZoneMetadata) {
+      const { rows } = await pool.query(
+        `SELECT z.zone_id, z.zone_name, z.city_id, c.city_name
+         FROM zones z JOIN cities c ON c.city_id = z.city_id ORDER BY z.zone_name ASC`
+      );
+      const ids = normalizeZoneIds(rows.map((r) => r.zone_id));
+      return { all: true, ids, zones: rows };
+    }
+    return { all: true, ids: [] };
+  }
+
   const cacheKey = buildCacheKey(userId);
   if (!includeZoneMetadata && zoneAccessCache.has(cacheKey)) {
     return zoneAccessCache.get(cacheKey);
@@ -167,7 +215,7 @@ const syncUserZoneAccess = async (
   ]);
 
 
-  
+
   if (ids.length === 0) {
     invalidateZoneAccessCache();
     invalidateKothiAccessCache(); // zone changes alter derived kothi scopes

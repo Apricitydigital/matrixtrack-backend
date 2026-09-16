@@ -84,7 +84,7 @@ router.get(
     try {
       const scope = req.cityScope || { all: false, ids: [] };
       const kothiScope = req.kothiScope || { all: true, ids: [] };
-      
+
       const cityFilter = buildCityFilterClause(scope, "c", []);
       const kothiFilter = buildKothiFilterClause(kothiScope, "w", cityFilter.params);
 
@@ -117,14 +117,14 @@ router.get(
       ${cityFilter.clause} ${kothiFilter.clause};`,
         kothiFilter.params
       );
-    res.json(result.rows.map(formatEmployeeRow));
-  } catch (error) {
-    console.error("Error fetching employees:", error);
-    res.status(500).json({ error: "Database error" });
-  }
-});
+      res.json(result.rows.map(formatEmployeeRow));
+    } catch (error) {
+      console.error("Error fetching employees:", error);
+      res.status(500).json({ error: "Database error" });
+    }
+  });
 
-// 🟢 Insert or update an employee (idempotent)
+// 🟢 Insert a new employee (strict insert, prevents silent overwrites)
 router.post("/", async (req, res) => {
   const { name, emp_code, phone, ward_id, designation_id } = req.body;
 
@@ -132,21 +132,14 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "emp_code is required" });
   }
 
-  const upsertEmployeeQuery = `
+  const insertEmployeeQuery = `
     INSERT INTO employee (emp_code, name, phone, ward_id, designation_id, aadhar_no)
     VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT (emp_code)
-    DO UPDATE SET
-      name = EXCLUDED.name,
-      phone = EXCLUDED.phone,
-      ward_id = EXCLUDED.ward_id,
-      designation_id = EXCLUDED.designation_id,
-      aadhar_no = EXCLUDED.aadhar_no
     RETURNING *;
   `;
 
   try {
-    const result = await pool.query(upsertEmployeeQuery, [
+    const result = await pool.query(insertEmployeeQuery, [
       emp_code,
       name,
       phone,
@@ -154,11 +147,11 @@ router.post("/", async (req, res) => {
       parseId(designation_id),
       req.body.aadhar_no || null
     ]);
-    return res.status(200).json(result.rows[0]);
+    return res.status(201).json(result.rows[0]);
   } catch (error) {
     if (error.code === "23505") {
       return res.status(409).json({
-        message: "Employee already exists",
+        message: `Employee with emp_code ${emp_code} already exists`,
         emp_code,
       });
     }
@@ -245,9 +238,9 @@ router.post("/:id/aadhar", uploadAadhar.single("document"), async (req, res) => 
   try {
     const id = parseId(req.params.id);
     if (!id) {
-        return res.status(400).json({ error: "Invalid Employee ID" });
+      return res.status(400).json({ error: "Invalid Employee ID" });
     }
-    
+
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
@@ -278,11 +271,11 @@ router.get("/:id/aadhar/view", async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query("SELECT aadhar_url FROM employee WHERE emp_id = $1", [id]);
-    
+
     if (result.rows.length === 0 || !result.rows[0].aadhar_url) {
       return res.status(404).json({ error: "Aadhar document not found" });
     }
-    
+
     const aadharUrl = result.rows[0].aadhar_url;
 
     // Case 1: Local URL (from before S3 connection)
@@ -294,7 +287,7 @@ router.get("/:id/aadhar/view", async (req, res) => {
     if (aadharUrl.includes("amazonaws.com") || !aadharUrl.startsWith("http")) {
       const { GetObjectCommand } = require("@aws-sdk/client-s3");
       const bucketName = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET_NAME;
-      
+
       let key = "";
       try {
         const urlObj = new URL(aadharUrl);

@@ -44,6 +44,75 @@ const fetchUserKothiAccess = async (user, options = {}) => {
     return { ids: [], kothis: [] };
   }
 
+  const role = (typeof user === "object" && user !== null ? user.role : null) || null;
+
+  if (role && typeof role === "string" && role.toLowerCase() === "admin") {
+    const { rows: userRows } = await pool.query(
+      "SELECT permissions FROM users WHERE user_id = $1",
+      [userId]
+    );
+    const dbPermissions = userRows[0]?.permissions;
+    let wardIds = [];
+
+    if (dbPermissions && Array.isArray(dbPermissions.assigned_zones) && dbPermissions.assigned_zones.length > 0) {
+      const zoneIds = dbPermissions.assigned_zones.map(Number).filter(Number.isFinite);
+      const zoneWardRows = await pool.query(
+        "SELECT ward_id FROM wards WHERE zone_id = ANY($1::int[])",
+        [zoneIds]
+      );
+      wardIds = normalizeWardIds(zoneWardRows.rows.map((row) => row.ward_id));
+      if (includeMetadata) {
+        if (wardIds.length === 0) return { ids: [], kothis: [] };
+        const { rows } = await pool.query(
+          `SELECT w.ward_id, w.ward_name, s.sector_id, s.sector_name, z.zone_id, z.zone_name, c.city_id, c.city_name
+           FROM wards w
+           LEFT JOIN sectors s ON s.sector_id = w.sector_id
+           LEFT JOIN zones z ON z.zone_id = COALESCE(s.zone_id, w.zone_id)
+           LEFT JOIN cities c ON c.city_id = z.city_id
+           WHERE w.ward_id = ANY($1::int[]) ORDER BY w.ward_name ASC`,
+          [wardIds]
+        );
+        return { ids: wardIds, kothis: rows.map(r => ({ ward_id: r.ward_id, ward_name: r.ward_name, sector_id: r.sector_id, sector_name: r.sector_name, zone_id: r.zone_id, zone_name: r.zone_name, city_id: r.city_id, city_name: r.city_name })) };
+      }
+      return { ids: wardIds };
+    }
+
+    if (dbPermissions && Array.isArray(dbPermissions.assigned_cities) && dbPermissions.assigned_cities.length > 0) {
+      const cityIds = dbPermissions.assigned_cities.map(Number).filter(Number.isFinite);
+      const cityWardRows = await pool.query(
+        `SELECT w.ward_id FROM wards w JOIN zones z ON z.zone_id = w.zone_id WHERE z.city_id = ANY($1::int[])`,
+        [cityIds]
+      );
+      wardIds = normalizeWardIds(cityWardRows.rows.map((row) => row.ward_id));
+      if (includeMetadata) {
+        if (wardIds.length === 0) return { ids: [], kothis: [] };
+        const { rows } = await pool.query(
+          `SELECT w.ward_id, w.ward_name, s.sector_id, s.sector_name, z.zone_id, z.zone_name, c.city_id, c.city_name
+           FROM wards w
+           LEFT JOIN sectors s ON s.sector_id = w.sector_id
+           LEFT JOIN zones z ON z.zone_id = COALESCE(s.zone_id, w.zone_id)
+           LEFT JOIN cities c ON c.city_id = z.city_id
+           WHERE w.ward_id = ANY($1::int[]) ORDER BY w.ward_name ASC`,
+          [wardIds]
+        );
+        return { ids: wardIds, kothis: rows.map(r => ({ ward_id: r.ward_id, ward_name: r.ward_name, sector_id: r.sector_id, sector_name: r.sector_name, zone_id: r.zone_id, zone_name: r.zone_name, city_id: r.city_id, city_name: r.city_name })) };
+      }
+      return { ids: wardIds };
+    }
+
+    if (includeMetadata) {
+      const { rows } = await pool.query(
+        `SELECT w.ward_id, w.ward_name, s.sector_id, s.sector_name, z.zone_id, z.zone_name, c.city_id, c.city_name
+         FROM wards w
+         LEFT JOIN sectors s ON s.sector_id = w.sector_id
+         LEFT JOIN zones z ON z.zone_id = COALESCE(s.zone_id, w.zone_id)
+         LEFT JOIN cities c ON c.city_id = z.city_id ORDER BY w.ward_name ASC`
+      );
+      return { all: true, ids: normalizeWardIds(rows.map(r => r.ward_id)), kothis: rows };
+    }
+    return { all: true, ids: [] };
+  }
+
   const cacheKey = buildCacheKey(userId);
   if (!includeMetadata && kothiAccessCache.has(cacheKey)) {
     return kothiAccessCache.get(cacheKey);

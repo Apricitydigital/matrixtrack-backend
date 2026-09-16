@@ -11,10 +11,6 @@ const buildCityScopeForUser = async (user) => {
     return { all: false, ids: [] };
   }
 
-  if (user.role && user.role.toLowerCase() === "admin") {
-    return { all: true, ids: [] };
-  }
-
   const scope = await fetchUserCityAccess({ ...user, user_id: userId });
   const ids = Array.isArray(scope.ids) ? scope.ids : [];
   // If nothing is assigned, leave scope empty (handled downstream).
@@ -34,35 +30,35 @@ const attachCityScope = async (req, res, next) => {
 
 const requireCityScope =
   (allowEmptyForAdmin = false, allowEmptyForAll = false) =>
-  (req, res, next) => {
-    const scope = req.cityScope || { all: false, ids: [] };
+    (req, res, next) => {
+      const scope = req.cityScope || { all: false, ids: [] };
 
-    // Admins always allowed
-    if (req.user?.role?.toLowerCase() === "admin") {
-      return next();
-    }
+      // Admins always allowed
+      if (req.user?.role?.toLowerCase() === "admin") {
+        return next();
+      }
 
-    // Explicit access present
-    if (scope.all || (Array.isArray(scope.ids) && scope.ids.length > 0)) {
-      return next();
-    }
+      // Explicit access present
+      if (scope.all || (Array.isArray(scope.ids) && scope.ids.length > 0)) {
+        return next();
+      }
 
-    // Configured bypasses
-    if (allowEmptyForAdmin || allowEmptyForAll) {
+      // Configured bypasses
+      if (allowEmptyForAdmin || allowEmptyForAll) {
+        console.warn(
+          "City scope empty, bypassing check for user",
+          req.user?.user_id || req.user?.id || "unknown"
+        );
+        return next();
+      }
+
+      // Soft-fail: allow request but annotate scope for downstream to return empty data
       console.warn(
-        "City scope empty, bypassing check for user",
+        "City scope empty; continuing with no-access scope for user",
         req.user?.user_id || req.user?.id || "unknown"
       );
       return next();
-    }
-
-    // Soft-fail: allow request but annotate scope for downstream to return empty data
-    console.warn(
-      "City scope empty; continuing with no-access scope for user",
-      req.user?.user_id || req.user?.id || "unknown"
-    );
-    return next();
-  };
+    };
 
 const assertCityAccess = (scope, cityId) => {
   if (!scope || scope.all) {
