@@ -53,14 +53,16 @@ const login = async (req, res) => {
     // ORDER BY is_active DESC, created_at DESC ensures we always pick the
     // active/newest account when the same email has multiple records
     // (e.g. one rejected request + one approved request).
+    const identifier = email.trim().toLowerCase();
+    const rawIdentifier = email.trim();
     const query = `
-      SELECT id, email, ${passwordColumn} AS password_hash, is_active, face_locked, ward_id, zone_id, city_id 
+      SELECT id, email, mobile, ${passwordColumn} AS password_hash, is_active, face_locked, ward_id, zone_id, city_id 
       FROM professional_employees 
-      WHERE email = $1
+      WHERE LOWER(email) = $1 OR mobile = $1 OR mobile = $2
       ORDER BY is_active DESC, created_at DESC
       LIMIT 1
     `;
-    const { rows } = await pool.query(query, [email.trim().toLowerCase()]);
+    const { rows } = await pool.query(query, [identifier, rawIdentifier]);
 
     if (rows.length === 0) {
       return res.status(401).json({ success: false, message: 'Invalid credentials.' });
