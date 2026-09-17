@@ -810,7 +810,12 @@ const getMonthlyAttendance = async (req, res) => {
         punch_out,
         CASE WHEN punch_out IS NULL AND date < CURRENT_DATE THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(punch_out, NOW()) - punch_in)) / 3600 END AS hours_worked
       FROM professional_attendance
-      WHERE professional_id = $1 
+      WHERE professional_id IN (
+        SELECT id FROM professional_employees 
+        WHERE id = $1
+           OR (mobile = (SELECT mobile FROM professional_employees WHERE id = $1) AND mobile IS NOT NULL AND mobile != '')
+           OR (LOWER(email) = (SELECT LOWER(email) FROM professional_employees WHERE id = $1) AND email IS NOT NULL AND email != '')
+      )
         AND EXTRACT(YEAR FROM date) = $2 
         AND EXTRACT(MONTH FROM date) = $3
       ORDER BY date DESC
@@ -830,7 +835,12 @@ const getMonthlyAttendance = async (req, res) => {
          u.name AS reviewed_by_name
        FROM professional_leave_requests plr
        LEFT JOIN users u ON u.user_id = plr.reviewed_by
-       WHERE plr.professional_id = $1
+       WHERE plr.professional_id IN (
+         SELECT id FROM professional_employees 
+         WHERE id = $1
+            OR (mobile = (SELECT mobile FROM professional_employees WHERE id = $1) AND mobile IS NOT NULL AND mobile != '')
+            OR (LOWER(email) = (SELECT LOWER(email) FROM professional_employees WHERE id = $1) AND email IS NOT NULL AND email != '')
+       )
          AND EXTRACT(YEAR FROM plr.requested_date) = $2
          AND EXTRACT(MONTH FROM plr.requested_date) = $3`,
       [professional_id, yyyy, mm]

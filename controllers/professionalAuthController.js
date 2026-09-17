@@ -56,10 +56,12 @@ const login = async (req, res) => {
     const identifier = email.trim().toLowerCase();
     const rawIdentifier = email.trim();
     const query = `
-      SELECT id, email, mobile, ${passwordColumn} AS password_hash, is_active, face_locked, ward_id, zone_id, city_id 
-      FROM professional_employees 
-      WHERE LOWER(email) = $1 OR mobile = $1 OR mobile = $2
-      ORDER BY is_active DESC, created_at DESC
+      SELECT pe.id, pe.email, pe.mobile, ${passwordColumn} AS password_hash, pe.is_active, pe.face_locked, pe.ward_id, pe.zone_id, pe.city_id 
+      FROM professional_employees pe
+      WHERE LOWER(pe.email) = $1 OR pe.mobile = $1 OR pe.mobile = $2
+      ORDER BY pe.is_active DESC,
+               (SELECT COUNT(*) FROM professional_attendance pa WHERE pa.professional_id = pe.id) DESC,
+               pe.created_at DESC
       LIMIT 1
     `;
     const { rows } = await pool.query(query, [identifier, rawIdentifier]);
