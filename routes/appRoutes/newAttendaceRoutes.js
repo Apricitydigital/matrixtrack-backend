@@ -164,7 +164,7 @@ const {
   fetchEmployeeById,
 } = require("../../utils/selfAttendance");
 const { buildPublicFaceUrl } = require("../../utils/faceImage");
-const { validateGeofencing } = require("../../utils/geofencing");
+const { validateGeofencing, validateSupervisorGeofenceAccess } = require("../../utils/geofencing");
 const {
   sendTrackedRekognition,
   resolveRequestCityId,
@@ -191,7 +191,7 @@ const safeDebugLog = (line) => {
     return;
   }
   try {
-    fs.appendFile("debug-face.log", `${line}\n`, () => {});
+    fs.appendFile("debug-face.log", `${line}\n`, () => { });
   } catch (_) {
     // Never block attendance flow for debug logging failures.
   }
@@ -1538,14 +1538,14 @@ async function loadFaceBuffer(faceEmbedding, employeeId = null, empCode = null) 
           if (foundKey) {
             const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: foundKey }));
             const buffer = await streamToBuffer(obj.Body);
-            
+
             // Backfill the database so next time is a direct hit
             console.log(`[Self-Healing] Correcting stale face_embedding for emp_id ${employeeId}: ${foundKey}`);
-            pool.query("UPDATE employee SET face_embedding = $1 WHERE emp_id = $2", [foundKey, employeeId]).catch(()=>{});
-            
+            pool.query("UPDATE employee SET face_embedding = $1 WHERE emp_id = $2", [foundKey, employeeId]).catch(() => { });
+
             return buffer;
           }
-        } catch (_err) {}
+        } catch (_err) { }
       }
     }
   }
@@ -1683,7 +1683,7 @@ async function fallbackMatchByCompare(
           pool.query(
             "UPDATE employee SET face_id = $1, face_confidence = $2 WHERE emp_id = $3",
             [newFaceId, newConfidence, best.employee.emp_id]
-          ).catch(() => {});
+          ).catch(() => { });
         }
       }).catch((err) => {
         console.error(`[Auto-Heal-Index] Failed to index emp_id ${best.employee.emp_id}:`, err.message);
@@ -2217,6 +2217,20 @@ router.post("/face-attendance", authenticate, upload.single("image"), async (req
     }
 
     if (groupModeRequested) {
+      // -- 0. Validate Supervisor Geofence Access first ------------------
+      const supervisorGeoCheck = await validateSupervisorGeofenceAccess(
+        supervisorId,
+        locationPayload.latitude,
+        locationPayload.longitude
+      );
+      if (!supervisorGeoCheck.allowed) {
+        return res.status(403).json({
+          error: "Supervisor Geofence Error",
+          notConfigured: supervisorGeoCheck.notConfigured || false,
+          details: supervisorGeoCheck.message || "Supervisor is outside the allowed geo-fence zone or geofence is not approved.",
+        });
+      }
+
       const groupTrackingCityId = await resolveRequestCityId({
         wardId,
         supervisorId,
@@ -2559,12 +2573,12 @@ router.post("/face-attendance", authenticate, upload.single("image"), async (req
       return sendFaceAttendanceResponse(
         res,
         {
-        success: punchedCount > 0,
-        mode: "group",
-        punch_type: punchType,
-        total_faces: faceDetails.length,
-        punched_count: punchedCount,
-        results,
+          success: punchedCount > 0,
+          mode: "group",
+          punch_type: punchType,
+          total_faces: faceDetails.length,
+          punched_count: punchedCount,
+          results,
         },
         { requestId }
       );
@@ -2603,13 +2617,13 @@ router.post("/face-attendance", authenticate, upload.single("image"), async (req
       return sendFaceAttendanceResponse(
         res,
         {
-        success: true,
-        employee: employeeRecord.name,
-        punch_type: punchType,
-        face_similarity: null,
-        face_match_threshold: matchThreshold,
-        time: null,
-        deduplicated: true, // flag so client knows it was a cached response
+          success: true,
+          employee: employeeRecord.name,
+          punch_type: punchType,
+          face_similarity: null,
+          face_match_threshold: matchThreshold,
+          time: null,
+          deduplicated: true, // flag so client knows it was a cached response
         },
         { status: 200, requestId }
       );
@@ -2763,7 +2777,7 @@ router.post("/face-attendance", authenticate, upload.single("image"), async (req
     } else if (!matchedFace) {
       // Face not found in collection � instruct supervisor to re-enroll
       console.log(`[face-attendance] Individual: no collection match for emp_id=${requestedEmpId}. Fallback disabled.`);
-      
+
       // Attempt a cheap direct 1:1 comparison with the selected employee
       let directMatchPassed = false;
       try {
@@ -2877,13 +2891,13 @@ router.post("/face-attendance", authenticate, upload.single("image"), async (req
     return sendFaceAttendanceResponse(
       res,
       {
-      success: true,
-      employee: employeeRecord.name,
-      punch_type: punchType,
-      face_similarity: updated.face_similarity ?? null,
-      face_match_threshold:
-        updated.face_match_threshold ?? matchThreshold,
-      time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
+        success: true,
+        employee: employeeRecord.name,
+        punch_type: punchType,
+        face_similarity: updated.face_similarity ?? null,
+        face_match_threshold:
+          updated.face_match_threshold ?? matchThreshold,
+        time: formatPunchTimeForClient(resolvePunchRecordTime(updated, punchType)),
       },
       { requestId }
     );
@@ -3002,7 +3016,7 @@ router.post("/face-liveness", upload.single("image"), async (req, res) => {
     }
 
     const requestedEmpId = normalizeId(rawEmpId ?? rawEmployeeId);
-    
+
     // Validate image buffer immediately before SearchFacesByImage call
     const maxImageSizeBytes = 5 * 1024 * 1024;
     const allowedMimetypes = ["image/jpeg", "image/jpg", "image/png"];
