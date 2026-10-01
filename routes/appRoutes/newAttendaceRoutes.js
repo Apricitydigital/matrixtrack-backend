@@ -171,6 +171,69 @@ const {
   trackSuccessfulAttendanceEvent,
 } = require("../../utils/cityTrafficCost");
 
+/**
+ * Checks if the city associated with a ward is active.
+ * Returns { blocked: true, cityName } if the city is disabled, else { blocked: false }.
+ */
+async function checkCityIsActive({ wardId, empId, supervisorId } = {}) {
+  try {
+    let cityRow = null;
+
+    // Strategy 1: resolve via wardId directly
+    if (wardId) {
+      const { rows } = await pool.query(
+        `SELECT c.city_id, c.city_name, COALESCE(c.is_active, true) AS is_active
+           FROM public.wards w
+           JOIN public.zones z ON z.zone_id = w.zone_id
+           JOIN public.cities c ON c.city_id = z.city_id
+          WHERE w.ward_id = $1
+          LIMIT 1`,
+        [wardId]
+      );
+      if (rows.length) cityRow = rows[0];
+    }
+
+    // Strategy 2: resolve via employee's ward
+    if (!cityRow && empId) {
+      const { rows } = await pool.query(
+        `SELECT c.city_id, c.city_name, COALESCE(c.is_active, true) AS is_active
+           FROM public.employee e
+           JOIN public.wards w ON w.ward_id = e.ward_id
+           JOIN public.zones z ON z.zone_id = w.zone_id
+           JOIN public.cities c ON c.city_id = z.city_id
+          WHERE e.emp_id = $1
+          LIMIT 1`,
+        [empId]
+      );
+      if (rows.length) cityRow = rows[0];
+    }
+
+    // Strategy 3: resolve via supervisor's assigned ward
+    if (!cityRow && supervisorId) {
+      const { rows } = await pool.query(
+        `SELECT c.city_id, c.city_name, COALESCE(c.is_active, true) AS is_active
+           FROM supervisor_ward sw
+           JOIN public.wards w ON w.ward_id = sw.ward_id
+           JOIN public.zones z ON z.zone_id = w.zone_id
+           JOIN public.cities c ON c.city_id = z.city_id
+          WHERE sw.supervisor_id = $1
+          LIMIT 1`,
+        [supervisorId]
+      );
+      if (rows.length) cityRow = rows[0];
+    }
+
+    if (!cityRow) return { blocked: false }; // Cannot determine city → don't block
+    if (cityRow.is_active === false) {
+      return { blocked: true, cityName: cityRow.city_name };
+    }
+    return { blocked: false };
+  } catch (err) {
+    console.error("[checkCityIsActive] Error:", err.message);
+    return { blocked: false }; // On DB error, don't block (fail open)
+  }
+}
+
 const sendTrackedAttendanceRekognition = async (command, trackingPayload) => {
   return sendTrackedRekognition({
     client: rekognition,
@@ -2216,6 +2279,22 @@ router.post("/face-attendance", authenticate, upload.single("image"), async (req
       console.log("[face-attendance] groupMode:", groupMode, "| mode:", rawMode, "| groupModeRequested:", groupModeRequested);
     }
 
+    // 🚫 City Access Control: block punch if the city is disabled by super admin
+    const cityCheck = await checkCityIsActive({
+      wardId,
+      supervisorId,
+    });
+    if (cityCheck.blocked) {
+      return sendFaceAttendanceResponse(
+        res,
+        {
+          error: `Services Suspended: Attendance services for ${cityCheck.cityName || "your city"} have been temporarily suspended by the administrator. Please contact your admin for assistance.`,
+          code: "CITY_DISABLED",
+        },
+        { status: 403, requestId }
+      );
+    }
+
     if (groupModeRequested) {
       // -- 0. Validate Supervisor Geofence Access first ------------------
       const supervisorGeoCheck = await validateSupervisorGeofenceAccess(
@@ -3555,6 +3634,15 @@ router.post("/self/punch", authenticate, upload.single("image"), async (req, res
       return res.status(sessionError.status).json({
         error: sessionError.error,
         code: sessionError.code,
+      });
+    }
+
+    // 🚫 City Access Control: block self-punch if the city is disabled
+    const selfPunchCityCheck = await checkCityIsActive({ empId: resolved.employee.emp_id });
+    if (selfPunchCityCheck.blocked) {
+      return res.status(403).json({
+        error: `Services Suspended: Attendance services for ${selfPunchCityCheck.cityName || "your city"} have been temporarily suspended by the administrator. Please contact your admin for assistance.`,
+        code: "CITY_DISABLED",
       });
     }
 
