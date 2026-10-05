@@ -920,7 +920,7 @@ router.post("/security-settings", authenticateToken, async (req, res) => {
 router.get("/active-sessions", authenticateToken, async (req, res) => {
   try {
     const { userId } = req.query; 
-    let query = "SELECT id, ip_address, device, logged_in_at, last_active_at FROM active_sessions WHERE user_id = $1 AND is_revoked = FALSE ORDER BY logged_in_at DESC";
+    let query = "SELECT id, ip_address, device, logged_in_at, last_active_at FROM active_sessions WHERE user_id = $1 AND is_revoked = FALSE AND device ILIKE '%Mozilla%' ORDER BY logged_in_at DESC";
     let params = [req.user.user_id];
     
     if (req.user.role === 'admin' && userId) {
