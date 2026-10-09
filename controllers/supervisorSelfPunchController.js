@@ -5,6 +5,9 @@ const socketio = require('../utils/socket');
 const { decryptAadhar } = require('../utils/encryption');
 const bcrypt = require('bcryptjs');
 const { sendSms } = require('../utils/smsNotifier');
+const { ensureProfessionalDesignation } = require('../utils/professionalDesignation');
+const { buildProfessionalRequestFilters, employeeMasterCode } = require('../utils/professionalRequestFilters');
+const { findProfessionalIdentityConflict } = require('../utils/professionalIdentity');
 let professionalEmployeeColumnsCache = null;
 
 const getProfessionalEmployeeColumns = async (client) => {
@@ -143,6 +146,9 @@ const getRequests = async (req, res) => {
       listParams.push(normalizedStatus);
       listStatusFilter = `AND spr.status = $${listParams.length}`;
     }
+    listStatusFilter += buildProfessionalRequestFilters(req.query, listParams);
+    const countParams = [...listParams];
+    const countStatusFilter = listStatusFilter;
     listParams.push(limitNumber);
     const limitParamIndex = listParams.length;
     listParams.push(offset);
@@ -152,7 +158,9 @@ const getRequests = async (req, res) => {
     const query = `
       ${visibilitySql}
       SELECT 
-        spr.id, spr.full_name, spr.mobile, spr.status, spr.created_at,
+        spr.id, spr.full_name, spr.mobile, spr.email, spr.emp_code, spr.status, spr.created_at,
+        (SELECT em.emp_id FROM employee em WHERE em.emp_code = ${employeeMasterCode} LIMIT 1) AS employee_master_id,
+        'Professional' AS designation_name, 'Professional' AS department_name,
         spr.selfie_url, spr.aadhar_doc_url,
         c.city_name,
         z.zone_name,
@@ -200,12 +208,6 @@ const getRequests = async (req, res) => {
     }));
 
     // Get total count
-    const countParams = isAdmin ? [] : [supervisorId];
-    let countStatusFilter = '';
-    if (normalizedStatus) {
-      countParams.push(normalizedStatus);
-      countStatusFilter = `AND spr.status = $${countParams.length}`;
-    }
 
     const countQuery = `
       ${visibilitySql}
@@ -251,6 +253,7 @@ const getRequestDetails = async (req, res) => {
       ${visibilitySql}
       SELECT 
         spr.*,
+        'Professional' AS designation_name, 'Professional' AS department_name,
         c.city_name,
         z.zone_name,
         COALESCE(s.sector_name, w_from_ward.ward_name) as ward_name,
@@ -324,6 +327,7 @@ const approveRequest = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
 
     // Verify visibility and status with row lock
     const visibilitySql = isAdmin ? '' : getVisibilityCTE();
@@ -347,6 +351,13 @@ const approveRequest = async (req, res) => {
     if (request.status !== 'pending') {
       await client.query('ROLLBACK');
       return res.status(400).json({ success: false, message: `Cannot approve request with status: ${request.status}` });
+    }
+    const identityConflict = await findProfessionalIdentityConflict(client, {
+      mobile: request.mobile, email: request.email, empCode: request.emp_code, excludeRequestId: request.id,
+    });
+    if (identityConflict) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ success: false, message: 'Another professional account or request already uses this mobile, email or employee code. Review the existing record; approval would create a duplicate.' });
     }
 
     const mobileDigits = String(request.mobile || '').replace(/[^\d]/g, '');
@@ -494,15 +505,13 @@ const approveRequest = async (req, res) => {
       const empCodeVal = String(request.emp_code || '').trim() || `EMP-${request.mobile ? request.mobile.slice(-6) : request.id.slice(0, 8)}`;
       const targetWardId = request.kothi_id || request.ward_id || null;
 
-      const { rows: desigRows } = await client.query(
-        "SELECT designation_id FROM designation ORDER BY designation_id ASC LIMIT 1"
-      );
-      const defaultDesignationId = desigRows.length > 0 ? desigRows[0].designation_id : 2;
+      const { designationId: defaultDesignationId } = await ensureProfessionalDesignation(client);
 
       const empUpsertQuery = `
         INSERT INTO employee (emp_code, name, phone, ward_id, designation_id, aadhar_no, aadhar_url, face_embedding, self_attendance_enabled)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
         ON CONFLICT (emp_code) DO UPDATE SET
+          designation_id = EXCLUDED.designation_id,
           name = EXCLUDED.name,
           phone = EXCLUDED.phone,
           ward_id = COALESCE(EXCLUDED.ward_id, employee.ward_id),
@@ -525,6 +534,7 @@ const approveRequest = async (req, res) => {
       logger.info(`[Supervisor] Synced approved request ${id} to employee table (Employee Master)`);
     } catch (empSyncErr) {
       logger.error(`[Supervisor] Error syncing approved request ${id} to employee table:`, empSyncErr);
+      throw empSyncErr; // Do not approve without its Professional master mapping.
     }
 
 
@@ -747,6 +757,8 @@ const getLogs = async (req, res) => {
 };
 
 module.exports = {
+  getVisibilityCTE,
+  visibilityWhereClause,
   getRequests,
   getRequestDetails,
   approveRequest,

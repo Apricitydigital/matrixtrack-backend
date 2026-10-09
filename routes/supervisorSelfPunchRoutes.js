@@ -11,6 +11,7 @@ const {
 } = require('../controllers/supervisorSelfPunchController');
 
 const router = express.Router();
+const { getApprovedList, updateApprovedList, requireListAdmin } = require('../controllers/approvedProfessionalController');
 
 // Apply authentication and supervisor role enforcement to all routes in this file
 router.use(authenticate, requireSupervisor);
@@ -21,6 +22,8 @@ router.use(authenticate, requireSupervisor);
  * @access  Private (Supervisor only)
  */
 router.get('/requests', authorize('field-access-requests', 'view'), getRequests);
+router.get('/requests/approved-list', authorize('field-access-requests', 'view'), getApprovedList);
+router.post('/requests/approved-list', requireListAdmin, express.json({ limit: '5mb' }), updateApprovedList);
 
 /**
  * @route   GET /api/supervisor/self-punch/requests/logs

@@ -7,6 +7,7 @@ const { uploadToS3, deleteFromS3 } = require('../utils/s3SelfPunch');
 const socketio = require('../utils/socket');
 const { trackCityTraffic, getIstDateKey } = require('../utils/cityTrafficCost');
 const { logUserConsent } = require('./consentController');
+const { findProfessionalIdentityConflict, hasAadhaarRequestAtWard } = require('../utils/professionalIdentity');
 
 // Multer memory storage to hold files before uploading to S3
 const storage = multer.memoryStorage();
@@ -229,7 +230,7 @@ const submitRequest = async (req, res) => {
   const sanitizedEmpCode = sanitizeString(emp_code) || null;
 
   const sanitizedFullName = sanitizeString(full_name);
-  const sanitizedEmail = sanitizeString(email);
+  const sanitizedEmail = sanitizeString(email).toLowerCase();
 
   // 2. Encrypt Aadhar
   let encryptedAadhar;
@@ -246,6 +247,15 @@ const submitRequest = async (req, res) => {
 
   try {
     await client.query('BEGIN');
+    // Same ordering as approvals and list updates prevents concurrent duplicate identities.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
+    const identityConflict = await findProfessionalIdentityConflict(client, { mobile, email: sanitizedEmail, empCode: sanitizedEmpCode });
+    if (identityConflict) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ success: false, message: identityConflict.source === 'account'
+        ? 'A professional account already exists for this mobile, email or employee code. Use the existing account; ask an administrator to correct its details.'
+        : 'A professional request already exists for this mobile, email or employee code. Check the existing request instead of registering again.' });
+    }
 
     // Daily cap: max 10 requests per mobile per day (IST)
     const mobileDailyCount = await client.query(
@@ -283,16 +293,7 @@ const submitRequest = async (req, res) => {
       });
     }
 
-    // Duplicate check: Same aadhar and mapped ward_id already pending or approved
-    // Note: To check exact duplicate Aadhar securely, we query by the encrypted string directly
-    const duplicateCheck = await client.query(`
-      SELECT id FROM self_punch_requests 
-      WHERE aadhar_number = $1 
-        AND ward_id = $2 
-        AND status IN ('pending', 'approved')
-    `, [encryptedAadhar, safeWardId]);
-
-    if (duplicateCheck.rowCount > 0) {
+    if (await hasAadhaarRequestAtWard(client, aadhar_number, safeWardId)) {
       await client.query('ROLLBACK');
       logger.info('[SelfPunch] Duplicate request rejected', { ward_id, ip: req.ip });
       return res.status(409).json({
