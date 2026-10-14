@@ -60,6 +60,8 @@ router.use("/designations", designationRoutes);
 router.use("/attendance", attendanceRoutes);
 router.use("/supervisor", supervisorRoutes);
 router.use("/supervisor/self-punch", supervisorSelfPunchRoutes);
+router.use("/professional/weekly-off", require('./professionalWeeklyOffRoutes').app);
+router.use("/admin/professional-weekly-off", require('./professionalWeeklyOffRoutes').admin);
 router.use("/professional", professionalRoutes);
 
 // Mount reports before the main adminRoutes to bypass strict requireAdmin middleware

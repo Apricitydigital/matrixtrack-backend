@@ -239,7 +239,8 @@ const getAttendanceList = async (req, res) => {
         pe.emp_code,
         pe.mobile,
         pe.email,
-        COALESCE(pa.date, leave_row.requested_date) as date,
+        COALESCE(pa.date, leave_row.requested_date, ${leaveDateExpr}) as date,
+        professional_is_week_off(pe.id,COALESCE(pa.date,leave_row.requested_date,${leaveDateExpr},(NOW() AT TIME ZONE 'Asia/Kolkata')::date)) AS is_weekly_off,
         pa.punch_in,
         pa.punch_out,
         pa.auto_punched_out,
@@ -602,14 +603,19 @@ const getAttendanceSummary = async (req, res) => {
       presentProfessionalsResult,
       punchedOutProfessionalsResult,
       punchedOutSystemProfessionalsResult,
-      leaveResult
+      leaveResult,
+      weeklyOffResult
     ] = await Promise.all([
       runQueryWithTimeout(peCountQuery, params),
       runQueryWithTimeout(aggQuery, params),
       runQueryWithTimeout(presentProfessionalsQuery, params),
       runQueryWithTimeout(punchedOutProfessionalsQuery, params),
       runQueryWithTimeout(punchedOutSystemProfessionalsQuery, params),
-      leaveQuery ? runQueryWithTimeout(leaveQuery, leaveParams) : Promise.resolve({ rows: [{ total: 0 }] })
+      leaveQuery ? runQueryWithTimeout(leaveQuery, leaveParams) : Promise.resolve({ rows: [{ total: 0 }] }),
+      date ? runQueryWithTimeout(`${distinctCte} SELECT COUNT(*) FILTER(WHERE professional_is_week_off(pe.id,$${paParamCount}::date)) AS total,
+        COUNT(*) FILTER(WHERE professional_is_week_off(pe.id,$${paParamCount}::date) AND NOT EXISTS (SELECT 1 FROM professional_attendance a WHERE a.professional_id=pe.id AND a.date=$${paParamCount}::date AND a.punch_in IS NOT NULL)
+          AND NOT EXISTS(SELECT 1 FROM professional_leave_requests l WHERE l.professional_id=pe.id AND l.requested_date=$${paParamCount}::date AND l.status='approved')) AS off_without_attendance
+        FROM distinct_pe pe`,params) : Promise.resolve({rows:[{total:0,off_without_attendance:0}]})
     ]);
 
     const totalProfessionals = parseInt(peCountResult.rows[0].total, 10);
@@ -629,7 +635,8 @@ const getAttendanceSummary = async (req, res) => {
     const inProgressProfessionals = isToday
       ? Math.max(uniquePresentProfessionals - totalPunchedOutProfessionals, 0)
       : 0;
-    const absentProfessionals = Math.max(totalProfessionals - uniquePresentProfessionals - leaveProfessionals, 0);
+    const weeklyOffProfessionals = Number(weeklyOffResult.rows[0]?.total || 0);
+    const absentProfessionals = Math.max(totalProfessionals - uniquePresentProfessionals - leaveProfessionals - Number(weeklyOffResult.rows[0]?.off_without_attendance || 0), 0);
 
     const avgRate = totalProfessionals > 0
       ? ((uniquePresentProfessionals / totalProfessionals) * 100).toFixed(2)
@@ -643,6 +650,7 @@ const getAttendanceSummary = async (req, res) => {
         unique_present_professionals: uniquePresentProfessionals,
         leave_professionals: leaveProfessionals,
         absent_professionals: absentProfessionals,
+        weekly_off_professionals: weeklyOffProfessionals,
         punched_out_professionals: totalPunchedOutProfessionals,
         manual_punched_out_professionals: punchedOutProfessionals,
         punched_out_system_professionals: punchedOutSystemProfessionals,
@@ -834,6 +842,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
 
         -- Week off days: count calendar days in range that fall on the employee's configured week-off day numbers
         COALESCE(weekoff_agg.week_off_count, 0) AS week_off_days_count,
+        weekoff_agg.payable_days AS calendar_payable_days,
 
         -- Holiday days: scoped by location and excluding configured week-offs
         COALESCE(holiday_agg.holiday_days, 0) AS holiday_days,
@@ -860,14 +869,9 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       ) leave_agg ON TRUE
       LEFT JOIN LATERAL (
         SELECT
-          COUNT(gs.d) AS week_off_count
+          COUNT(gs.d) FILTER (WHERE professional_is_week_off(pe.id,gs.d::date)) AS week_off_count,
+          COUNT(gs.d) FILTER (WHERE professional_is_paid_day(pe.id,gs.d::date)) AS payable_days
         FROM generate_series($${startParam}::date, $${endParam}::date, INTERVAL '1 day') AS gs(d)
-        WHERE EXTRACT(DOW FROM gs.d)::int = ANY(
-          SELECT UNNEST(pwo.week_off_days)
-          FROM professional_week_off pwo
-          WHERE pwo.professional_id = pe.id
-          LIMIT 1
-        )
       ) weekoff_agg ON TRUE
       LEFT JOIN LATERAL (
         SELECT COUNT(DISTINCT h.holiday_date)::int AS holiday_days
@@ -878,12 +882,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
           AND (h.zone_id IS NULL OR h.zone_id = pe.zone_id)
           AND (h.ward_id IS NULL OR h.ward_id = pe.ward_id)
           AND (h.kothi_id IS NULL OR h.kothi_id = pe.kothi_id)
-          AND NOT EXISTS (
-            SELECT 1
-            FROM professional_week_off pwo2
-            WHERE pwo2.professional_id = pe.id
-              AND EXTRACT(DOW FROM h.holiday_date)::int = ANY(pwo2.week_off_days)
-          )
+          AND NOT professional_is_week_off(pe.id,h.holiday_date)
       ) holiday_agg ON TRUE
       LEFT JOIN self_punch_requests spr ON pe.request_id = spr.id
       LEFT JOIN sectors sec_pe ON pe.ward_id = sec_pe.sector_id
@@ -921,7 +920,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
                ),
                z.zone_name, c.city_name,
                leave_agg.leave_days, leave_agg.latest_reviewer_name,
-               weekoff_agg.week_off_count, holiday_agg.holiday_days
+               weekoff_agg.week_off_count, weekoff_agg.payable_days, holiday_agg.holiday_days
       ORDER BY (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0) + COALESCE(holiday_agg.holiday_days, 0)) DESC, pe.full_name ASC
       LIMIT $${startParam + 2} OFFSET $${startParam + 3}
     `;
@@ -958,9 +957,9 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         // Half day also counted as full for salary purposes (attendance_count = any punch-in)
         const effectivePresent = attendanceDays + leaveDays;
         const adjustedPresent  = effectivePresent + holidayDays;
-        const absentDays       = Math.max(workingDays - adjustedPresent, 0);
+        const payableDays = Number(row.calendar_payable_days || 0);
+        const absentDays = Math.max(totalRangeDays - payableDays, 0);
         // Payable days include configured week off days as paid days.
-        const payableDays      = Math.min(totalRangeDays, adjustedPresent + weekOffDays); // what HR uses for salary calculation
 
         return {
           ...row,
@@ -1044,6 +1043,8 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         pe.full_name,
         pe.emp_code,
         cd.date,
+        professional_is_week_off(pe.id,cd.date) AS is_weekly_off,
+        professional_is_paid_day(pe.id,cd.date) AS is_payable_day,
         pa.punch_in,
         pa.punch_out,
         pa.auto_punched_out,
@@ -1159,6 +1160,8 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         not_punched_out_days: notPunchedOutDays,
         leave_approved_days: leaveApprovedDays,
         leave_pending_days: leavePendingDays,
+        weekly_off_days: mappedRows.filter(r => r.is_weekly_off).length,
+        payable_days: mappedRows.filter(r => r.is_payable_day).length,
         total_hours_worked: totalHours.toFixed(2),
         records: mappedRows
       }
@@ -1340,16 +1343,16 @@ const getEmployeeAttendance = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Employee not found or access denied.' });
     }
 
-    // Fetch Attendance
+    // Include every calendar date so monthly consumers can render paid weekly offs.
     const query = `
       SELECT 
-        date, punch_in, punch_out,
-        CASE WHEN punch_out IS NULL AND date < CURRENT_DATE THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(punch_out, NOW()) - punch_in)) / 3600 END AS hours_worked
-      FROM professional_attendance
-      WHERE professional_id = $1 
-        AND EXTRACT(YEAR FROM date) = $2 
-        AND EXTRACT(MONTH FROM date) = $3
-      ORDER BY date DESC
+        d::date AS date, a.punch_in, a.punch_out,
+        professional_is_week_off($1,d::date) AS is_weekly_off,
+        professional_is_paid_day($1,d::date) AS is_payable_day,
+        CASE WHEN a.punch_in IS NULL OR (a.punch_out IS NULL AND d::date < CURRENT_DATE) THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(a.punch_out, NOW()) - a.punch_in)) / 3600 END AS hours_worked
+      FROM generate_series(make_date($2::int,$3::int,1),(make_date($2::int,$3::int,1)+INTERVAL '1 month - 1 day')::date,INTERVAL '1 day') d
+      LEFT JOIN professional_attendance a ON a.professional_id=$1 AND a.date=d::date
+      ORDER BY d DESC
     `;
 
     const attResult = await runQueryWithTimeout(query, [id, yyyy, mm]);
@@ -1359,7 +1362,7 @@ const getEmployeeAttendance = async (req, res) => {
       data: attResult.rows.map(row => ({
         ...row,
         hours_worked: row.hours_worked == null ? '-' : parseFloat(row.hours_worked).toFixed(2),
-        status: row.hours_worked == null ? 'absent' : (parseFloat(row.hours_worked) >= 4 ? 'present' : 'half-day')
+        status: row.punch_in ? (row.punch_out && parseFloat(row.hours_worked) < 4 ? 'half-day' : 'present') : (row.is_weekly_off ? 'weekly-off' : 'absent')
       }))
     });
 

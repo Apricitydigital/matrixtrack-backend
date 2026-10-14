@@ -141,6 +141,8 @@ const setLeaveAllocations = async (req, res) => {
          ON CONFLICT (professional_id) DO UPDATE
            SET week_off_days = EXCLUDED.week_off_days,
                updated_by = EXCLUDED.updated_by,
+               updated_by_professional = NULL,
+               effective_from = (NOW() AT TIME ZONE 'Asia/Kolkata')::date,
                updated_at = NOW()`,
         [id, validDays, actorUserId]
       );
@@ -254,7 +256,7 @@ const getMyLeaveBalance = async (req, res) => {
 
     // Also fetch week off days
     const weekOffResult = await pool.query(
-      'SELECT week_off_days FROM professional_week_off WHERE professional_id = $1',
+      "SELECT professional_week_off_days_at($1,(NOW() AT TIME ZONE 'Asia/Kolkata')::date) AS week_off_days",
       [professional_id]
     );
 

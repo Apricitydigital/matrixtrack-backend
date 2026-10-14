@@ -257,8 +257,13 @@ async function runMigrations() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_api_key_logs_key ON api_key_usage_logs (api_key_id)`);
     console.log("[Migration] ✅ api_key_usage_logs table ready.");
 
+    await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-weekly-off-schema'))");
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261009_professional_weekly_off.sql'), 'utf8'));
+    await client.query('COMMIT');
     console.log("[Migration] All migrations complete.");
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error("[Migration] Migration error (non-fatal):", err.message);
   } finally {
     client.release();

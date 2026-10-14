@@ -881,6 +881,11 @@ const getMonthlyAttendance = async (req, res) => {
       holidayByDate[key] = row;
     });
 
+    const weeklyResult = await pool.query(`SELECT d::date::text AS date, professional_is_week_off($1,d::date) AS is_weekly_off
+      FROM generate_series(make_date($2::int,$3::int,1), (make_date($2::int,$3::int,1) + INTERVAL '1 month - 1 day')::date, INTERVAL '1 day') d`, [professional_id, yyyy, mm]);
+    const weeklyByDate = Object.fromEntries(weeklyResult.rows.map(r => [r.date,r.is_weekly_off]));
+    let totalWeeklyOff = 0;
+
     let totalWorkingDays = 0;
     let totalPresent = 0;
     let totalHalfDay = 0;
@@ -908,6 +913,8 @@ const getMonthlyAttendance = async (req, res) => {
       // Exclude future dates from absent calculation
       const todayIst = getTodayIST();
       const isFuture = dStr > todayIst;
+      const isWeeklyOff = Boolean(weeklyByDate[dStr]);
+      if (isWeeklyOff && !isFuture) totalWeeklyOff++;
       if (record) {
         let hours = 0;
         let status = 'absent';
@@ -924,6 +931,7 @@ const getMonthlyAttendance = async (req, res) => {
           displayHours = '-'; // Don't show live working time if punch-out not done
         }
         // If neither punch_in nor punch_out, status stays 'absent'
+        if (!record.punch_in && isWeeklyOff) status = 'weekly-off';
 
 
         records.push({
@@ -932,15 +940,16 @@ const getMonthlyAttendance = async (req, res) => {
           punch_out: record.punch_out,
           hours_worked: displayHours,
           status,
+          is_weekly_off: isWeeklyOff,
           leave: leaveByDate[dStr] || null,
           holiday: holidayByDate[dStr] || null,
         });
 
         if (status === 'present') totalPresent++;
         else if (status === 'half-day') totalHalfDay++;
-        totalWorkingDays++;
+        if (!isWeeklyOff) totalWorkingDays++;
 
-      } else if (!isFuture || leaveByDate[dStr] || holidayByDate[dStr]) {
+      } else if (!isFuture || leaveByDate[dStr] || holidayByDate[dStr] || isWeeklyOff) {
         const leave = leaveByDate[dStr] || null;
         const holiday = holidayByDate[dStr] || null;
         let status = 'absent';
@@ -948,6 +957,7 @@ const getMonthlyAttendance = async (req, res) => {
         if (leave?.status === 'pending') status = 'leave-pending';
         if (leave?.status === 'rejected') status = 'leave-rejected';
         if (!leave && holiday) status = 'holiday';
+        if (isWeeklyOff) status = 'weekly-off';
 
         records.push({
           date: dStr,
@@ -955,6 +965,7 @@ const getMonthlyAttendance = async (req, res) => {
           punch_out: null,
           hours_worked: (status.startsWith('leave-') || status === 'holiday') ? '-' : '0.00',
           status,
+          is_weekly_off: isWeeklyOff,
           leave,
           holiday,
         });
@@ -963,11 +974,13 @@ const getMonthlyAttendance = async (req, res) => {
         if (status === 'leave-pending') totalLeavePending++;
         if (status === 'leave-rejected') totalLeaveRejected++;
         if (status === 'holiday') totalHoliday++;
-        if (!isFuture) totalWorkingDays++;
+        if (!isFuture && !isWeeklyOff) totalWorkingDays++;
       }
     }
 
-    const totalPayableDays = totalPresent + totalHalfDay + totalLeaveApproved + totalHoliday;
+    // A worked weekly off is paid once; leave/holiday overlap also counts once.
+    const totalPayableDays = records.filter(r => r.date <= getTodayIST() &&
+      (r.is_weekly_off || ['present','half-day','leave-approved','holiday'].includes(r.status))).length;
 
     res.json({
       success: true,
@@ -980,6 +993,7 @@ const getMonthlyAttendance = async (req, res) => {
         total_leave_pending: totalLeavePending,
         total_leave_rejected: totalLeaveRejected,
         total_holiday: totalHoliday,
+        total_weekly_off: totalWeeklyOff,
         total_payable_days: totalPayableDays,
         total_working_days: totalWorkingDays
       }
@@ -1003,6 +1017,9 @@ const getTodayStatus = async (req, res) => {
   try {
     await ensureProfessionalAttendanceColumns(pool);
 
+    const weekly = await pool.query('SELECT professional_is_week_off($1,$2::date) AS is_weekly_off',[professional_id,today]);
+    const isWeeklyOff = weekly.rows[0]?.is_weekly_off === true;
+
     const attendanceResult = await pool.query(
       `SELECT date, punch_in, punch_out
        FROM professional_attendance
@@ -1016,7 +1033,7 @@ const getTodayStatus = async (req, res) => {
       const row = attendanceResult.rows[0];
       const hasPunchIn = Boolean(row.punch_in);
       const hasPunchOut = Boolean(row.punch_out);
-      const status = hasPunchIn ? (hasPunchOut ? 'done' : 'present') : 'absent';
+      const status = hasPunchIn ? (hasPunchOut ? 'done' : 'present') : (isWeeklyOff ? 'weekly-off' : 'absent');
 
       return res.json({
         success: true,
@@ -1025,6 +1042,7 @@ const getTodayStatus = async (req, res) => {
           punch_in: row.punch_in,
           punch_out: row.punch_out,
           status,
+          is_weekly_off: isWeeklyOff,
         },
       });
     }
@@ -1035,7 +1053,8 @@ const getTodayStatus = async (req, res) => {
         date: today,
         punch_in: null,
         punch_out: null,
-        status: 'absent',
+        status: isWeeklyOff ? 'weekly-off' : 'absent',
+        is_weekly_off: isWeeklyOff,
       },
     });
   } catch (error) {
