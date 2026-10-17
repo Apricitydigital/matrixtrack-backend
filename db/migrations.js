@@ -259,7 +259,13 @@ async function runMigrations() {
 
     await client.query('BEGIN');
     await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-weekly-off-schema'))");
+    await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261016_professional_hod.sql'),'utf8'));
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261009_professional_weekly_off.sql'), 'utf8'));
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-punch-cutoff-schema'))");
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_professional_punch_cutoff.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_professional_punch_cutoff_bulk.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261016_professional_hod_punch_approval.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261016_professional_holiday_permissions.sql'), 'utf8'));
     await client.query('COMMIT');
     console.log("[Migration] All migrations complete.");
   } catch (err) {

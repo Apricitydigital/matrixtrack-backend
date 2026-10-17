@@ -222,10 +222,13 @@ const getLeaveRequests = async (req, res) => {
         plr.leave_type,
         plr.reason,
         plr.status,
+        plr.approval_stage,
         plr.requested_at,
         plr.review_note,
         plr.reviewed_at,
-        reviewer.name AS reviewed_by_name,
+        COALESCE((SELECT full_name FROM professional_employees WHERE id=plr.hod_reviewer_id),
+          (SELECT full_name FROM professional_employees WHERE id=plr.ho_reviewer_id),
+          (SELECT full_name FROM professional_employees WHERE id=plr.pm_reviewer_id),reviewer.name) AS reviewed_by_name,
         c.city_name,
         z.zone_name,
         COALESCE(
@@ -298,115 +301,10 @@ const getLeaveRequests = async (req, res) => {
   }
 };
 
-const reviewLeaveRequest = async (req, res, decision) => {
-  const requesterRole = String(req.user?.role || "").toLowerCase();
-  const actorType = requesterRole === "admin" ? "admin" : "supervisor";
-  const reviewerId = req.user?.user_id || req.user?.id || req.user?.userId;
-  const { id } = req.params;
-  const note = String(req.body?.note || req.body?.reason || "").trim();
-
-  if (!reviewerId) {
-    return res.status(401).json({ success: false, message: "Unauthorized reviewer context." });
-  }
-  if (decision === "rejected" && !note) {
-    return res.status(400).json({ success: false, message: "Rejection reason is required." });
-  }
-
-  const client = await pool.connect();
-  try {
-    await ensureProfessionalLeaveSchema();
-    await client.query("BEGIN");
-
-    const { cte, whereClause, params } = buildVisibilityScope(req.user, req.cityScope, "pe");
-    const scopedParams = [...params, id];
-    const scopedQuery = `
-      ${cte}
-      SELECT
-        plr.id,
-        plr.professional_id,
-        plr.requested_date,
-        plr.leave_type,
-        plr.status,
-        pe.full_name
-      FROM professional_leave_requests plr
-      JOIN professional_employees pe ON pe.id = plr.professional_id
-      WHERE plr.id = $${scopedParams.length}
-        AND pe.is_active = true
-        AND ${whereClause}
-      FOR UPDATE
-    `;
-
-    const scopedResult = await client.query(scopedQuery, scopedParams);
-    if (scopedResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ success: false, message: "Leave request not found or access denied." });
-    }
-
-    const request = scopedResult.rows[0];
-    if (request.status !== "pending") {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        success: false,
-        message: `Request already ${request.status}.`,
-      });
-    }
-
-    await client.query(
-      `UPDATE professional_leave_requests
-       SET status = $1,
-           reviewed_by = $2,
-           reviewed_at = NOW(),
-           review_note = $3
-       WHERE id = $4`,
-      [decision, reviewerId, note || null, id]
-    );
-
-    await client.query(
-      `INSERT INTO professional_leave_request_logs (
-        request_id, action, actor_type, actor_user_id, note
-      )
-      VALUES ($1, $2, $3, $4, $5)`,
-      [id, decision, actorType, reviewerId, note || null]
-    );
-
-    const leaveDateLabel = formatLeaveDate(request.requested_date);
-
-    await client.query(
-      `INSERT INTO professional_notifications (
-        professional_id, type, title, message, metadata
-      )
-      VALUES ($1, $2, $3, $4, $5::jsonb)`,
-      [
-        request.professional_id,
-        "leave-review",
-        decision === "approved" ? "Leave Approved" : "Leave Rejected",
-        decision === "approved"
-          ? `Your ${request.leave_type} leave request for ${leaveDateLabel} has been approved.`
-          : `Your ${request.leave_type} leave request for ${leaveDateLabel} was rejected.`,
-        JSON.stringify({
-          request_id: id,
-          status: decision,
-          requested_date: request.requested_date,
-          leave_type: request.leave_type,
-          review_note: note || null,
-          reviewed_by: reviewerId,
-        }),
-      ]
-    );
-
-    await client.query("COMMIT");
-    return res.json({
-      success: true,
-      message: decision === "approved" ? "Leave request approved." : "Leave request rejected.",
-    });
-  } catch (error) {
-    await client.query("ROLLBACK");
-    logger.error("[ProfessionalLeaveMgmt] reviewLeaveRequest error:", error);
-    return res.status(500).json({ success: false, message: "Unable to review leave request." });
-  } finally {
-    client.release();
-  }
-};
+const reviewLeaveRequest = async (req, res) => res.status(403).json({
+  success: false,
+  message: 'Leave requests require Project Head approval followed by HO Coordinator approval in the employee app.',
+});
 
 const approveLeaveRequest = async (req, res) => reviewLeaveRequest(req, res, "approved");
 const rejectLeaveRequest = async (req, res) => reviewLeaveRequest(req, res, "rejected");

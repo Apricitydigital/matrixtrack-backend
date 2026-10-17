@@ -3,10 +3,12 @@ const { buildVisibilityScope } = require('../utils/professionalAccess');
 const { getSignedS3Url } = require('../utils/s3SelfPunch');
 const logger = require('../utils/logger');
 const pool = require('../config/db');
+const { ensurePunchCutoffSchema } = require('../utils/professionalPunchCutoff');
 const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSchema');
 
 let attendanceReportColumnsEnsured = false;
 const ensureAttendanceReportColumns = async () => {
+  await ensurePunchCutoffSchema();
   if (attendanceReportColumnsEnsured) return;
   await pool.query(`
     ALTER TABLE professional_attendance
@@ -241,7 +243,9 @@ const getAttendanceList = async (req, res) => {
         pe.email,
         COALESCE(pa.date, leave_row.requested_date, ${leaveDateExpr}) as date,
         professional_is_week_off(pe.id,COALESCE(pa.date,leave_row.requested_date,${leaveDateExpr},(NOW() AT TIME ZONE 'Asia/Kolkata')::date)) AS is_weekly_off,
-        pa.punch_in,
+        EXISTS(SELECT 1 FROM professional_holidays h WHERE h.holiday_date=COALESCE(pa.date,leave_row.requested_date,${leaveDateExpr},(NOW() AT TIME ZONE 'Asia/Kolkata')::date)
+          AND h.city_id=pe.city_id AND (h.zone_id IS NULL OR h.zone_id=pe.zone_id) AND (h.ward_id IS NULL OR h.ward_id=pe.ward_id) AND (h.kothi_id IS NULL OR h.kothi_id=pe.kothi_id)) AS is_holiday,
+        pa.punch_in, pa.attempted_punch_in, pa.punch_approval_status,
         pa.punch_out,
         pa.auto_punched_out,
         pa.auto_punched_out AS is_auto_punch_out,
@@ -260,7 +264,9 @@ const getAttendanceList = async (req, res) => {
         leave_row.status AS leave_status,
         leave_row.review_note AS leave_review_note,
         leave_row.reviewed_at AS leave_reviewed_at,
-        leave_reviewer.name AS leave_reviewed_by_name,
+        COALESCE((SELECT full_name FROM professional_employees WHERE id=leave_row.hod_reviewer_id),
+          (SELECT full_name FROM professional_employees WHERE id=leave_row.ho_reviewer_id),
+          (SELECT full_name FROM professional_employees WHERE id=leave_row.pm_reviewer_id),leave_reviewer.name) AS leave_reviewed_by_name,
         pe.selfie_url as profile_selfie_url,
         COALESCE(
           sec_pe.sector_name,
@@ -577,10 +583,8 @@ const getAttendanceSummary = async (req, res) => {
     `;
 
     let leaveQuery = null;
-    let leaveParams = [];
     if (date) {
       const dateIdx = paParamCount;
-      leaveParams = params;
       leaveQuery = `
         ${distinctCte}
         SELECT COUNT(DISTINCT plr.professional_id) AS total
@@ -597,26 +601,43 @@ const getAttendanceSummary = async (req, res) => {
       `;
     }
 
-    const [
-      peCountResult,
-      aggResult,
-      presentProfessionalsResult,
-      punchedOutProfessionalsResult,
-      punchedOutSystemProfessionalsResult,
-      leaveResult,
-      weeklyOffResult
-    ] = await Promise.all([
-      runQueryWithTimeout(peCountQuery, params),
-      runQueryWithTimeout(aggQuery, params),
-      runQueryWithTimeout(presentProfessionalsQuery, params),
-      runQueryWithTimeout(punchedOutProfessionalsQuery, params),
-      runQueryWithTimeout(punchedOutSystemProfessionalsQuery, params),
-      leaveQuery ? runQueryWithTimeout(leaveQuery, leaveParams) : Promise.resolve({ rows: [{ total: 0 }] }),
-      date ? runQueryWithTimeout(`${distinctCte} SELECT COUNT(*) FILTER(WHERE professional_is_week_off(pe.id,$${paParamCount}::date)) AS total,
-        COUNT(*) FILTER(WHERE professional_is_week_off(pe.id,$${paParamCount}::date) AND NOT EXISTS (SELECT 1 FROM professional_attendance a WHERE a.professional_id=pe.id AND a.date=$${paParamCount}::date AND a.punch_in IS NOT NULL)
-          AND NOT EXISTS(SELECT 1 FROM professional_leave_requests l WHERE l.professional_id=pe.id AND l.requested_date=$${paParamCount}::date AND l.status='approved')) AS off_without_attendance
-        FROM distinct_pe pe`,params) : Promise.resolve({rows:[{total:0,off_without_attendance:0}]})
-    ]);
+    // Reuse the scoped/deduplicated employee set inside one database request.
+    // Previously seven concurrent statements each rebuilt this same relation.
+    const weeklyQuery = date ? `SELECT COUNT(*) FILTER(WHERE weekly_off) AS total,
+      COUNT(*) FILTER(WHERE weekly_off AND NOT worked AND NOT on_leave) AS off_without_attendance,
+      COUNT(*) FILTER(WHERE holiday) AS holiday_total,
+      COUNT(*) FILTER(WHERE holiday AND NOT weekly_off AND NOT worked AND NOT on_leave) AS holiday_without_attendance
+      FROM (SELECT pe.id,professional_is_week_off(pe.id,$${paParamCount}::date) AS weekly_off,
+        EXISTS(SELECT 1 FROM professional_holidays h WHERE h.holiday_date=$${paParamCount}::date AND h.city_id=pe.city_id
+          AND (h.zone_id IS NULL OR h.zone_id=pe.zone_id) AND (h.ward_id IS NULL OR h.ward_id=pe.ward_id) AND (h.kothi_id IS NULL OR h.kothi_id=pe.kothi_id)) AS holiday,
+        EXISTS(SELECT 1 FROM professional_attendance a WHERE a.professional_id=pe.id AND a.date=$${paParamCount}::date AND a.punch_in IS NOT NULL) AS worked,
+        EXISTS(SELECT 1 FROM professional_leave_requests l WHERE l.professional_id=pe.id AND l.requested_date=$${paParamCount}::date AND l.status='approved') AS on_leave
+        FROM distinct_pe pe) flags` : 'SELECT 0 AS total,0 AS off_without_attendance,0 AS holiday_total,0 AS holiday_without_attendance';
+    const withoutScope = query => query.replace(distinctCte, '');
+    const combinedQuery = `${distinctCte},
+      employee_count AS (${withoutScope(peCountQuery)}),
+      ward_counts AS (${withoutScope(aggQuery)}),
+      present_count AS (${withoutScope(presentProfessionalsQuery)}),
+      punched_out_count AS (${withoutScope(punchedOutProfessionalsQuery)}),
+      system_out_count AS (${withoutScope(punchedOutSystemProfessionalsQuery)}),
+      leave_count AS (${leaveQuery ? withoutScope(leaveQuery) : 'SELECT 0 AS total'}),
+      weekly_count AS (${weeklyQuery})
+      SELECT (SELECT total FROM employee_count) AS total_professionals,
+        COALESCE((SELECT json_agg(w) FROM ward_counts w),'[]'::json) AS by_ward,
+        (SELECT total FROM present_count) AS present,
+        (SELECT total FROM punched_out_count) AS punched_out,
+        (SELECT total FROM system_out_count) AS system_out,
+        (SELECT total FROM leave_count) AS leave,
+        (SELECT row_to_json(w) FROM weekly_count w) AS weekly`;
+    const combinedResult = await runQueryWithTimeout(combinedQuery, params);
+    const counts = combinedResult.rows[0];
+    const peCountResult = {rows:[{total:counts.total_professionals}]};
+    const aggResult = {rows:counts.by_ward};
+    const presentProfessionalsResult = {rows:[{total:counts.present}]};
+    const punchedOutProfessionalsResult = {rows:[{total:counts.punched_out}]};
+    const punchedOutSystemProfessionalsResult = {rows:[{total:counts.system_out}]};
+    const leaveResult = {rows:[{total:counts.leave}]};
+    const weeklyOffResult = {rows:[counts.weekly]};
 
     const totalProfessionals = parseInt(peCountResult.rows[0].total, 10);
 
@@ -636,7 +657,7 @@ const getAttendanceSummary = async (req, res) => {
       ? Math.max(uniquePresentProfessionals - totalPunchedOutProfessionals, 0)
       : 0;
     const weeklyOffProfessionals = Number(weeklyOffResult.rows[0]?.total || 0);
-    const absentProfessionals = Math.max(totalProfessionals - uniquePresentProfessionals - leaveProfessionals - Number(weeklyOffResult.rows[0]?.off_without_attendance || 0), 0);
+    const absentProfessionals = Math.max(totalProfessionals - uniquePresentProfessionals - leaveProfessionals - Number(weeklyOffResult.rows[0]?.off_without_attendance || 0) - Number(weeklyOffResult.rows[0]?.holiday_without_attendance || 0), 0);
 
     const avgRate = totalProfessionals > 0
       ? ((uniquePresentProfessionals / totalProfessionals) * 100).toFixed(2)
@@ -651,6 +672,7 @@ const getAttendanceSummary = async (req, res) => {
         leave_professionals: leaveProfessionals,
         absent_professionals: absentProfessionals,
         weekly_off_professionals: weeklyOffProfessionals,
+        holiday_professionals: Number(weeklyOffResult.rows[0]?.holiday_total || 0),
         punched_out_professionals: totalPunchedOutProfessionals,
         manual_punched_out_professionals: punchedOutProfessionals,
         punched_out_system_professionals: punchedOutSystemProfessionals,
@@ -860,7 +882,9 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       LEFT JOIN LATERAL (
         SELECT
           COUNT(*) FILTER (WHERE plr.status = 'approved') AS leave_days,
-          MAX(u.name) AS latest_reviewer_name
+          MAX(COALESCE((SELECT full_name FROM professional_employees WHERE id=plr.hod_reviewer_id),
+          (SELECT full_name FROM professional_employees WHERE id=plr.ho_reviewer_id),
+            (SELECT full_name FROM professional_employees WHERE id=plr.pm_reviewer_id),u.name)) AS latest_reviewer_name
         FROM professional_leave_requests plr
         LEFT JOIN users u ON u.user_id = plr.reviewed_by
         WHERE plr.professional_id = pe.id
@@ -1044,8 +1068,10 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         pe.emp_code,
         cd.date,
         professional_is_week_off(pe.id,cd.date) AS is_weekly_off,
+        EXISTS(SELECT 1 FROM professional_holidays h WHERE h.holiday_date=cd.date AND h.city_id=pe.city_id
+          AND (h.zone_id IS NULL OR h.zone_id=pe.zone_id) AND (h.ward_id IS NULL OR h.ward_id=pe.ward_id) AND (h.kothi_id IS NULL OR h.kothi_id=pe.kothi_id)) AS is_holiday,
         professional_is_paid_day(pe.id,cd.date) AS is_payable_day,
-        pa.punch_in,
+        pa.punch_in, pa.attempted_punch_in, pa.punch_approval_status,
         pa.punch_out,
         pa.auto_punched_out,
         pa.auto_punched_out AS is_auto_punch_out,
@@ -1064,7 +1090,9 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         plr.status AS leave_status,
         plr.review_note AS leave_review_note,
         plr.reviewed_at AS leave_reviewed_at,
-        leave_reviewer.name AS leave_reviewed_by_name,
+        COALESCE((SELECT full_name FROM professional_employees WHERE id=plr.hod_reviewer_id),
+          (SELECT full_name FROM professional_employees WHERE id=plr.ho_reviewer_id),
+          (SELECT full_name FROM professional_employees WHERE id=plr.pm_reviewer_id),leave_reviewer.name) AS leave_reviewed_by_name,
         COALESCE(
           sec_pe.sector_name,
           sec_w_pe.sector_name,
@@ -1317,6 +1345,7 @@ const getEmployeesList = async (req, res) => {
  */
 const getEmployeeAttendance = async (req, res) => {
   try {
+    await ensureAttendanceReportColumns();
     const { id } = req.params;
     let { month } = req.query;
 
@@ -1346,8 +1375,10 @@ const getEmployeeAttendance = async (req, res) => {
     // Include every calendar date so monthly consumers can render paid weekly offs.
     const query = `
       SELECT 
-        d::date AS date, a.punch_in, a.punch_out,
+        d::date AS date, a.punch_in, a.punch_out, a.attempted_punch_in, a.punch_approval_status,
         professional_is_week_off($1,d::date) AS is_weekly_off,
+        EXISTS(SELECT 1 FROM professional_holidays h JOIN professional_employees p ON p.id=$1 WHERE h.holiday_date=d::date AND h.city_id=p.city_id
+          AND (h.zone_id IS NULL OR h.zone_id=p.zone_id) AND (h.ward_id IS NULL OR h.ward_id=p.ward_id) AND (h.kothi_id IS NULL OR h.kothi_id=p.kothi_id)) AS is_holiday,
         professional_is_paid_day($1,d::date) AS is_payable_day,
         CASE WHEN a.punch_in IS NULL OR (a.punch_out IS NULL AND d::date < CURRENT_DATE) THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(a.punch_out, NOW()) - a.punch_in)) / 3600 END AS hours_worked
       FROM generate_series(make_date($2::int,$3::int,1),(make_date($2::int,$3::int,1)+INTERVAL '1 month - 1 day')::date,INTERVAL '1 day') d
@@ -1362,7 +1393,7 @@ const getEmployeeAttendance = async (req, res) => {
       data: attResult.rows.map(row => ({
         ...row,
         hours_worked: row.hours_worked == null ? '-' : parseFloat(row.hours_worked).toFixed(2),
-        status: row.punch_in ? (row.punch_out && parseFloat(row.hours_worked) < 4 ? 'half-day' : 'present') : (row.is_weekly_off ? 'weekly-off' : 'absent')
+        status: row.punch_approval_status==='rejected' ? 'punch-not-accepted' : ['pending_pm','pending_ho','pending_hod'].includes(row.punch_approval_status) ? 'in-consideration' : row.punch_in ? (row.punch_out && parseFloat(row.hours_worked) < 4 ? 'half-day' : 'present') : (row.is_holiday ? 'holiday' : row.is_weekly_off ? 'weekly-off' : 'absent')
       }))
     });
 

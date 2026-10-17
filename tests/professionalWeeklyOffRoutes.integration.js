@@ -39,7 +39,7 @@ module.exports = async function verifyRoutes(client) {
     INSERT INTO professional_site_access(professional_id,kothi_id) VALUES('${coordinator}',1);`);
   const run = async (method,url,options={}) => {
     const route=routers[1].routes.find(r=>r.method===method && r.url===url);
-    const req={ professional:{professional_id:coordinator},weeklyCanWrite:true,weeklyCountry:false,query:{},body:{},...options };
+    const req={ professional:{professional_id:coordinator},weeklyCanWrite:true,weeklyHod:false,query:{},body:{},...options };
     let res={ code:200,status(code){this.code=code;return this;},json(body){this.body=body;return this;},setHeader(){},end(){} };
     if (url === '/template') {
       const stream = new PassThrough();
@@ -57,33 +57,33 @@ module.exports = async function verifyRoutes(client) {
   let result=await run('get','/employees');
   assert.equal(result.code,200);assert.equal(result.body.data.length,2);
   result=await run('get','/employees',{query:{site_id:2}});assert.equal(result.code,403);
-  result=await run('get','/employees',{weeklyCountry:true,weeklyCanWrite:false});assert.equal(result.body.data.length,2,'Country Head only sees assigned-site employees');
+  result=await run('get','/employees',{weeklyHod:true,weeklyCanWrite:false});assert.equal(result.body.data.length,2,'Head of Department only sees assigned-site employees');
   for (const endpoint of ['/employees','/dashboard','/history','/template']) {
-    result=await run('get',endpoint,{weeklyCountry:true,weeklyCanWrite:false,query:{site_id:2}});
-    assert.equal(result.code,403,`${endpoint} rejects an unassigned site for Country Head`);
+    result=await run('get',endpoint,{weeklyHod:true,weeklyCanWrite:false,query:{site_id:2}});
+    assert.equal(result.code,403,`${endpoint} rejects an unassigned site for Head of Department`);
   }
-  result=await run('get','/sites',{weeklyCountry:true,weeklyCanWrite:false});
+  result=await run('get','/sites',{weeklyHod:true,weeklyCanWrite:false});
   assert.deepEqual(Array.from(result.body.data, site => site.id),[1]);
-  result=await run('get','/dashboard',{weeklyCountry:true,weeklyCanWrite:false});
+  result=await run('get','/dashboard',{weeklyHod:true,weeklyCanWrite:false});
   assert.equal(result.body.data.employee_count,2);
-  result=await run('get','/template',{weeklyCountry:true,weeklyCanWrite:false});
+  result=await run('get','/template',{weeklyHod:true,weeklyCanWrite:false});
   const scopedTemplate=new ExcelJS.Workbook();
   await scopedTemplate.xlsx.load(Buffer.concat(result.templateChunks));
   assert.equal(scopedTemplate.getWorksheet('Weekly Off').rowCount,3,'template contains header and only two assigned employees');
   await client.query('DELETE FROM professional_site_access WHERE professional_id=$1',[coordinator]);
-  for (const weeklyCountry of [false,true]) {
-    result=await run('get','/sites',{weeklyCountry});assert.equal(result.body.data.length,0,'no assignments means no sites');
-    result=await run('get','/employees',{weeklyCountry});assert.equal(result.body.data.length,0,'no assignments means no employees');
-    result=await run('get','/dashboard',{weeklyCountry});assert.equal(result.body.data.employee_count,0);
-    result=await run('get','/history',{weeklyCountry});assert.equal(result.body.data.length,0);
+  for (const weeklyHod of [false,true]) {
+    result=await run('get','/sites',{weeklyHod});assert.equal(result.body.data.length,0,'no assignments means no sites');
+    result=await run('get','/employees',{weeklyHod});assert.equal(result.body.data.length,0,'no assignments means no employees');
+    result=await run('get','/dashboard',{weeklyHod});assert.equal(result.body.data.employee_count,0);
+    result=await run('get','/history',{weeklyHod});assert.equal(result.body.data.length,0);
   }
   await client.query('INSERT INTO professional_site_access(professional_id,kothi_id) VALUES($1,1)',[coordinator]);
-  result=await run('put','/employees',{weeklyCanWrite:false,weeklyCountry:true,body:{rows:[{employee_id:employee,week_off_day:'Monday'}]}});assert.equal(result.code,403);
+  result=await run('put','/employees',{weeklyCanWrite:false,weeklyHod:true,body:{rows:[{employee_id:employee,week_off_day:'Monday'}]}});assert.equal(result.code,403);
   const before=(await client.query('SELECT COUNT(*)::int AS n FROM professional_week_off_versions')).rows[0].n;
   result=await run('put','/employees',{body:{rows:[{employee_id:employee,week_off_day:'Friday'},{employee_id:'E3',week_off_day:'Friday'}]}});
   assert.equal(result.code,400);assert.equal(result.body.errors.length,1);
   assert.equal((await client.query('SELECT COUNT(*)::int AS n FROM professional_week_off_versions')).rows[0].n,before,'invalid batch saves no rows');
-  result=await run('put','/employees',{weeklyCountry:true,body:{rows:[{employee_id:'E3',week_off_day:'Friday'}]}});assert.equal(result.code,400,'dual designation cannot write outside coordinator sites');
+  result=await run('put','/employees',{weeklyHod:true,body:{rows:[{employee_id:'E3',week_off_day:'Friday'}]}});assert.equal(result.code,400,'dual designation cannot write outside coordinator sites');
   result=await run('put','/employees',{body:{rows:[{employee_id:'E1',week_off_day:'Friday'},{employee_id:employee,week_off_day:'Saturday'}]}});assert.equal(result.code,400,'duplicate IDs/codes for one person rejected');
   result=await run('put','/employees',{body:{rows:[{employee_id:'E1',week_off_day:'Friday'}],effective_from:'2000-01-01'}});assert.equal(result.code,400);
   result=await run('put','/employees',{body:{rows:[{employee_id:'E1',week_off_day:'Friday'}]}});assert.equal(result.code,200);
@@ -95,7 +95,7 @@ module.exports = async function verifyRoutes(client) {
   sheet.getCell('C2').value='Site B';
   result=await run('post','/upload',{file:{originalname:'template.xlsx',buffer:await book.xlsx.writeBuffer()}});assert.equal(result.code,400,'wrong site rejected');
   await client.query(`INSERT INTO professional_week_off(professional_id,week_off_days,effective_from,updated_by_professional) VALUES('00000000-0000-4000-8000-000000000003',ARRAY[4],$1,$2)`,[todayIST(),coordinator]);
-  result=await run('get','/history',{weeklyCountry:true});assert.equal(result.code,200);assert.ok(result.body.data.length>0);
+  result=await run('get','/history',{weeklyHod:true});assert.equal(result.code,200);assert.ok(result.body.data.length>0);
   assert.ok(result.body.data.every(row=>row.professional_id!=='00000000-0000-4000-8000-000000000003'),'history excludes unassigned employees');
   result=await run('get','/dashboard');assert.equal(result.code,200);assert.ok(result.body.data.coordinators.length>0);
   await client.query("INSERT INTO users(user_id,name) VALUES(1,'MT Admin')");
@@ -108,15 +108,15 @@ module.exports = async function verifyRoutes(client) {
   result=await assign({all:false,ids:[1]},{designation_ids:designationIds,site_ids:[1,2]});assert.equal(result.code,403);
   result=await assign({all:true},{designation_ids:designationIds,site_ids:[1,2]});assert.equal(result.code,200);
   assert.equal((await client.query('SELECT COUNT(*)::int AS n FROM professional_site_access WHERE professional_id=$1',[coordinator])).rows[0].n,2);
-  for (const weeklyCountry of [false,true]) {
-    result=await run('get','/sites',{weeklyCountry});
+  for (const weeklyHod of [false,true]) {
+    result=await run('get','/sites',{weeklyHod});
     assert.deepEqual(Array.from(result.body.data, site => site.id),[1,2],'two assigned sites exclude third site');
-    result=await run('get','/employees',{weeklyCountry});
+    result=await run('get','/employees',{weeklyHod});
     assert.equal(result.body.data.length,3,'only employees of two assigned sites');
-    result=await run('get','/dashboard',{weeklyCountry});assert.equal(result.body.data.employee_count,3);
-    result=await run('get','/employees',{weeklyCountry,query:{site_id:3}});assert.equal(result.code,403);
+    result=await run('get','/dashboard',{weeklyHod});assert.equal(result.body.data.employee_count,3);
+    result=await run('get','/employees',{weeklyHod,query:{site_id:3}});assert.equal(result.code,403);
   }
   result=await assign({all:false,ids:[1]},{designation_ids:designationIds,site_ids:[1]});assert.equal(result.code,403,'partial-city admins cannot remove assignments in another city');
   result=await assign({all:true},{designation_ids:[999],site_ids:[1]});assert.equal(result.code,400);
-  console.log('PASS: site scope, Country Head read access, dual-role write restrictions, atomic batches, duplicates, effective dates, Excel upload and coordinator counts.');
+  console.log('PASS: site scope, Head of Department read access, dual-role write restrictions, atomic batches, duplicates, effective dates, Excel upload and coordinator counts.');
 };

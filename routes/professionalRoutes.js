@@ -12,12 +12,10 @@ const {
   getProfile 
 } = require('../controllers/professionalAttendanceController');
 const {
-  requestLeave,
-  getMyLeaveRequests,
   getMyNotifications,
   markNotificationRead,
 } = require("../controllers/professionalLeaveController");
-const { getMyLeaveBalance } = require('../controllers/professionalLeaveAllocationsController');
+const { requestLeave, getMyLeaveRequests, getBalance: getMyLeaveBalance, getTeamRequests, review: reviewTeamLeave } = require('../controllers/professionalLeaveWorkflowController');
 const { sendPushToProfessionals } = require('../utils/professionalPushService');
 const {
   registerPushToken,
@@ -57,6 +55,8 @@ router.post('/geofencing/request', submitProfessionalGeofenceRequest);
 router.post("/leave/request", requestLeave);
 router.get("/leave/requests", getMyLeaveRequests);
 router.get("/leave/balance", getMyLeaveBalance);
+router.get('/leave/team-requests', getTeamRequests);
+router.post('/leave/team-requests/:id/review', reviewTeamLeave);
 router.get("/notifications", getMyNotifications);
 router.post("/notifications/:id/read", markNotificationRead);
 router.post("/push-token/register", registerPushToken);

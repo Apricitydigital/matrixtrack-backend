@@ -262,18 +262,18 @@ const _sendOtpSms = async (normalizedMobile, otp, context) => {
       ? `<#> Your MatrixTrack OTP is ${otp}\n${otpHash}`
       : `${otp} is your MatrixTrack OTP. Valid for 5 minutes.`;
 
-  console.log(`\n========================================================`);
-  console.log(`🔑 [OTPAuth] OTP generated for +91${normalizedMobile}: ${otp} (${context})`);
-  console.log(`========================================================\n`);
-
   try {
     await sendSms({ phone: `+91${normalizedMobile}`, message: otpMessage, context });
     logger.info(`[OTPAuth] OTP sent to mobile ending ...${normalizedMobile.slice(-4)} (${context})`);
   } catch (smsErr) {
     logger.warn(`[OTPAuth] SMS send failed for +91${normalizedMobile}, but keeping OTP in memory store for verification/master fallback: ${smsErr.message}`);
+  } finally {
+    if (String(process.env.PROFESSIONAL_OTP_CONSOLE_DEBUG || '').trim().toLowerCase() === 'true') {
+      console.log('[OTPAuth DEBUG] OTP=' + otp + ' | mobile=...'
+        + normalizedMobile.slice(-4) + ' | ' + context + ' | valid for 5 minutes');
+    }
   }
 };
-
 const isDevOrTestMode = () => {
   const env = (process.env.NODE_ENV || 'development').trim().toLowerCase();
   const allowMaster = String(process.env.ALLOW_MASTER_OTP || '').trim().toLowerCase() === 'true';

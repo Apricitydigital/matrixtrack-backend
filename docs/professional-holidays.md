@@ -1,0 +1,13 @@
+# Professional Holidays
+
+Sidebar → Professional Holidays (`/supervisor/professional-holidays`) is a separate site-wise holiday module. Admin Management → Module Access → Professional Holidays uses the existing `professional_holiday_declare` module: No Access, View Only, or View & Edit. View includes declarations/history; Write includes declaring/removing. The same backend permission is enforced on every endpoint. The permission catalog adds `professional-holiday-declare:view/write` without granting them to existing custom users.
+
+Select a date/name and one or multiple accessible sites. All professional employees currently assigned to those sites see the paid company holiday. Site/city permissions are intersected server-side, including sector-derived site cities. A declaration batch either succeeds entirely or saves nothing. Duplicate dates within a site are rejected. Creating/removing a holiday and its actor/name/time/scope audit entry happen in the same transaction; an audit failure prevents the change. Removal keeps the history. The page filters declarations/history by holiday month and site (latest 500, with an overflow notice).
+
+Employee Home shows a paid holiday day-off card, name and description when there is no existing punch. Employees already working retain their punch state. Monthly calendar cells label Holiday, including future declared dates; detailed records retain the holiday name. Current status refreshes on Home's existing 30-second interval. Holiday data uses the existing `professional_holidays` and `professional_holiday_logs` tables.
+
+Professional Attendance daily summary excludes non-working company holidays from Absent and displays a Company Holiday count. Daily rows/export and date-range details identify paid company holidays. Date-range payroll and employee monthly payable totals count each date once across punches, approved leave, Week Off and company holidays. Existing broad city/zone/sector holidays remain effective; this new page manages site-specific declarations.
+
+APIs: `/api/admin/professional-holidays` (GET/POST), `/sites` (GET), `/history` (GET), `/:id` (DELETE). POST accepts `{site_ids:[1,2],holiday_date:"YYYY-MM-DD",holiday_name:"...",description:"..."}`. GET supports `month=YYYY-MM&site=ID`. Backdated dates are allowed for payroll corrections and fully audited.
+
+Verification uses isolated databases: `node tests/professionalHolidays.integration.js`, `node tests/professionalPunchCutoff.integration.js`, and weekly-off/report verification with `--local-pg`. Frontend permission tests cover custom admins and supervisors. No live DB was changed during development.

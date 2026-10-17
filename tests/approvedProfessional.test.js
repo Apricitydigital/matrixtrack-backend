@@ -17,10 +17,10 @@ function harness(options = {}) {
       queries.push({ sql, params });
       if (sql.includes('SELECT spr.*')) return { rows: options.missing ? [] : [...new Set(params[0])].map(key => ({ ...employee, id: key })), rowCount: options.missing ? 0 : params[0].length };
       if (sql.includes('SELECT 1 FROM zones')) return { rowCount: options.invalidHierarchy ? 0 : 1, rows: [] };
-      if (sql.includes('SELECT id FROM professional_employees')) return { rowCount: options.duplicate ? 1 : 0, rows: [] };
+      if (sql.includes('FROM professional_employees WHERE id <>')) return { rowCount: options.conflicts?.length || (options.duplicate ? 1 : 0), rows: options.conflicts || (options.duplicate ? [{id:'99999999-9999-9999-9999-999999999999',full_name:'Existing Employee',emp_code:'EXISTING',mobile:params[1]}] : []) };
       if (sql.includes('SELECT emp_id, designation_id')) return { rowCount: 1, rows: [{ emp_id: 42, designation_id: 2 }] };
       if (sql.includes('SELECT 1 FROM designation')) return { rowCount: 1, rows: [{}] };
-      if (sql.includes('SELECT emp_id FROM employee')) return { rowCount: 0, rows: [] };
+      if (sql.includes('SELECT emp_id, name, emp_code FROM employee')) return { rowCount: options.masterConflict ? 1 : 0, rows: options.masterConflict ? [{emp_id:88,name:'Master Employee',emp_code:params[0]}] : [] };
       return { rows: [], rowCount: 1 };
     },
   };
@@ -79,6 +79,41 @@ test('duplicate login identifier rejects and rolls back', async () => {
   assert.match(res.body.message, /belongs to another/);
   assert.ok(h.queries.some(q => q.sql === 'ROLLBACK'));
   assert.ok(!h.queries.some(q => q.sql === 'COMMIT'));
+});
+
+test('database conflicts identify each exact field, value and owning professional', async () => {
+  const h=harness({conflicts:[{id:'99999999-9999-9999-9999-999999999999',full_name:'Other Person',emp_code:'TAKEN',mobile:'9123456789',email:'taken@example.com'}]});
+  const result=await h.run({id,row_number:23,updated_at:timestamp,mobile:'9123456789',email:'TAKEN@example.com',emp_code:'TAKEN'});
+  assert.equal(result.body.invalid,1);
+  const error=result.body.errors[0];
+  assert.equal(error.row_number,23);assert.equal(error.full_name,'Old Name');
+  assert.equal(error.conflicts.length,3);
+  for(const field of ['mobile','email','emp_code']) assert.ok(error.conflicts.some(c=>c.field===field));
+  assert.match(error.message,/Mobile "9123456789"/);
+  assert.match(error.message,/Email "taken@example.com"/);
+  assert.match(error.message,/Employee code "TAKEN"/);
+  assert.match(error.message,/Other Person/);
+  assert.match(error.message,/99999999-9999-9999-9999-999999999999/);
+  assert.ok(!h.queries.some(q=>/^(UPDATE|INSERT)/.test(q.sql)));
+});
+
+test('Employee Master collision shows conflicting code, owner name and Master ID', async()=>{
+  const result=await harness({masterConflict:true}).run({id,updated_at:timestamp,emp_code:'MP02105'});
+  assert.equal(result.body.invalid,1);
+  assert.match(result.body.errors[0].message,/Employee code "MP02105" already exists in Employee Master: Master Employee \(Master ID: 88\)/);
+  assert.equal(result.body.errors[0].conflicts[0].source,'employee');
+});
+
+test('duplicate uploaded codes identify the other spreadsheet row and employee',async()=>{
+  const result=await harness().run([
+    {id,row_number:870,updated_at:timestamp,full_name:'First Person',emp_code:'DUPLICATE'},
+    {id:'22222222-2222-2222-2222-222222222222',row_number:857,updated_at:timestamp,full_name:'Second Person',emp_code:'DUPLICATE'},
+  ]);
+  assert.equal(result.body.invalid,2);
+  assert.equal(result.body.errors[0].row_number,857);
+  assert.match(result.body.errors[0].message,/Employee code "DUPLICATE".*Row 870 \(First Person/);
+  assert.match(result.body.errors[1].message,/Row 857 \(Second Person/);
+  assert.equal(result.body.errors[0].conflicts[0].row_number,870);
 });
 
 test('uploaded designation cannot override automatic Professional mapping', async () => {
@@ -144,7 +179,7 @@ test('changed mobile checks only mobile, so an unchanged legacy duplicate employ
   const h = harness();
   const res = await h.run({ id, updated_at: timestamp, mobile: '9123456789', emp_code: employee.emp_code });
   assert.equal(res.body.changed, 1);
-  const query = h.queries.find(q => q.sql.includes('SELECT id FROM professional_employees'));
+  const query = h.queries.find(q => q.sql.includes('FROM professional_employees WHERE id <>'));
   assert.match(query.sql, /mobile = \$2/);
   assert.doesNotMatch(query.sql, /emp_code =|LOWER\(email\)/);
 });
@@ -154,7 +189,7 @@ test('email casing alone is unchanged and does not invoke duplicate validation',
   const res = await h.run({ id, updated_at: timestamp, email: employee.email.toUpperCase() });
   assert.equal(res.body.changed, 0);
   assert.equal(res.body.unchanged, 1);
-  assert.ok(!h.queries.some(q => q.sql.includes('SELECT id FROM professional_employees')));
+  assert.ok(!h.queries.some(q => q.sql.includes('FROM professional_employees WHERE id <>')));
 });
 
 test('large unchanged uploads are compared with one employee read and no update queries', async () => {

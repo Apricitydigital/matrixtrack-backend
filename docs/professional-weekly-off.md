@@ -1,6 +1,6 @@
 # Professional designations and weekly offs
 
-The Professional department has three additional responsibilities: **Project Head / Site Head**, **HO Coordinator**, and **Country Head**. Multiple responsibilities can be assigned to one professional independently of the existing primary `Professional` designation.
+The Professional department has three additional responsibilities: **Project Head / Site Head**, **HO Coordinator**, and **Head of Department**. Multiple responsibilities can be assigned to one professional independently of the existing primary `Professional` designation.
 
 ## Admin setup
 
@@ -11,8 +11,8 @@ Delegate access using the `professional-weekly-off` module (`view` or `write`), 
 ## Professional app
 
 - HO Coordinator: **Workspace > Week Off**, employee search/site filter, manual weekly-off updates, template download and `.xlsx` upload.
-- Country Head: **Workspace > Week Off** and dashboard overview, daily counts, employee schedules, coordinator update counts and history.
-- All roles, including Country Head and dual-role professionals, can only view explicitly assigned sites and their active employees, dashboard, history and exports. No site assignments means no visible sites or employees. Country Head is view-only; HO Coordinator can change schedules within the same assigned sites.
+- Head of Department: **Workspace > Week Off** and dashboard overview, daily counts, employee schedules, coordinator update counts and history.
+- All roles, including Head of Department and dual-role professionals, can only view explicitly assigned sites and their active employees, dashboard, history and exports. No site assignments means no visible sites or employees. Head of Department is view-only; HO Coordinator can change schedules within the same assigned sites.
 - The feature manages active **professional employees** in their assigned kothis. Ordinary employee attendance remains a separate existing workflow.
 
 Template columns are `Employee Name`, `Employee ID`, `Assigned Site`, `Weekly-Off Day`. Employee ID is the employee code, falling back to the permanent professional UUID. Names are display values; matching uses the ID. Weekday values accept full names or 0–6 (Sunday=0). The coordinator workflow assigns one weekly day per employee. Existing legacy schedules with multiple days remain readable until changed.

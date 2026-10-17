@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { capabilities, ensurePunchCutoffSchema, notifyStage, getPunchSettings, loadPunchApprovals, approvalProgress } = require('../utils/professionalPunchCutoff');
 const logger = require('../utils/logger');
 const { verifyFaceMatch } = require('../utils/faceService');
 const { rekognition, DetectFacesCommand, CompareFacesCommand } = require('../config/awsConfig');
@@ -8,24 +9,26 @@ const { sendTrackedRekognition, trackSuccessfulAttendanceEvent } = require('../u
 const { validateProfessionalGeofenceAccess } = require('./professionalGeofenceController');
 const { logUserConsent } = require('./consentController');
 
-let attendanceColumnsEnsured = false;
+let attendanceColumnsPromise = null;
 
 const ensureProfessionalAttendanceColumns = async (client) => {
-  if (attendanceColumnsEnsured) return;
+  if (attendanceColumnsPromise) return attendanceColumnsPromise;
+  attendanceColumnsPromise = (async () => {
 
-  await client.query(`
-    ALTER TABLE professional_attendance
-      ADD COLUMN IF NOT EXISTS punch_in_latitude DOUBLE PRECISION,
-      ADD COLUMN IF NOT EXISTS punch_in_longitude DOUBLE PRECISION,
-      ADD COLUMN IF NOT EXISTS punch_out_latitude DOUBLE PRECISION,
-      ADD COLUMN IF NOT EXISTS punch_out_longitude DOUBLE PRECISION,
-      ADD COLUMN IF NOT EXISTS punch_in_photo_url VARCHAR(1024),
-      ADD COLUMN IF NOT EXISTS punch_out_photo_url VARCHAR(1024),
-      ADD COLUMN IF NOT EXISTS auto_punched_out BOOLEAN DEFAULT false,
-      ADD COLUMN IF NOT EXISTS out_address TEXT
-  `);
+    await client.query(`
+      ALTER TABLE professional_attendance
+        ADD COLUMN IF NOT EXISTS punch_in_latitude DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS punch_in_longitude DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS punch_out_latitude DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS punch_out_longitude DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS punch_in_photo_url VARCHAR(1024),
+        ADD COLUMN IF NOT EXISTS punch_out_photo_url VARCHAR(1024),
+        ADD COLUMN IF NOT EXISTS auto_punched_out BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS out_address TEXT
+    `);
 
-  attendanceColumnsEnsured = true;
+  })().catch(error => { attendanceColumnsPromise = null; throw error; });
+  return attendanceColumnsPromise;
 };
 
 const parseNumericCoordinate = (value) => {
@@ -420,11 +423,33 @@ const punchIn = async (req, res) => {
 
   const today = getTodayIST();
 
-  const client = await pool.connect();
+  let client;
   try {
+    // Finish one-time DDL before holding a punch connection/transaction.
+    await ensurePunchCutoffSchema();
+    await ensureProfessionalAttendanceColumns(pool);
+    // Past pending leaves cannot affect today's approved-leave check. Lists and
+    // the expiry cron still catch up overdue requests.
+    await ensureProfessionalLeaveSchema({ expirePending: false });
+    client = await pool.connect();
     await client.query('BEGIN');
-    await ensureProfessionalAttendanceColumns(client);
-    await ensureProfessionalLeaveSchema();
+
+    // Capture the server arrival time before biometric processing. Serialize all
+    // attempts for this employee, including the first attempt of the day.
+    const profileResult = await client.query('SELECT id,selfie_url,is_active FROM professional_employees WHERE id=$1 FOR UPDATE', [professional_id]);
+    if (!profileResult.rows.length || !profileResult.rows[0].is_active) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Profile not found or deactivated.' });
+    }
+    const cutoffResult = await client.query(`SELECT t.cutoff_time,
+      transaction_timestamp() AS attempted_at,
+      s.enabled AND (transaction_timestamp() AT TIME ZONE 'Asia/Kolkata') >
+        ((transaction_timestamp() AT TIME ZONE 'Asia/Kolkata')::date + t.cutoff_time + INTERVAL '15 minutes') AS is_late
+      FROM professional_employees p LEFT JOIN professional_punch_cutoffs t ON t.professional_id=p.id
+      CROSS JOIN professional_punch_settings s WHERE p.id=$1 AND s.id=1 FOR SHARE OF s`, [professional_id]);
+    const cutoff = cutoffResult.rows[0] || {};
+    const requesterCaps = cutoff.is_late ? await capabilities(client,professional_id) : null;
+    const approvalStatus = cutoff.is_late ? (requesterCaps.ho?'pending_hod':'pending_pm') : 'accepted';
 
     const leaveCheck = await client.query(
       `SELECT leave_type
@@ -498,15 +523,7 @@ const punchIn = async (req, res) => {
       });
     }
 
-    // 4. Get the reference selfie from professional profile
-    const profileQuery = `SELECT selfie_url FROM professional_employees WHERE id = $1 AND is_active = true`;
-    const profileResult = await client.query(profileQuery, [professional_id]);
-
-    if (profileResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ success: false, message: 'Profile not found or deactivated.' });
-    }
-
+    // Reuse the active profile already locked above.
     const { selfie_url: sourceS3Key } = profileResult.rows[0];
 
     // 5. Perform Face Verification
@@ -560,9 +577,11 @@ const punchIn = async (req, res) => {
     const insertQuery = `
       INSERT INTO professional_attendance (
         professional_id, date, punch_in, ward_id, zone_id, city_id,
-        punch_in_latitude, punch_in_longitude, punch_in_photo_url
+        punch_in_latitude, punch_in_longitude, punch_in_photo_url,
+        attempted_punch_in, punch_approval_status, punch_cutoff
       )
-      VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8)
+      VALUES ($1, $2, CASE WHEN $10='accepted' THEN $9::timestamptz ELSE NULL END, $3, $4, $5, $6, $7, $8,
+        CASE WHEN $10='accepted' THEN NULL ELSE $9::timestamptz END, $10, $11)
       RETURNING punch_in
     `;
 
@@ -574,8 +593,13 @@ const punchIn = async (req, res) => {
       city_id,
       parseNumericCoordinate(latitude),
       parseNumericCoordinate(longitude),
-      punchInPhotoKey
+      punchInPhotoKey,
+      cutoff.attempted_at,
+      approvalStatus,
+      cutoff.cutoff_time || null
     ]);
+
+    if (['pending_pm','pending_hod'].includes(approvalStatus)) await notifyStage(client, professional_id, today, approvalStatus);
 
     await client.query('COMMIT');
 
@@ -587,24 +611,26 @@ const punchIn = async (req, res) => {
       consentGiven: true,
       ipAddress: req.ip,
       deviceInfo: req.headers['user-agent'] || 'Professional Mobile App'
-    }).catch(err => logger.warn('[ProfessionalAttendance] Consent log warning:', err.message));
+    }, client).catch(err => logger.warn('[ProfessionalAttendance] Consent log warning:', err.message));
 
     logger.info(`[Attendance] Professional ${professional_id} punched in successfully.`);
     trackSuccessfulAttendanceEvent({
       cityId: city_id,
       source: 'professional_punch_in',
       metricDate: today,
-      attendanceCount: 1,
+      attendanceCount: approvalStatus === 'accepted' ? 1 : 0,
     });
 
-    res.json({ success: true, punch_in_time: rows[0].punch_in });
+    res.json({ success: true, punch_in_time: rows[0].punch_in, attempted_punch_in: cutoff.is_late ? cutoff.attempted_at : null,
+      status: cutoff.is_late ? 'in-consideration' : 'present',
+      message: approvalStatus==='pending_hod' ? 'Late punch-in is in consideration. Awaiting Head of Department approval.' : cutoff.is_late ? 'Late punch-in is in consideration. Awaiting Project Manager, then HO Coordinator approval.' : 'Punch-in marked.' });
 
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (client) await client.query('ROLLBACK');
     logger.error(`[Attendance] Punch-in failed for ${professional_id}`, error);
     res.status(500).json({ success: false, message: 'Internal server error.' });
   } finally {
-    client.release();
+    if (client) client.release();
   }
 };
 
@@ -624,7 +650,7 @@ const punchOut = async (req, res) => {
 
   try {
     await ensureProfessionalAttendanceColumns(pool);
-    await ensureProfessionalLeaveSchema();
+    await ensureProfessionalLeaveSchema({ expirePending: false });
 
     const leaveCheck = await pool.query(
       `SELECT leave_type
@@ -640,6 +666,11 @@ const punchOut = async (req, res) => {
         success: false,
         message: `You are on approved ${leaveCheck.rows[0].leave_type} leave for today.`,
       });
+    }
+
+    const openPunch = await pool.query('SELECT punch_in FROM professional_attendance WHERE professional_id=$1 AND date=$2 AND punch_out IS NULL', [professional_id,today]);
+    if (!openPunch.rows.length || !openPunch.rows[0].punch_in) {
+      return res.status(409).json({success:false,message:'An accepted punch-in is required before punch-out.'});
     }
 
     // 1. Professional geo-fence validation runs before any face/AWS work.
@@ -742,7 +773,7 @@ const punchOut = async (req, res) => {
         punch_out_latitude = $3,
         punch_out_longitude = $4,
         punch_out_photo_url = COALESCE($5, punch_out_photo_url)
-      WHERE professional_id = $1 AND date = $2 AND punch_out IS NULL
+      WHERE professional_id = $1 AND date = $2 AND punch_out IS NULL AND punch_in IS NOT NULL
       RETURNING punch_out, EXTRACT(EPOCH FROM (NOW() - punch_in)) / 3600 AS hours_worked
     `;
 
@@ -802,12 +833,13 @@ const getMonthlyAttendance = async (req, res) => {
   const [yyyy, mm] = month.split('-');
 
   try {
+    await ensurePunchCutoffSchema();
     await ensureProfessionalLeaveSchema();
     const query = `
       SELECT 
-        date::text AS date,
+        date::text AS date, professional_id,
         punch_in, 
-        punch_out,
+        punch_out, attempted_punch_in, punch_approval_status,
         CASE WHEN punch_out IS NULL AND date < CURRENT_DATE THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(punch_out, NOW()) - punch_in)) / 3600 END AS hours_worked
       FROM professional_attendance
       WHERE professional_id IN (
@@ -822,6 +854,9 @@ const getMonthlyAttendance = async (req, res) => {
     `;
 
     const { rows } = await pool.query(query, [professional_id, yyyy, mm]);
+    const monthStart=`${yyyy}-${mm}-01`;
+    const monthEnd=`${yyyy}-${mm}-${String(new Date(Number(yyyy),Number(mm),0).getDate()).padStart(2,'0')}`;
+    const reviews=await loadPunchApprovals(pool,[...new Set(rows.map(r=>r.professional_id))],monthStart,monthEnd);
     const leaveResult = await pool.query(
       `SELECT
          id,
@@ -931,13 +966,26 @@ const getMonthlyAttendance = async (req, res) => {
           displayHours = '-'; // Don't show live working time if punch-out not done
         }
         // If neither punch_in nor punch_out, status stays 'absent'
-        if (!record.punch_in && isWeeklyOff) status = 'weekly-off';
+        if (!record.punch_in) {
+          const leaveStatus = leaveByDate[dStr]?.status;
+          if (leaveStatus === 'approved') status = 'leave-approved';
+          if (leaveStatus === 'pending') status = 'leave-pending';
+          if (leaveStatus === 'rejected') status = 'leave-rejected';
+          if (holidayByDate[dStr]) status = 'holiday';
+          if (isWeeklyOff && !holidayByDate[dStr]) status = 'weekly-off';
+        }
+        if (record.punch_approval_status === 'rejected') status = 'punch-not-accepted';
+        if (['pending_pm','pending_ho','pending_hod'].includes(record.punch_approval_status)) status = 'in-consideration';
 
 
         records.push({
           date: dStr,
           punch_in: record.punch_in,
           punch_out: record.punch_out,
+          attempted_punch_in: record.attempted_punch_in,
+          is_late_punch: Boolean(record.attempted_punch_in),
+          punch_approval_status: record.punch_approval_status,
+          approval_progress: approvalProgress(record,reviews.get(record.professional_id+dStr)),
           hours_worked: displayHours,
           status,
           is_weekly_off: isWeeklyOff,
@@ -947,6 +995,11 @@ const getMonthlyAttendance = async (req, res) => {
 
         if (status === 'present') totalPresent++;
         else if (status === 'half-day') totalHalfDay++;
+        if (status === 'absent' && !isFuture) totalAbsent++;
+        if (status === 'leave-approved') totalLeaveApproved++;
+        if (status === 'leave-pending') totalLeavePending++;
+        if (status === 'leave-rejected') totalLeaveRejected++;
+        if (status === 'holiday') totalHoliday++;
         if (!isWeeklyOff) totalWorkingDays++;
 
       } else if (!isFuture || leaveByDate[dStr] || holidayByDate[dStr] || isWeeklyOff) {
@@ -956,8 +1009,8 @@ const getMonthlyAttendance = async (req, res) => {
         if (leave?.status === 'approved') status = 'leave-approved';
         if (leave?.status === 'pending') status = 'leave-pending';
         if (leave?.status === 'rejected') status = 'leave-rejected';
-        if (!leave && holiday) status = 'holiday';
-        if (isWeeklyOff) status = 'weekly-off';
+        if (holiday) status = 'holiday';
+        if (isWeeklyOff && !holiday) status = 'weekly-off';
 
         records.push({
           date: dStr,
@@ -980,13 +1033,14 @@ const getMonthlyAttendance = async (req, res) => {
 
     // A worked weekly off is paid once; leave/holiday overlap also counts once.
     const totalPayableDays = records.filter(r => r.date <= getTodayIST() &&
-      (r.is_weekly_off || ['present','half-day','leave-approved','holiday'].includes(r.status))).length;
+      (r.is_weekly_off || r.holiday || ['present','half-day','leave-approved','holiday'].includes(r.status))).length;
 
     res.json({
       success: true,
       data: records.reverse(), // Newest first
       summary: {
         total_present: totalPresent,
+        total_late_punch_in: records.filter(r=>r.is_late_punch).length,
         total_half_day: totalHalfDay,
         total_absent: totalAbsent,
         total_leave_approved: totalLeaveApproved,
@@ -1015,13 +1069,22 @@ const getTodayStatus = async (req, res) => {
   const today = getTodayIST();
 
   try {
+    await ensurePunchCutoffSchema();
     await ensureProfessionalAttendanceColumns(pool);
+    await ensureProfessionalLeaveSchema();
+    const holiday = (await pool.query(`SELECT h.id,h.holiday_name,h.description,h.holiday_date::text AS holiday_date
+      FROM professional_holidays h JOIN professional_employees p ON p.id=$1
+      WHERE h.holiday_date=$2::date AND h.city_id=p.city_id AND (h.zone_id IS NULL OR h.zone_id=p.zone_id)
+        AND (h.ward_id IS NULL OR h.ward_id=p.ward_id) AND (h.kothi_id IS NULL OR h.kothi_id=p.kothi_id)
+      ORDER BY (h.kothi_id IS NOT NULL) DESC,h.created_at DESC,h.id LIMIT 1`,[professional_id,today])).rows[0] || null;
 
+    const featureSettings=await getPunchSettings();
     const weekly = await pool.query('SELECT professional_is_week_off($1,$2::date) AS is_weekly_off',[professional_id,today]);
     const isWeeklyOff = weekly.rows[0]?.is_weekly_off === true;
+    const assigned = await pool.query('SELECT cutoff_time::text FROM professional_punch_cutoffs WHERE professional_id=$1',[professional_id]);
 
     const attendanceResult = await pool.query(
-      `SELECT date, punch_in, punch_out
+      `SELECT date::text AS date, punch_in, punch_out, attempted_punch_in, punch_approval_status, punch_cutoff
        FROM professional_attendance
        WHERE professional_id = $1 AND date = $2
        ORDER BY id DESC
@@ -1031,9 +1094,12 @@ const getTodayStatus = async (req, res) => {
 
     if (attendanceResult.rows.length > 0) {
       const row = attendanceResult.rows[0];
+      const reviews=await loadPunchApprovals(pool,[professional_id],today);
       const hasPunchIn = Boolean(row.punch_in);
       const hasPunchOut = Boolean(row.punch_out);
-      const status = hasPunchIn ? (hasPunchOut ? 'done' : 'present') : (isWeeklyOff ? 'weekly-off' : 'absent');
+      const status = row.punch_approval_status === 'rejected' ? 'punch-not-accepted' :
+        ['pending_pm','pending_ho','pending_hod'].includes(row.punch_approval_status) ? 'in-consideration' :
+        hasPunchIn ? (hasPunchOut ? 'done' : 'present') : (holiday ? 'holiday' : isWeeklyOff ? 'weekly-off' : 'absent');
 
       return res.json({
         success: true,
@@ -1041,8 +1107,16 @@ const getTodayStatus = async (req, res) => {
           date: row.date,
           punch_in: row.punch_in,
           punch_out: row.punch_out,
+          attempted_punch_in: row.attempted_punch_in,
+          is_late_punch: Boolean(row.attempted_punch_in),
+          punch_approval_status: row.punch_approval_status,
+          punch_cutoff: row.punch_cutoff,
+          cutoff_enforcement_enabled: featureSettings.enabled,
+          approval_progress: approvalProgress(row,reviews.get(professional_id+today)),
           status,
           is_weekly_off: isWeeklyOff,
+          holiday,
+          is_holiday: !!holiday,
         },
       });
     }
@@ -1053,8 +1127,12 @@ const getTodayStatus = async (req, res) => {
         date: today,
         punch_in: null,
         punch_out: null,
-        status: isWeeklyOff ? 'weekly-off' : 'absent',
+        punch_cutoff: assigned.rows[0]?.cutoff_time || null,
+        cutoff_enforcement_enabled: featureSettings.enabled,
+        status: holiday ? 'holiday' : isWeeklyOff ? 'weekly-off' : 'absent',
         is_weekly_off: isWeeklyOff,
+        holiday,
+        is_holiday: !!holiday,
       },
     });
   } catch (error) {

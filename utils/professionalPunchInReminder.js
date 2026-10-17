@@ -1,6 +1,7 @@
 const pool = require("../config/db");
 const { ensureProfessionalLeaveSchema } = require("./professionalLeaveSchema");
 const { sendPushToProfessionals } = require("./professionalPushService");
+const { ensurePunchCutoffSchema } = require("./professionalPunchCutoff");
 const REMINDER_JOB_LOCK_ID = 913421;
 const configuredBatchSize = Number(process.env.PROFESSIONAL_REMINDER_BATCH_SIZE || 500);
 const DEFAULT_BATCH_SIZE = Number.isFinite(configuredBatchSize)
@@ -81,19 +82,24 @@ const REMINDER_MESSAGES = [
   },
 ];
 
-const FIXED_REMINDER_TIME = "10:00";
-const REMINDER_CATCH_UP_UNTIL = "10:15";
+const DEFAULT_REMINDER_TIME = "10:00";
+// Recovery window for a brief cron/server interruption; reminders are due at
+// the assigned time itself. This is independent of late-punch grace.
+const REMINDER_CATCH_UP_MINUTES = 15;
 
 const runProfessionalPunchInReminder = async (options = {}) => {
   const { verbose = false } = options;
+  await ensurePunchCutoffSchema();
+  await ensureProfessionalLeaveSchema({ expirePending: false });
   const client = await pool.connect();
+  let locked = false;
   try {
-    await ensureProfessionalLeaveSchema();
     const lockResult = await client.query(
       "SELECT pg_try_advisory_lock($1) AS locked",
       [REMINDER_JOB_LOCK_ID]
     );
-    if (!lockResult.rows[0]?.locked) {
+    locked = lockResult.rows[0]?.locked === true;
+    if (!locked) {
       if (verbose) {
         console.log("[ProfessionalReminderCron] DB lock not acquired, skipping this run.");
       }
@@ -107,63 +113,52 @@ const runProfessionalPunchInReminder = async (options = {}) => {
       };
     }
 
-    // Pick one message randomly daily
-    const selectedReminder = REMINDER_MESSAGES[Math.floor(Math.random() * REMINDER_MESSAGES.length)];
-
-    const params = [selectedReminder.title, selectedReminder.message];
-
+    const params = [JSON.stringify(REMINDER_MESSAGES), DEFAULT_REMINDER_TIME, DEFAULT_BATCH_SIZE, REMINDER_CATCH_UP_MINUTES];
     const baseInsertQuery = `
-      WITH ist_today AS (
-        SELECT (NOW() AT TIME ZONE 'Asia/Kolkata')::date AS day
+      WITH ist_now AS (
+        SELECT NOW() AT TIME ZONE 'Asia/Kolkata' AS local_now
       ),
-      candidate_professionals AS (
-        SELECT pe.id
+      candidate_professionals AS MATERIALIZED (
+        SELECT pe.id, ist_now.local_now::date AS reminder_date,
+          COALESCE(t.cutoff_time,$2::time) AS reminder_time,
+          floor(random()*jsonb_array_length($1::jsonb))::int AS message_index
         FROM professional_employees pe
-        CROSS JOIN ist_today
-        WHERE pe.is_active = true
+        LEFT JOIN professional_punch_cutoffs t ON t.professional_id=pe.id
+        CROSS JOIN ist_now
+        WHERE pe.is_active = true AND pe.reminder_enabled IS DISTINCT FROM FALSE
+          AND ist_now.local_now >= ist_now.local_now::date + COALESCE(t.cutoff_time,$2::time)
+          AND ist_now.local_now < ist_now.local_now::date + COALESCE(t.cutoff_time,$2::time)
+            + ($4::int + 1) * INTERVAL '1 minute'
+          AND NOT professional_is_week_off(pe.id,ist_now.local_now::date)
           AND NOT EXISTS (
-            SELECT 1
-            FROM professional_attendance pa
-            WHERE pa.professional_id = pe.id
-              AND pa.date = ist_today.day
+            SELECT 1 FROM professional_holidays h
+            WHERE h.holiday_date=ist_now.local_now::date AND h.city_id=pe.city_id
+              AND (h.zone_id IS NULL OR h.zone_id=pe.zone_id)
+              AND (h.ward_id IS NULL OR h.ward_id=pe.ward_id)
+              AND (h.kothi_id IS NULL OR h.kothi_id=pe.kothi_id)
           )
           AND NOT EXISTS (
-            SELECT 1
-            FROM professional_leave_requests plr
-            WHERE plr.professional_id = pe.id
-              AND plr.requested_date = ist_today.day
-              AND plr.status = 'approved'
+            SELECT 1 FROM professional_attendance pa
+            WHERE pa.professional_id=pe.id AND pa.date=ist_now.local_now::date
           )
           AND NOT EXISTS (
-            SELECT 1
-            FROM professional_notifications pn
-            WHERE pn.professional_id = pe.id
-              AND pn.type = 'punch-in-reminder'
-              AND COALESCE(pn.metadata ->> 'reminder_date', '') = ist_today.day::text
+            SELECT 1 FROM professional_leave_requests plr
+            WHERE plr.professional_id=pe.id AND plr.requested_date=ist_now.local_now::date AND plr.status='approved'
           )
-        ORDER BY pe.id
-        LIMIT $3
+          AND NOT EXISTS (
+            SELECT 1 FROM professional_notifications pn
+            WHERE pn.professional_id=pe.id AND pn.type='punch-in-reminder'
+              AND COALESCE(pn.metadata->>'reminder_date','')=ist_now.local_now::date::text
+          )
+        ORDER BY pe.id LIMIT $3
       )
-      INSERT INTO professional_notifications (
-        professional_id,
-        type,
-        title,
-        message,
-        metadata
-      )
-      SELECT
-        cp.id,
-        'punch-in-reminder',
-        $1,
-        $2,
-        jsonb_build_object(
-          'reminder_date', ist_today.day::text,
-          'category', 'attendance',
-          'kind', 'missing-punch-in'
-        )
+      INSERT INTO professional_notifications (professional_id,type,title,message,metadata)
+      SELECT cp.id,'punch-in-reminder',
+        ($1::jsonb->cp.message_index)->>'title',($1::jsonb->cp.message_index)->>'message',
+        jsonb_build_object('reminder_date',cp.reminder_date::text,'reminder_time',to_char(cp.reminder_time,'HH24:MI'),
+          'category','attendance','kind','missing-punch-in')
       FROM candidate_professionals cp
-      CROSS JOIN ist_today
-      RETURNING id, professional_id, type, title, message, metadata
+      RETURNING id,professional_id,type,title,message,metadata
     `;
 
     let sentCount = 0;
@@ -174,7 +169,7 @@ const runProfessionalPunchInReminder = async (options = {}) => {
     let batchCount = 0;
 
     while (true) {
-      const result = await client.query(baseInsertQuery, [...params, DEFAULT_BATCH_SIZE]);
+      const result = await client.query(baseInsertQuery, params);
       const currentBatchCount = result.rowCount || 0;
       if (currentBatchCount === 0) break;
 
@@ -202,14 +197,15 @@ const runProfessionalPunchInReminder = async (options = {}) => {
           const { sendSms } = require("./smsNotifier");
           const targetProfIds = result.rows.map((r) => r.professional_id);
           const phoneRes = await client.query(
-            `SELECT mobile_number FROM professional_employees WHERE id = ANY($1::uuid[]) AND mobile_number IS NOT NULL`,
+            `SELECT id,COALESCE(NULLIF(to_jsonb(pe)->>'mobile',''),to_jsonb(pe)->>'mobile_number') AS mobile_number FROM professional_employees pe WHERE id=ANY($1::uuid[])`,
             [targetProfIds]
           );
           for (const row of phoneRes.rows) {
             if (row.mobile_number) {
+              const notification=result.rows.find(item=>item.professional_id===row.id);
               sendSms({
                 phone: row.mobile_number,
-                message: `${selectedReminder.title}\n${selectedReminder.message}`,
+                message: `${notification.title}\n${notification.message}`,
                 context: "general",
               }).catch((snsErr) =>
                 console.warn("[ProfessionalReminderCron] AWS SNS SMS failed:", snsErr.message)
@@ -244,14 +240,14 @@ const runProfessionalPunchInReminder = async (options = {}) => {
     throw error;
   } finally {
     try {
-      await client.query("SELECT pg_advisory_unlock($1)", [REMINDER_JOB_LOCK_ID]);
+      if (locked) await client.query("SELECT pg_advisory_unlock($1)", [REMINDER_JOB_LOCK_ID]);
     } catch (_) {}
     client.release();
   }
 };
 
 module.exports = {
-  FIXED_REMINDER_TIME,
-  REMINDER_CATCH_UP_UNTIL,
+  DEFAULT_REMINDER_TIME,
+  REMINDER_CATCH_UP_MINUTES,
   runProfessionalPunchInReminder,
 };

@@ -52,11 +52,11 @@ async function main() {
     const log = (await client.query("SELECT old_days,week_off_days,source,actor_professional_id FROM professional_week_off_versions ORDER BY id DESC LIMIT 1")).rows[0];
     assert.deepEqual(log.old_days,[1]); assert.deepEqual(log.week_off_days,[2]); assert.equal(log.source,'coordinator');
     await client.query(`INSERT INTO professional_designation_assignments(professional_id,designation_id)
-      SELECT '00000000-0000-4000-8000-000000000002',designation_id FROM designation WHERE designation_name IN ('HO Coordinator','Country Head')`);
+      SELECT '00000000-0000-4000-8000-000000000002',designation_id FROM designation WHERE designation_name IN ('HO Coordinator','Head of Department')`);
     assert.equal((await client.query('SELECT COUNT(*)::int AS n FROM professional_designation_assignments')).rows[0].n,2);
     await require('../tests/professionalWeeklyOffRoutes.integration')(client);
     await require('../tests/professionalWeeklyOffReports.integration')(client);
     console.log('PASS: migration idempotence, multiple designations, dated history, coordinator audit and overlap-safe paid days.');
   } finally { await client.query('ROLLBACK'); client.release(); await pool.end(); }
 }
-main().catch(e=>{ console.error('Weekly-off verification failed:',e.message); process.exitCode=1; pool.end().catch(()=>{}); });
+main().catch(e=>{ console.error('Weekly-off verification failed:',e.stack || e.message); process.exitCode=1; pool.end().catch(()=>{}); });

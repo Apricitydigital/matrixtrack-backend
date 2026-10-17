@@ -85,7 +85,7 @@ const setLeaveAllocations = async (req, res) => {
 
     // Verify employee exists
     const empCheck = await client.query(
-      'SELECT id, full_name FROM professional_employees WHERE id = $1 AND is_active = true',
+      'SELECT id, full_name FROM professional_employees WHERE id = $1 AND is_active = true FOR UPDATE',
       [id]
     );
     if (empCheck.rows.length === 0) {

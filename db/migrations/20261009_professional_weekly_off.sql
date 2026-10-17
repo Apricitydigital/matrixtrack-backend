@@ -8,7 +8,7 @@ BEGIN
     INSERT INTO department(department_name) VALUES ('Professional') RETURNING department_id INTO dep;
   END IF;
   INSERT INTO designation(designation_name, department_id)
-  SELECT label, dep FROM UNNEST(ARRAY['Project Head / Site Head','HO Coordinator','Country Head']) label
+  SELECT label, dep FROM UNNEST(ARRAY['Project Head / Site Head','HO Coordinator','Head of Department']) label
   WHERE NOT EXISTS (SELECT 1 FROM designation d WHERE d.department_id = dep AND LOWER(TRIM(d.designation_name)) = LOWER(label));
 END $$;
 

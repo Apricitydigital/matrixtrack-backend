@@ -108,6 +108,13 @@ const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
 const isPrimaryCronInstance =
   !process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === "0";
 
+if (isPrimaryCronInstance) {
+  cron.schedule('* * * * *', async () => {
+    try { await require('./utils/professionalLeaveSchema').ensureProfessionalLeaveSchema(); }
+    catch (error) { console.error('[LeaveExpiry Cron]', error.message); }
+  }, { timezone: 'Asia/Kolkata' });
+}
+
 // Nightly auto-heal for face embeddings (defaults ON; set AUTO_HEAL_CRON_ENABLED=false to disable)
 const AUTO_HEAL_CRON_ENABLED = process.env.AUTO_HEAL_CRON_ENABLED !== "false";
 if (AUTO_HEAL_CRON_ENABLED && isPrimaryCronInstance) {
@@ -398,12 +405,12 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
 
 // =============================================
 // ⏰ PROFESSIONAL PUNCH-IN REMINDER CRON
-// Runs every minute in a short 10:00 AM IST window so a brief restart cannot miss the reminder.
+// Runs every minute; each professional is due at their assigned punch-in time (IST).
 // Duplicate guard inside the query ensures a professional gets only one reminder per day.
 // =============================================
 const {
-  FIXED_REMINDER_TIME,
-  REMINDER_CATCH_UP_UNTIL,
+  DEFAULT_REMINDER_TIME,
+  REMINDER_CATCH_UP_MINUTES,
   runProfessionalPunchInReminder,
 } = require("./utils/professionalPunchInReminder");
 const PROFESSIONAL_REMINDER_CRON_ENABLED =
@@ -423,21 +430,9 @@ if (PROFESSIONAL_REMINDER_CRON_ENABLED && isPrimaryCronInstance) {
         return;
       }
 
-      const nowIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-      const hh = String(nowIST.getHours()).padStart(2, "0");
-      const mm = String(nowIST.getMinutes()).padStart(2, "0");
-      const currentTimeSlot = `${hh}:${mm}`;
-
-      // Run at 10:00 AM IST or on the first available minute after 10:00.
-      // The DB duplicate guard keeps this to one reminder per professional/day.
-      if (
-        currentTimeSlot < FIXED_REMINDER_TIME ||
-        currentTimeSlot > REMINDER_CATCH_UP_UNTIL
-      ) return;
-
       professionalReminderCronRunning = true;
       if (PROFESSIONAL_REMINDER_CRON_VERBOSE) {
-        console.log(`[ProfessionalReminderCron] Checking punch-in reminders for time slot: ${currentTimeSlot} IST`);
+        console.log(`[ProfessionalReminderCron] Checking punch-in reminders for assigned times (IST)`);
       }
       try {
         await runProfessionalPunchInReminder({
@@ -452,8 +447,8 @@ if (PROFESSIONAL_REMINDER_CRON_ENABLED && isPrimaryCronInstance) {
     { timezone: "Asia/Kolkata" }
   );
   console.log(
-    `[ProfessionalReminderCron] Registered - fixed ${FIXED_REMINDER_TIME} IST schedule ` +
-    `(catch-up through ${REMINDER_CATCH_UP_UNTIL}).`
+    `[ProfessionalReminderCron] Registered - assigned punch-in times (IST), fallback ${DEFAULT_REMINDER_TIME}; ` +
+    `${REMINDER_CATCH_UP_MINUTES}-minute restart recovery window.`
   );
 } else {
   console.log(

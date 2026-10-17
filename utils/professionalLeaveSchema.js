@@ -2,7 +2,7 @@ const pool = require("../config/db");
 
 let schemaPromise = null;
 
-const ensureProfessionalLeaveSchema = async () => {
+const ensureProfessionalLeaveSchema = async ({ expirePending = true } = {}) => {
   if (!schemaPromise) {
     schemaPromise = (async () => {
       const client = await pool.connect();
@@ -16,15 +16,7 @@ const ensureProfessionalLeaveSchema = async () => {
             ADD COLUMN IF NOT EXISTS reminder_enabled BOOLEAN DEFAULT TRUE;
         `);
 
-        // Professional punch-in reminders are globally fixed at 10:00 AM IST.
-        await client.query(`
-          UPDATE professional_employees
-          SET reminder_time = '10:00',
-              reminder_enabled = TRUE
-          WHERE reminder_time IS DISTINCT FROM '10:00'
-             OR reminder_enabled IS DISTINCT FROM TRUE
-        `);
-
+        // Assigned cutoff times drive reminders. Preserve employee opt-out settings.
         await client.query(`
           CREATE INDEX IF NOT EXISTS idx_prof_emp_active_reminder
           ON professional_employees (is_active, reminder_enabled, reminder_time)
@@ -161,6 +153,10 @@ const ensureProfessionalLeaveSchema = async () => {
           ON professional_holiday_logs (holiday_date DESC, created_at DESC)
         `);
 
+        await client.query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/20261015_professional_leave_workflow.sql'), 'utf8'));
+        await client.query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/20261016_professional_leave_expiry.sql'), 'utf8'));
+        await client.query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/20261016_professional_holiday_permissions.sql'), 'utf8'));
+        await client.query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/20261016_professional_hod_leave_approval.sql'), 'utf8'));
         await client.query("COMMIT");
       } catch (error) {
         await client.query("ROLLBACK");
@@ -174,7 +170,9 @@ const ensureProfessionalLeaveSchema = async () => {
     });
   }
 
-  return schemaPromise;
+  await schemaPromise;
+  // Catch up before lists, balances and reports are read, even after downtime.
+  if (expirePending) await pool.query('SELECT professional_expire_pending_leaves()');
 };
 
 module.exports = {

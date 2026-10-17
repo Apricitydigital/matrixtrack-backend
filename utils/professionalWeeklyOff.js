@@ -1,5 +1,5 @@
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const DESIGNATIONS = ['Project Head / Site Head', 'HO Coordinator', 'Country Head'];
+const DESIGNATIONS = ['Project Head / Site Head', 'HO Coordinator', 'Head of Department'];
 const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 function parseDay(value) {
   const text = String(value ?? '').trim().toLowerCase();

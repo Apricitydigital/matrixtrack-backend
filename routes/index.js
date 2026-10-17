@@ -61,11 +61,16 @@ router.use("/attendance", attendanceRoutes);
 router.use("/supervisor", supervisorRoutes);
 router.use("/supervisor/self-punch", supervisorSelfPunchRoutes);
 router.use("/professional/weekly-off", require('./professionalWeeklyOffRoutes').app);
+router.use('/professional/punch-cutoff', require('./professionalPunchCutoffRoutes'));
+router.use('/professional/team-attendance', require('./professionalTeamAttendanceRoutes'));
+router.use('/admin/professional-punch-settings', require('./professionalPunchSettingsRoutes'));
+router.use('/admin/professional-punch-times', require('./professionalPunchBulkRoutes'));
 router.use("/admin/professional-weekly-off", require('./professionalWeeklyOffRoutes').admin);
 router.use("/professional", professionalRoutes);
 
 // Mount reports before the main adminRoutes to bypass strict requireAdmin middleware
 // allowing both admins and supervisors to access these specific reporting endpoints.
+router.use('/admin/professional-holidays',require('./professionalHolidayRoutes'));
 router.use("/admin", professionalReportsRoutes);
 router.use("/admin", professionalGeofencingAdminRoutes);
 

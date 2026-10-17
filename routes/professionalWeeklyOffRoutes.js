@@ -64,11 +64,11 @@ app.use(async (req,res,next) => { try {
   const {rows} = await pool.query(`SELECT d.designation_name FROM professional_designation_assignments a JOIN designation d ON d.designation_id=a.designation_id WHERE a.professional_id=$1`,[req.professional.professional_id]);
   req.weeklyRoles = rows.map(r=>r.designation_name);
   req.weeklyCanWrite = req.weeklyRoles.includes('HO Coordinator');
-  req.weeklyCountry = req.weeklyRoles.includes('Country Head');
+  req.weeklyHod = req.weeklyRoles.includes('Head of Department');
   next();
 } catch(e) { next(e); } });
-app.get('/capabilities', (req,res) => res.json({success:true,designations:req.weeklyRoles,can_manage:req.weeklyCanWrite,can_view:req.weeklyCanWrite || req.weeklyCountry}));
-app.use((req,res,next) => req.weeklyCanWrite || req.weeklyCountry ? next() : res.status(403).json({success:false,message:'HO Coordinator or Country Head designation required.'}));
+app.get('/capabilities', (req,res) => res.json({success:true,designations:req.weeklyRoles,can_manage:req.weeklyCanWrite,can_view:req.weeklyCanWrite || req.weeklyHod}));
+app.use((req,res,next) => req.weeklyCanWrite || req.weeklyHod ? next() : res.status(403).json({success:false,message:'HO Coordinator or Head of Department designation required.'}));
 const requireWriter = (req,res,next) => req.weeklyCanWrite ? next() : res.status(403).json({success:false,message:'HO Coordinator designation required to change weekly offs.'});
 async function employees(req, client=pool, lock=false) {
   const site = req.query.site_id;

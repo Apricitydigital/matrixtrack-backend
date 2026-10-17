@@ -5,6 +5,8 @@ const { getSignedS3Url } = require('../utils/s3SelfPunch');
 const { buildProfessionalRequestFilters } = require('../utils/professionalRequestFilters');
 
 const editable = ['full_name', 'mobile', 'email', 'emp_code', 'aadhar_number', 'city_id', 'zone_id', 'ward_id', 'kothi_id'];
+const identifierLabels = { mobile: 'Mobile', email: 'Email', emp_code: 'Employee code' };
+const describeProfessional = person => `${person.full_name || 'Unnamed employee'} (employee code: ${person.emp_code || 'not assigned'}; ID: ${person.id})`;
 const requireListAdmin = async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT email, role FROM users WHERE user_id = $1', [req.supervisorId]);
@@ -84,7 +86,7 @@ const updateApprovedList = async (req, res) => {
     for (let index = 0; index < input.length; index++) {
       const row = input[index];
       const rowNumber = Number.isInteger(row?.row_number) && row.row_number >= 2 ? row.row_number : index + 2;
-      const fail = (message) => { const error = new Error(`Row ${index + 2}: ${message}`); error.status = 400; throw error; };
+      const fail = (message, conflicts = []) => { const error = new Error(`Row ${rowNumber}: ${message}`); error.status = 400; error.conflicts = conflicts; throw error; };
       try {
       if (!row || typeof row.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(row.id) || seen.has(row.id.toLowerCase())) fail('Invalid or duplicate permanent employee ID.');
       seen.add(row.id.toLowerCase());
@@ -138,21 +140,30 @@ const updateApprovedList = async (req, res) => {
         const params = [row.id, ...identifiers.map(key => next[key])];
         const condition = identifiers.map((key, index) => key === 'email'
           ? `LOWER(email) = LOWER($${index + 2})` : `${key} = $${index + 2}`).join(' OR ');
-        const duplicates = await client.query(`SELECT id FROM professional_employees WHERE id <> $1
-          AND (${condition}) LIMIT 1`, params);
-        if (duplicates.rowCount) fail('Mobile, email or employee code belongs to another professional.');
+        const duplicates = await client.query(`SELECT id, full_name, mobile, email, emp_code FROM professional_employees WHERE id <> $1
+          AND (${condition}) ORDER BY full_name, id`, params);
+        const conflicts = [];
+        for (const person of duplicates.rows) for (const key of identifiers) {
+          const normalize = value => key === 'email' ? String(value || '').toLowerCase() : String(value || '');
+          if (normalize(person[key]) === normalize(next[key])) conflicts.push({ field: key, value: next[key], source: 'professional_employees',
+            employee_id: person.id, full_name: person.full_name, emp_code: person.emp_code });
+        }
+        if (conflicts.length) fail(conflicts.map(conflict => `${identifierLabels[conflict.field]} "${conflict.value}" belongs to another professional: ${describeProfessional({ ...conflict, id: conflict.employee_id })}.`).join(' '), conflicts);
       }
       const oldCode = old.emp_code || `EMP-${old.mobile ? old.mobile.slice(-6) : old.id.slice(0, 8)}`;
       const master = await client.query(`SELECT emp_id, designation_id FROM employee WHERE emp_code = $1 ${preview ? '' : 'FOR UPDATE'}`, [oldCode]);
       if (master.rowCount > 1) fail('Employee Master match is ambiguous.');
       if (changed.emp_code) {
-        const duplicate = await client.query('SELECT emp_id FROM employee WHERE emp_code = $1 AND emp_id <> $2', [next.emp_code, master.rows[0]?.emp_id || -1]);
-        if (duplicate.rowCount) fail('Employee code already exists in Employee Master.');
+        const duplicate = await client.query('SELECT emp_id, name, emp_code FROM employee WHERE emp_code = $1 AND emp_id <> $2 ORDER BY emp_id', [next.emp_code, master.rows[0]?.emp_id || -1]);
+        if (duplicate.rowCount) fail(duplicate.rows.map(person => `Employee code "${next.emp_code}" already exists in Employee Master: ${person.name || 'Unnamed employee'} (Master ID: ${person.emp_id}).`).join(' '),
+          duplicate.rows.map(person => ({ field: 'emp_code', value: next.emp_code, source: 'employee', employee_id: person.emp_id, full_name: person.name, emp_code: person.emp_code })));
       }
       plans.push({ row, next, changed, master, rowNumber });
       } catch (error) {
         if (!error.status) throw error;
-        errors.push({ row_number: rowNumber, id: row?.id || null, message: error.message.replace(/^Row \d+: /, '') });
+        errors.push({ row_number: rowNumber, id: row?.id || null, full_name: row?.full_name || employees.get(String(row?.id).toLowerCase())?.full_name || '',
+          emp_code: row?.emp_code || employees.get(String(row?.id).toLowerCase())?.emp_code || '',
+          message: error.message.replace(/^Row \d+: /, ''), conflicts: error.conflicts || [] });
       }
     }
     for (const key of ['mobile', 'email', 'emp_code']) {
@@ -164,13 +175,17 @@ const updateApprovedList = async (req, res) => {
       for (const group of values.values()) {
         if (group.length < 2) continue;
         for (const plan of group) {
-          const message = `${key} is repeated in changed rows of this upload.`;
+          const others = group.filter(other => other !== plan);
+          const message = `${identifierLabels[key]} "${plan.next[key]}" is repeated in this upload: also used in ${others.map(other => `Row ${other.rowNumber} (${other.next.full_name}; employee code: ${other.next.emp_code || 'not assigned'})`).join(', ')}.`;
+          const conflicts = others.map(other => ({ field: key, value: plan.next[key], source: 'upload', row_number: other.rowNumber,
+            employee_id: other.row.id, full_name: other.next.full_name, emp_code: other.next.emp_code }));
           const existingError = errors.find(error => error.row_number === plan.rowNumber);
-          if (existingError) existingError.message += ` ${message}`;
-          else errors.push({ row_number: plan.rowNumber, id: plan.row.id, message });
+          if (existingError) { existingError.message += ` ${message}`; existingError.conflicts.push(...conflicts); }
+          else errors.push({ row_number: plan.rowNumber, id: plan.row.id, full_name: plan.next.full_name, emp_code: plan.next.emp_code, message, conflicts });
         }
       }
     }
+    errors.sort((a,b) => a.row_number-b.row_number);
     const validPlans = plans.filter(plan => !errors.some(error => error.row_number === plan.rowNumber));
     if (!preview && errors.length) {
       await client.query('ROLLBACK');
