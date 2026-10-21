@@ -41,7 +41,7 @@ const reportDependencies={
 const reports=load('professionalReportsController.js',reportDependencies);
 const baseline=load('professionalReportsController.js',{
   ...reportDependencies,'../utils/professionalAttendanceIdentity':{
-    withAttendanceIdentity:sql=>sql,
+    withAttendanceIdentity:sql=>sql.replace(/\battendance_identity_profile_names\b/g,'professional_employees'),
     reviewedPaidDaySql:(person,date)=>`professional_is_paid_day(${person},${date})`,reviewedSearchSql:()=> 'FALSE',
   },
 });

@@ -267,9 +267,9 @@ const getAttendanceList = async (req, res) => {
         leave_row.status AS leave_status,
         leave_row.review_note AS leave_review_note,
         leave_row.reviewed_at AS leave_reviewed_at,
-        COALESCE((SELECT full_name FROM professional_employees WHERE id=leave_row.hod_reviewer_id),
-          (SELECT full_name FROM professional_employees WHERE id=leave_row.ho_reviewer_id),
-          (SELECT full_name FROM professional_employees WHERE id=leave_row.pm_reviewer_id),leave_reviewer.name) AS leave_reviewed_by_name,
+        COALESCE((SELECT full_name FROM attendance_identity_profile_names WHERE id=leave_row.hod_reviewer_id),
+          (SELECT full_name FROM attendance_identity_profile_names WHERE id=leave_row.ho_reviewer_id),
+          (SELECT full_name FROM attendance_identity_profile_names WHERE id=leave_row.pm_reviewer_id),leave_reviewer.name) AS leave_reviewed_by_name,
         pe.selfie_url as profile_selfie_url,
         COALESCE(
           sec_pe.sector_name,
@@ -887,9 +887,9 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       LEFT JOIN LATERAL (
         SELECT
           COUNT(*) FILTER (WHERE plr.status = 'approved') AS leave_days,
-          MAX(COALESCE((SELECT full_name FROM professional_employees WHERE id=plr.hod_reviewer_id),
-          (SELECT full_name FROM professional_employees WHERE id=plr.ho_reviewer_id),
-            (SELECT full_name FROM professional_employees WHERE id=plr.pm_reviewer_id),u.name)) AS latest_reviewer_name
+          MAX(COALESCE((SELECT full_name FROM attendance_identity_profile_names WHERE id=plr.hod_reviewer_id),
+          (SELECT full_name FROM attendance_identity_profile_names WHERE id=plr.ho_reviewer_id),
+            (SELECT full_name FROM attendance_identity_profile_names WHERE id=plr.pm_reviewer_id),u.name)) AS latest_reviewer_name
         FROM professional_leave_requests plr
         LEFT JOIN users u ON u.user_id = plr.reviewed_by
         WHERE plr.professional_id = pe.id
@@ -1095,9 +1095,9 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         plr.status AS leave_status,
         plr.review_note AS leave_review_note,
         plr.reviewed_at AS leave_reviewed_at,
-        COALESCE((SELECT full_name FROM professional_employees WHERE id=plr.hod_reviewer_id),
-          (SELECT full_name FROM professional_employees WHERE id=plr.ho_reviewer_id),
-          (SELECT full_name FROM professional_employees WHERE id=plr.pm_reviewer_id),leave_reviewer.name) AS leave_reviewed_by_name,
+        COALESCE((SELECT full_name FROM attendance_identity_profile_names WHERE id=plr.hod_reviewer_id),
+          (SELECT full_name FROM attendance_identity_profile_names WHERE id=plr.ho_reviewer_id),
+          (SELECT full_name FROM attendance_identity_profile_names WHERE id=plr.pm_reviewer_id),leave_reviewer.name) AS leave_reviewed_by_name,
         COALESCE(
           sec_pe.sector_name,
           sec_w_pe.sector_name,

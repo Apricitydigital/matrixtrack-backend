@@ -80,7 +80,7 @@ const projectColumns = (columns, alias, linked=false) => columns.map(column => l
 // UNION ALL leaves every unlinked row on the original, indexable relation.
 function withAttendanceIdentity(sql, params = []) {
   if (!/^\s*(SELECT|WITH)\b/i.test(sql)) throw new Error('Attendance identity projection is read-only');
-  if (!identities.length) return sql;
+  if (!identities.length) return sql.replace(/\battendance_identity_profile_names\b/g, 'professional_employees');
   let projected = sql.replace(/\b(professional_employees|professional_attendance|professional_leave_requests)\b/g, name => sources[name]);
   // Old employee-specific links resolve only while the live link is eligible.
   // Do not rewrite the actual parameter or lose its original visibility scope.
@@ -88,6 +88,9 @@ function withAttendanceIdentity(sql, params = []) {
     ? `(SELECT COALESCE((SELECT primary_id FROM attendance_identity_links WHERE source_id=${placeholder}::uuid),${placeholder}::uuid))`
     : placeholder);
   const ctes = `${linksSql},
+    attendance_identity_profile_names AS NOT MATERIALIZED (
+      SELECT id,full_name FROM professional_employees
+    ),
     attendance_identity_original_profiles AS NOT MATERIALIZED (
       SELECT p.* FROM professional_employees p JOIN attendance_identity_links m ON m.source_id=p.id
     ),

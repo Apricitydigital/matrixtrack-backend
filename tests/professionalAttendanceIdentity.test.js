@@ -29,6 +29,8 @@ test('rollback switch restores original report SQL and attendance account routin
   const {primaryId,profileIds}=groups[0];
   const sql='SELECT * FROM professional_attendance WHERE professional_id=$1';
   assert.equal(off.withAttendanceIdentity(sql,[primaryId]),sql);
+  assert.equal(off.withAttendanceIdentity('SELECT full_name FROM attendance_identity_profile_names WHERE id=$1',[primaryId]),
+    'SELECT full_name FROM professional_employees WHERE id=$1');
   assert.equal(off.reviewedPaidDaySql('pe.id','cd.date'),'professional_is_paid_day(pe.id,cd.date)');
   assert.equal(off.reviewedSearchSql('pe.id','$1'),'FALSE');
   assert.equal(off.reviewedHistorySql(primaryId),null);

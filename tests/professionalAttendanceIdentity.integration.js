@@ -35,7 +35,7 @@ module.exports = async function verifyAttendanceIdentity(client, reportDependenc
   const baselineReports=load('../controllers/professionalReportsController.js',{
     ...reportDependencies,
     '../utils/professionalAttendanceIdentity':{
-      withAttendanceIdentity:sql=>sql,
+      withAttendanceIdentity:sql=>sql.replace(/\battendance_identity_profile_names\b/g,'professional_employees'),
       reviewedPaidDaySql:(person,date)=>`professional_is_paid_day(${person},${date})`,
       reviewedSearchSql:()=> 'FALSE',
     },
@@ -67,6 +67,8 @@ module.exports = async function verifyAttendanceIdentity(client, reportDependenc
     }
   }
   const range={start_date:'2026-09-01',end_date:'2026-09-30',limit:10000};
+  await client.query(`INSERT INTO professional_leave_requests(professional_id,requested_date,status,pm_reviewer_id)
+    VALUES($1,'2026-09-13','approved',$2)`,[stranger,olderId]);
   const sourceBefore=await client.query('SELECT * FROM professional_attendance ORDER BY id');
   const oldAll=await run(baselineReports,'getDateRangeAttendanceSummary',range);
   const newAll=await run(reports,'getDateRangeAttendanceSummary',range);
