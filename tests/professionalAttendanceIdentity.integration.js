@@ -115,6 +115,7 @@ module.exports = async function verifyAttendanceIdentity(client, reportDependenc
   }};
   const pool={query:(sql,params)=>client.query(sql,params),connect:async()=>tx};
   const app=load('../controllers/professionalAttendanceController.js',{
+    '../utils/professionalAttendanceBlock':require('./helpers/unblockedAttendance'),
     '../config/db':pool,'../utils/professionalAttendanceIdentity':identity,
     '../utils/professionalPunchCutoff':{ensurePunchCutoffSchema:async()=>{},loadPunchApprovals:async()=>new Map(),approvalProgress:()=>null},
     '../utils/professionalLeaveSchema':{ensureProfessionalLeaveSchema:async()=>{}},
@@ -169,5 +170,44 @@ module.exports = async function verifyAttendanceIdentity(client, reportDependenc
   assert.equal(moved.code,409);
   await client.query('UPDATE professional_employees SET city_id=1 WHERE id=$1',[emptyId]);
   assert.throws(()=>identity.withAttendanceIdentity('UPDATE professional_attendance SET punch_in=NOW()'),/read-only/);
+  // Exercise the real block reads together with both actual report controllers.
+  // The enclosing test already owns a transaction; initialize only this fixture's
+  // schema directly so no lazy initializer can commit that transaction.
+  await client.query(fs.readFileSync(path.join(__dirname,'../db/migrations/20261021_professional_attendance_blocks.sql'),'utf8'));
+  const blockReads=load('../utils/professionalAttendanceBlock.js',{
+    fs,path,'../config/db':pool,'./professionalAttendanceIdentity':identity,
+  });
+  const access={...blockReads,ensureAttendanceBlockSchema:async()=>{},
+    withAttendanceBlocks:rows=>blockReads.readAttendanceBlocks(rows,pool)};
+  const reportsWithBlocks=load('../controllers/professionalReportsController.js',{
+    ...reportDependencies,'../utils/professionalAccess':require('../utils/professionalAccess'),
+    '../utils/professionalAttendanceBlock':access,
+  });
+  const appWithBlocks=load('../controllers/professionalAttendanceController.js',{
+    '../config/db':pool,'../utils/professionalAttendanceIdentity':identity,'../utils/professionalAttendanceBlock':access,
+    '../utils/professionalPunchCutoff':{ensurePunchCutoffSchema:async()=>{},loadPunchApprovals:async()=>new Map(),approvalProgress:()=>null},
+    '../utils/professionalLeaveSchema':{ensureProfessionalLeaveSchema:async()=>{}},
+    '../utils/logger':{error:console.error},'../utils/faceService':{},'../config/awsConfig':{},
+    '../utils/s3SelfPunch':{},'../utils/cityTrafficCost':{},'./professionalGeofenceController':{},'./consentController':{},
+  });
+  const beforeBlock=(await client.query('SELECT * FROM professional_attendance ORDER BY id')).rows;
+  await client.query(`INSERT INTO professional_attendance_blocks(professional_id,is_blocked,reason)
+    SELECT unnest($1::uuid[]),TRUE,'Verified block fixture'`,[profileIds]);
+  const blockedMonthly=response();
+  await appWithBlocks.getMonthlyAttendance({professional:{professional_id:primaryId},query:{month:'2026-09'}},blockedMonthly);
+  assert.equal(blockedMonthly.code,200);assert.equal(blockedMonthly.body.attendance_access.is_attendance_blocked,true);
+  assert.deepEqual(JSON.parse(JSON.stringify(blockedMonthly.body.summary)),JSON.parse(JSON.stringify(appResult.body.summary)),'Blocking preserves actual monthly present, half-day, absent and payable totals');
+  const blockedRange=await run(reportsWithBlocks,'getDateRangeAttendanceSummary',{start_date:'2026-09-01',end_date:'2026-09-30',professional_id:primaryId});
+  assert.equal(blockedRange.data[0].is_attendance_blocked,true);
+  assert.equal(blockedRange.data[0].attendance_count,29);assert.equal(blockedRange.data[0].payable_days,29);assert.equal(blockedRange.data[0].absent_days,1);
+  const blockedDaily=await run(reportsWithBlocks,'getAttendanceList',{date:'2026-09-01',professional_id:primaryId});
+  assert.equal(blockedDaily.data[0].is_attendance_blocked,true);assert.ok(blockedDaily.data[0].punch_in);
+  const blockedDetails=await run(reportsWithBlocks,'getDateRangeAttendanceDetails',{start_date:'2026-09-01',end_date:'2026-09-30',professional_id:primaryId});
+  assert.equal(blockedDetails.data.is_attendance_blocked,true);assert.equal(blockedDetails.data.attendance_days,29);
+  const unrelatedAfterBlock=await run(reportsWithBlocks,'getDateRangeAttendanceSummary',{start_date:'2026-09-01',end_date:'2026-09-30',professional_id:stranger});
+  assert.equal(unrelatedAfterBlock.data[0].is_attendance_blocked,undefined);assert.equal(unrelatedAfterBlock.data[0].attendance_count,1);
+  await client.query('UPDATE professional_attendance_blocks SET is_blocked=FALSE WHERE professional_id=ANY($1::uuid[])',[profileIds]);
+  assert.deepEqual((await client.query('SELECT * FROM professional_attendance ORDER BY id')).rows,beforeBlock,'Block/unblock and reports leave every stored attendance row unchanged');
+  console.log('PASS: actual blocked daily/range/detail badges, Manisha monthly remains 28 present / 1 half-day / 29 payable, and unrelated employees and all stored attendance stay unchanged.');
   console.log('PASS: Manisha 28 present / 1 half-day / 29 payable, complete 29-date website history, all unlinked rows unchanged, aliases/search/exports source, other months, permissions, preserved records, current open punches, duplicate prevention and conflict/scope guards.');
 };

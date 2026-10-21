@@ -22,5 +22,33 @@ const vm=require('node:vm');
   assert.ok(outcomes.every(item=>item.status==='rejected'));assert.equal(calls,1,'Failed concurrent initialization runs only once');
   await Promise.all(Array.from({length:20},()=>sandbox.module.exports(db)));assert.equal(calls,2,'Initialization retries once after failure');
   await sandbox.module.exports(db);assert.equal(calls,2,'Warm requests do not repeat DDL');
+  const blockModule={exports:{}};
+  const id='00000000-0000-4000-8000-000000000001';
+  let blockSchemaConnections=0;
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../utils/professionalAttendanceBlock.js'),'utf8'),{
+    module:blockModule,__dirname:path.join(__dirname,'../utils'),
+    require:name=>name==='../config/db' ? {connect:async()=>{blockSchemaConnections++;throw Error('Startup schema is already ready');}} :
+      name==='./professionalAttendanceIdentity' ? {attendanceSourceIds:id=>[id]} : require(name),
+  });
+  blockModule.exports.markAttendanceBlockSchemaReady();
+  await Promise.all(Array.from({length:20},()=>blockModule.exports.ensureAttendanceBlockSchema()));
+  assert.equal(blockSchemaConnections,0,'Successful startup migration avoids request-time schema connections/DDL');
+  let contextCalls=0, blockCommitted=false;
+  const contextClient={query:async(sql)=>{
+    contextCalls++;
+    if(/FOR UPDATE/.test(sql)) {
+      // Model waiting for an admin's profile lock: their block commits before
+      // this request owns the lock. The next statement must read that block.
+      assert.equal(/professional_attendance_blocks/.test(sql),false,'Do not read block state from the pre-lock snapshot');
+      await Promise.resolve();blockCommitted=true;
+      return {rows:[{id,selfie_url:'profile-photo',is_active:true}]};
+    }
+    return {rows:[{is_late:false,attendance_block:blockCommitted ? {reason:'Blocked during lock wait',updated_at:'2026-10-21'} : null}]};
+  }};
+  const context=await blockModule.exports.loadPunchInContext(contextClient,id);
+  assert.equal(contextCalls,2,'Block check shares the existing profile/cutoff round-trip budget');
+  assert.equal(context.block.is_attendance_blocked,true,'Read committed block state after acquiring the profile lock');
+  assert.equal(context.profile.selfie_url,'profile-photo','Reuse the locked profile rather than selecting it twice');
   console.log('PASS: concurrent schema initialization, retry, warm-path DDL avoidance, punch expiry bypass and default leave expiry.');
+  console.log('PASS: no extra block-related punch-in round trips, startup schema reuse, profile reuse and block committed during profile-lock wait.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

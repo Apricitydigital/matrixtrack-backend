@@ -71,6 +71,7 @@ router.use("/professional", professionalRoutes);
 // Mount reports before the main adminRoutes to bypass strict requireAdmin middleware
 // allowing both admins and supervisors to access these specific reporting endpoints.
 router.use('/admin/professional-holidays',require('./professionalHolidayRoutes'));
+router.use('/admin/professional-employee-blocks',require('./professionalEmployeeBlockRoutes'));
 router.use("/admin", professionalReportsRoutes);
 router.use("/admin", professionalGeofencingAdminRoutes);
 

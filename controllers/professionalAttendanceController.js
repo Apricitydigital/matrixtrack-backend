@@ -9,6 +9,7 @@ const { sendTrackedRekognition, trackSuccessfulAttendanceEvent } = require('../u
 const { validateProfessionalGeofenceAccess } = require('./professionalGeofenceController');
 const { logUserConsent } = require('./consentController');
 const { reviewedHistorySql, attendanceSourceIds } = require('../utils/professionalAttendanceIdentity');
+const { ensureAttendanceBlockSchema, lockAttendanceProfiles, loadPunchInContext, getAttendanceBlock, sendBlocked } = require('../utils/professionalAttendanceBlock');
 
 let attendanceColumnsPromise = null;
 
@@ -432,23 +433,20 @@ const punchIn = async (req, res) => {
     // Past pending leaves cannot affect today's approved-leave check. Lists and
     // the expiry cron still catch up overdue requests.
     await ensureProfessionalLeaveSchema({ expirePending: false });
+    await ensureAttendanceBlockSchema();
     client = await pool.connect();
     await client.query('BEGIN');
-
-    // Capture the server arrival time before biometric processing. Serialize all
-    // attempts for this employee, including the first attempt of the day.
-    const profileResult = await client.query('SELECT id,selfie_url,is_active FROM professional_employees WHERE id=$1 FOR UPDATE', [professional_id]);
-    if (!profileResult.rows.length || !profileResult.rows[0].is_active) {
+    const { profile, cutoff, block } = await loadPunchInContext(client, professional_id);
+    if (!profile?.is_active) {
       await client.query('ROLLBACK');
       return res.status(404).json({ success: false, message: 'Profile not found or deactivated.' });
     }
-    const cutoffResult = await client.query(`SELECT t.cutoff_time,
-      transaction_timestamp() AS attempted_at,
-      s.enabled AND (transaction_timestamp() AT TIME ZONE 'Asia/Kolkata') >
-        ((transaction_timestamp() AT TIME ZONE 'Asia/Kolkata')::date + t.cutoff_time + INTERVAL '15 minutes') AS is_late
-      FROM professional_employees p LEFT JOIN professional_punch_cutoffs t ON t.professional_id=p.id
-      CROSS JOIN professional_punch_settings s WHERE p.id=$1 AND s.id=1 FOR SHARE OF s`, [professional_id]);
-    const cutoff = cutoffResult.rows[0] || {};
+    if (block.is_attendance_blocked) {
+      await client.query('ROLLBACK');
+      return sendBlocked(res, block);
+    }
+
+    // The context captures server arrival time before biometric processing.
     const requesterCaps = cutoff.is_late ? await capabilities(client,professional_id) : null;
     const approvalStatus = cutoff.is_late ? (requesterCaps.ho?'pending_hod':'pending_pm') : 'accepted';
 
@@ -525,7 +523,7 @@ const punchIn = async (req, res) => {
     }
 
     // Reuse the active profile already locked above.
-    const { selfie_url: sourceS3Key } = profileResult.rows[0];
+    const { selfie_url: sourceS3Key } = profile;
 
     // 5. Perform Face Verification
     let matchResult;
@@ -649,7 +647,11 @@ const punchOut = async (req, res) => {
     return res.status(400).json({ success: false, message: 'selfie_base64 is required for punch out.' });
   }
 
+  let client;
   try {
+    await ensureAttendanceBlockSchema();
+    const block = await getAttendanceBlock(professional_id);
+    if (block.is_attendance_blocked) return sendBlocked(res, block);
     await ensureProfessionalAttendanceColumns(pool);
     await ensureProfessionalLeaveSchema({ expirePending: false });
 
@@ -778,13 +780,24 @@ const punchOut = async (req, res) => {
       RETURNING punch_out, EXTRACT(EPOCH FROM (NOW() - punch_in)) / 3600 AS hours_worked
     `;
 
-    const { rows } = await pool.query(updateQuery, [
+    // Recheck after biometrics under the same profile locks used by block/unblock.
+    // A block committed while verification was running must prevent this write.
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await lockAttendanceProfiles(client, professional_id);
+    const finalBlock = await getAttendanceBlock(professional_id, client);
+    if (finalBlock.is_attendance_blocked) {
+      await client.query('ROLLBACK');
+      return sendBlocked(res, finalBlock);
+    }
+    const { rows } = await client.query(updateQuery, [
       professional_id,
       today,
       parseNumericCoordinate(latitude),
       parseNumericCoordinate(longitude),
       punchOutPhotoKey
     ]);
+    await client.query('COMMIT');
 
     if (rows.length === 0) {
       return res.status(404).json({
@@ -809,8 +822,11 @@ const punchOut = async (req, res) => {
     });
 
   } catch (error) {
+    if (client) await client.query('ROLLBACK');
     logger.error(`[Attendance] Punch-out failed for ${professional_id}`, error);
     res.status(500).json({ success: false, message: 'Internal server error.' });
+  } finally {
+    client?.release();
   }
 };
 
@@ -1032,10 +1048,13 @@ const getMonthlyAttendance = async (req, res) => {
     // A worked weekly off is paid once; leave/holiday overlap also counts once.
     const totalPayableDays = records.filter(r => r.date <= getTodayIST() &&
       (r.is_weekly_off || r.holiday || ['present','half-day','leave-approved','holiday'].includes(r.status))).length;
+    await ensureAttendanceBlockSchema();
+    const attendanceAccess = await getAttendanceBlock(professional_id);
 
     res.json({
       success: true,
       data: records.reverse(), // Newest first
+      attendance_access: attendanceAccess,
       summary: {
         total_present: totalPresent,
         total_late_punch_in: records.filter(r=>r.is_late_punch).length,
@@ -1067,6 +1086,8 @@ const getTodayStatus = async (req, res) => {
   const today = getTodayIST();
 
   try {
+    await ensureAttendanceBlockSchema();
+    const attendanceAccess = await getAttendanceBlock(professional_id);
     await ensurePunchCutoffSchema();
     await ensureProfessionalAttendanceColumns(pool);
     await ensureProfessionalLeaveSchema();
@@ -1111,7 +1132,9 @@ const getTodayStatus = async (req, res) => {
           punch_cutoff: row.punch_cutoff,
           cutoff_enforcement_enabled: featureSettings.enabled,
           approval_progress: approvalProgress(row,reviews.get(professional_id+today)),
-          status,
+          status: attendanceAccess.is_attendance_blocked ? 'blocked' : status,
+          attendance_status: status,
+          ...attendanceAccess,
           is_weekly_off: isWeeklyOff,
           holiday,
           is_holiday: !!holiday,
@@ -1127,7 +1150,8 @@ const getTodayStatus = async (req, res) => {
         punch_out: null,
         punch_cutoff: assigned.rows[0]?.cutoff_time || null,
         cutoff_enforcement_enabled: featureSettings.enabled,
-        status: holiday ? 'holiday' : isWeeklyOff ? 'weekly-off' : 'absent',
+        status: attendanceAccess.is_attendance_blocked ? 'blocked' : holiday ? 'holiday' : isWeeklyOff ? 'weekly-off' : 'absent',
+        ...attendanceAccess,
         is_weekly_off: isWeeklyOff,
         holiday,
         is_holiday: !!holiday,

@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const { ensureProfessionalLeaveSchema } = require("../utils/professionalLeaveSchema");
 const { ensureProfessionalPushSchema } = require("../utils/professionalPushService");
+const { markAttendanceBlockSchemaReady } = require('../utils/professionalAttendanceBlock');
 
 async function runMigrations() {
   const client = await pool.connect();
@@ -266,7 +267,10 @@ async function runMigrations() {
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_professional_punch_cutoff_bulk.sql'), 'utf8'));
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261016_professional_hod_punch_approval.sql'), 'utf8'));
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261016_professional_holiday_permissions.sql'), 'utf8'));
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-attendance-block-schema'))");
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261021_professional_attendance_blocks.sql'), 'utf8'));
     await client.query('COMMIT');
+    markAttendanceBlockSchemaReady();
     console.log("[Migration] All migrations complete.");
   } catch (err) {
     await client.query('ROLLBACK');

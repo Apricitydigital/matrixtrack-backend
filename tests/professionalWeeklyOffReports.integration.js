@@ -10,6 +10,7 @@ module.exports = async function verifyReports(client) {
     CREATE TABLE self_punch_requests(id UUID,ward_id INT,kothi_id INT);`);
   let reportQueryCount = 0;
   const dependencies = {
+    '../utils/professionalAttendanceBlock': require('./helpers/unblockedAttendance'),
     '../utils/professionalAttendanceIdentity': require('../utils/professionalAttendanceIdentity'),
     '../utils/professionalPunchCutoff': { ensurePunchCutoffSchema: async () => client.query(fs.readFileSync(path.join(__dirname,'../db/migrations/20261014_professional_punch_cutoff.sql'),'utf8')) },
     '../utils/queryRunner': { runQueryWithTimeout: (sql,params) => { reportQueryCount++; return client.query(sql,params); } },

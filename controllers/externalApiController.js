@@ -4,6 +4,7 @@
  */
 
 const pool = require("../config/db");
+const { withUnblockedAttendance } = require('../utils/professionalAttendanceBlock');
 
 const isIsoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
 
@@ -742,22 +743,23 @@ const markProfessionalPunchIn = async (req, res) => {
     const blocked = await verifyCityOwnership("professional_employees", "id", professional_id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
     if (blocked) return res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "Professional does not belong to your assigned city." } });
 
-    const dup = await pool.query(`SELECT id FROM professional_attendance WHERE professional_id = $1 AND date = $2`, [professional_id, targetDate]);
-    if (dup.rows.length > 0) return res.status(409).json({ success: false, error: { code: "DUPLICATE", message: "Already punched in for this date." } });
-
     // Get employee's ward/zone/city for the record
     const emp = await pool.query(`SELECT ward_id, zone_id, city_id FROM professional_employees WHERE id = $1 AND is_active = true`, [professional_id]);
     if (emp.rows.length === 0) return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Professional not found or inactive." } });
     const { ward_id, zone_id, city_id } = emp.rows[0];
 
-    const { rows } = await pool.query(
-      `INSERT INTO professional_attendance (professional_id, date, punch_in, ward_id, zone_id, city_id, punch_in_latitude, punch_in_longitude)
+    const { rows } = await withUnblockedAttendance(professional_id, async client => {
+      const dup = await client.query('SELECT id FROM professional_attendance WHERE professional_id=$1 AND date=$2', [professional_id, targetDate]);
+      if (dup.rows.length) throw Object.assign(new Error('Already punched in for this date.'), { status: 409, code: 'DUPLICATE' });
+      return client.query(`INSERT INTO professional_attendance (professional_id, date, punch_in, ward_id, zone_id, city_id, punch_in_latitude, punch_in_longitude)
        VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7)
        RETURNING id, professional_id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(punch_in, 'HH24:MI:SS') AS punch_in`,
       [professional_id, targetDate, ward_id, zone_id, city_id, latitude || null, longitude || null]
-    );
+      );
+    });
     res.status(201).json({ success: true, data: rows[0], meta: meta() });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ success: false, error: { code: error.code, message: error.message } });
     console.error("[ExternalAPI] markProfessionalPunchIn error:", error.message);
     res.status(500).json({ success: false, error: { code: "SERVER_ERROR", message: "Internal server error." } });
   }
@@ -775,16 +777,17 @@ const markProfessionalPunchOut = async (req, res) => {
     const blocked = await verifyCityOwnership("professional_employees", "id", professional_id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
     if (blocked) return res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "Professional does not belong to your assigned city." } });
 
-    const { rows } = await pool.query(
+    const { rows } = await withUnblockedAttendance(professional_id, client => client.query(
       `UPDATE professional_attendance SET punch_out = NOW(), punch_out_latitude = $1, punch_out_longitude = $2
        WHERE professional_id = $3 AND date = $4 AND punch_out IS NULL
        RETURNING id, professional_id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(punch_in, 'HH24:MI:SS') AS punch_in, TO_CHAR(punch_out, 'HH24:MI:SS') AS punch_out,
        ROUND(EXTRACT(EPOCH FROM (punch_out - punch_in)) / 3600, 2) AS hours_worked`,
       [latitude || null, longitude || null, professional_id, targetDate]
-    );
+    ));
     if (rows.length === 0) return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "No open punch-in found for this professional on this date." } });
     res.json({ success: true, data: rows[0], meta: meta() });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ success: false, error: { code: error.code, message: error.message } });
     console.error("[ExternalAPI] markProfessionalPunchOut error:", error.message);
     res.status(500).json({ success: false, error: { code: "SERVER_ERROR", message: "Internal server error." } });
   }

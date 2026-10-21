@@ -71,8 +71,8 @@ async function main() {
     assert.equal((await run('put','/employees/:employee',ho,{body:{cutoff_time:'09:45'}})).code,200);
     const history=(await run('get','/history',country)).body.data;
     assert.equal(history.length,2);assert.equal(history[0].old_time,'09:30:00');assert.equal(history[0].actor_id,ho);
-    // Execute the actual controller expression with fixed arrival timestamps.
-    const source=fs.readFileSync(path.join(__dirname,'../controllers/professionalAttendanceController.js'),'utf8');
+    // Execute the actual punch context expression with fixed arrival timestamps.
+    const source=fs.readFileSync(path.join(__dirname,'../utils/professionalAttendanceBlock.js'),'utf8');
     const lateExpression=source.match(/s\.enabled AND ([\s\S]*?) AS is_late/)[1].replaceAll('transaction_timestamp()', '$1::timestamptz');
     const isLate=async(arrival,cutoff,enabled=true)=>(await client.query(`SELECT s.enabled AND ${lateExpression} AS late FROM (SELECT $2::time AS cutoff_time) t CROSS JOIN (SELECT $3::boolean AS enabled) s`,[arrival,cutoff,enabled])).rows[0].late;
     for(const time of ['09:29:59','09:30:00','09:44:59','09:45:00']) assert.equal(await isLate(`2026-10-15T${time}+05:30`,'09:30'),false);
@@ -146,7 +146,11 @@ async function main() {
       DELETE FROM professional_punch_activity WHERE attendance_date IS NOT NULL;
       UPDATE professional_punch_cutoffs SET cutoff_time='00:00';`);
     let faceAllowed=true, geoAllowed=true, faceCalls=0;
+    const blocks=load('../utils/professionalAttendanceBlock.js',{
+      fs,path,'../config/db':pool,'./professionalAttendanceIdentity':require('../utils/professionalAttendanceIdentity'),
+    });
     const controller=load('../controllers/professionalAttendanceController.js',{
+      '../utils/professionalAttendanceBlock':blocks,
       '../utils/professionalAttendanceIdentity':require('../utils/professionalAttendanceIdentity'),
       '../config/db':pool,'../utils/professionalPunchCutoff':utility,
       '../utils/logger':{info(){},warn(){},error:(label,e)=>console.error(label,e)},

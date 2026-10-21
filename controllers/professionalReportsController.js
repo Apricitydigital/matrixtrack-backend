@@ -7,6 +7,7 @@ const logger = require('../utils/logger');
 const pool = require('../config/db');
 const { ensurePunchCutoffSchema } = require('../utils/professionalPunchCutoff');
 const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSchema');
+const { withAttendanceBlocks } = require('../utils/professionalAttendanceBlock');
 
 let attendanceReportColumnsEnsured = false;
 const ensureAttendanceReportColumns = async () => {
@@ -363,7 +364,7 @@ const getAttendanceList = async (req, res) => {
 
     res.json({
       success: true,
-      data,
+      data: await withAttendanceBlocks(data),
       pagination: {
         page: parseInt(page, 10),
         limit: parseInt(limit, 10),
@@ -974,7 +975,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
 
     res.json({
       success: true,
-      data: dataResult.rows.map((row) => {
+      data: (await withAttendanceBlocks(dataResult.rows)).map((row) => {
         const attendanceDays  = parseInt(row.attendance_count || 0, 10);
         const leaveDays       = parseInt(row.leave_days || 0, 10);
         const completedDays   = parseInt(row.completed_days || 0, 10);
@@ -1180,9 +1181,11 @@ const getDateRangeAttendanceDetails = async (req, res) => {
     const leaveApprovedDays = mappedRows.filter((item) => item.leave_status === "approved").length;
     const leavePendingDays = mappedRows.filter((item) => item.leave_status === "pending").length;
 
+    const [attendanceAccess] = await withAttendanceBlocks([{ professional_id }]);
     res.json({
       success: true,
       data: {
+        ...attendanceAccess,
         professional_id,
         professional_name: verifyResult.rows[0].full_name,
         start_date: dateRange.startDate,
@@ -1330,7 +1333,7 @@ const getEmployeesList = async (req, res) => {
 
     res.json({
       success: true,
-      data: dataResult.rows,
+      data: await withAttendanceBlocks(dataResult.rows),
       pagination: {
         page: parseInt(page, 10),
         limit: parseInt(limit, 10),
@@ -1393,9 +1396,11 @@ const getEmployeeAttendance = async (req, res) => {
     `;
 
     const attResult = await runQueryWithTimeout(query, [id, yyyy, mm]);
+    const [attendanceAccess] = await withAttendanceBlocks([{ professional_id: id }]);
 
     res.json({
       success: true,
+      attendance_access: attendanceAccess,
       data: attResult.rows.map(row => ({
         ...row,
         hours_worked: row.hours_worked == null ? '-' : parseFloat(row.hours_worked).toFixed(2),

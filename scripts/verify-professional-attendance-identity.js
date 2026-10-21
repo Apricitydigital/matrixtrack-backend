@@ -30,7 +30,25 @@ const load=(file,deps)=>{
   });
   return module.exports;
 };
+// This verifier must not initialize the new access schema on a live database.
+// If it is not deployed yet there cannot be any saved access blocks to read.
+let hasBlockSchema;
+async function blockSchemaExists() {
+  if (hasBlockSchema === undefined) hasBlockSchema = !!(await client.query("SELECT to_regclass('public.professional_attendance_blocks') AS name")).rows[0].name;
+  return hasBlockSchema;
+}
+const blockModule={exports:{}};
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../utils/professionalAttendanceBlock.js'),'utf8'),{
+  module:blockModule,__dirname:path.join(__dirname,'../utils'),Map,Set,
+  require:name=>({fs,path,'../config/db':pool,'./professionalAttendanceIdentity':identity})[name],
+});
+const readOnlyBlocks={
+  ensureAttendanceBlockSchema:async()=>{},
+  getAttendanceBlock:async id=>(await blockSchemaExists()) ? blockModule.exports.getAttendanceBlock(id,pool) : {is_attendance_blocked:false},
+  withAttendanceBlocks:async rows=>(await blockSchemaExists()) ? blockModule.exports.readAttendanceBlocks(rows,pool) : rows,
+};
 const reportDependencies={
+  '../utils/professionalAttendanceBlock':readOnlyBlocks,
   '../utils/queryRunner':{runQueryWithTimeout:(text,values)=>client.query({text,values,query_timeout:30000})},
   '../utils/professionalAttendanceIdentity':identity,
   '../utils/professionalAccess':require('../utils/professionalAccess'),
@@ -108,6 +126,7 @@ async function main(){
     assert.equal(monthly.data.filter(r=>r.punch_in).length,raw,`${month}: history lost`);
   }
   const app=load('professionalAttendanceController.js',{
+    '../utils/professionalAttendanceBlock':readOnlyBlocks,
     '../config/db':pool,'../utils/professionalAttendanceIdentity':identity,
     '../utils/professionalPunchCutoff':{ensurePunchCutoffSchema:async()=>{},loadPunchApprovals:cutoff.loadPunchApprovals,approvalProgress:cutoff.approvalProgress},
     '../utils/professionalLeaveSchema':{ensureProfessionalLeaveSchema:async()=>{}},
