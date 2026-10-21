@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const pool = require('../config/db');
 const { decryptAadhar } = require('../utils/encryption');
-const { findProfessionalIdentityConflict, hasAadhaarRequestAtWard } = require('../utils/professionalIdentity');
+const { findProfessionalIdentityConflict, findProfessionalAadhaarConflict, hasAadhaarRequestAtWard } = require('../utils/professionalIdentity');
 
 async function main() {
   const client = await pool.connect();
@@ -18,9 +18,11 @@ async function main() {
     assert.ok(approval);
     assert.notEqual(approval.id, employee.id);
     assert.equal(await hasAadhaarRequestAtWard(client, decryptAadhar(employee.aadhar_number), employee.ward_id), true);
+    const aadhaarOnly = await findProfessionalAadhaarConflict(client, employee.aadhar_number);
+    assert.ok(aadhaarOnly,'Global Aadhaar check must find an existing identity without contact/code/location matches');
     await client.query('ROLLBACK');
     console.log(JSON.stringify({ newCodeCannotBypassExistingMobileOrEmail: true,
-      duplicateApprovalDetected: true, encryptedAadhaarDuplicateDetected: true, databaseWrites: false }));
+      duplicateApprovalDetected: true, encryptedAadhaarDuplicateDetected: true, globalAadhaarDuplicateDetected: true, databaseWrites: false }));
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); await pool.end(); }
 }

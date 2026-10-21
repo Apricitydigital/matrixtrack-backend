@@ -3,13 +3,14 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 module.exports = async function verifyReports(client) {
-  await client.query(`ALTER TABLE professional_employees ADD COLUMN mobile TEXT, ADD COLUMN email TEXT, ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW(), ADD COLUMN request_id UUID, ADD COLUMN selfie_url TEXT;
+  await client.query(`ALTER TABLE professional_employees ADD COLUMN mobile TEXT, ADD COLUMN email TEXT, ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW(), ADD COLUMN request_id UUID, ADD COLUMN selfie_url TEXT, ADD COLUMN face_locked BOOLEAN DEFAULT TRUE;
     ALTER TABLE sectors ADD COLUMN sector_name TEXT;
     ALTER TABLE professional_attendance ADD COLUMN ward_id INT, ADD COLUMN city_id INT, ADD COLUMN zone_id INT, ADD COLUMN kothi_id INT;
-    ALTER TABLE professional_leave_requests ADD COLUMN leave_type TEXT, ADD COLUMN reviewed_by INT, ADD COLUMN review_note TEXT, ADD COLUMN reviewed_at TIMESTAMPTZ, ADD COLUMN requested_at TIMESTAMPTZ DEFAULT NOW(), ADD COLUMN pm_reviewer_id UUID, ADD COLUMN ho_reviewer_id UUID;
+    ALTER TABLE professional_leave_requests ADD COLUMN leave_type TEXT, ADD COLUMN reviewed_by INT, ADD COLUMN review_note TEXT, ADD COLUMN reviewed_at TIMESTAMPTZ, ADD COLUMN requested_at TIMESTAMPTZ DEFAULT NOW(), ADD COLUMN pm_reviewer_id UUID, ADD COLUMN ho_reviewer_id UUID, ADD COLUMN hod_reviewer_id UUID;
     CREATE TABLE self_punch_requests(id UUID,ward_id INT,kothi_id INT);`);
   let reportQueryCount = 0;
   const dependencies = {
+    '../utils/professionalAttendanceIdentity': require('../utils/professionalAttendanceIdentity'),
     '../utils/professionalPunchCutoff': { ensurePunchCutoffSchema: async () => client.query(fs.readFileSync(path.join(__dirname,'../db/migrations/20261014_professional_punch_cutoff.sql'),'utf8')) },
     '../utils/queryRunner': { runQueryWithTimeout: (sql,params) => { reportQueryCount++; return client.query(sql,params); } },
     '../utils/professionalAccess': { buildVisibilityScope: () => ({cte:'',whereClause:'1=1',params:[]}) },
@@ -66,4 +67,5 @@ module.exports = async function verifyReports(client) {
   const holidayMonth=await run('getEmployeeAttendance',{month:'2026-10'},{id:person});
   assert.ok(holidayMonth.data.some(r=>r.status==='holiday'&&r.is_payable_day));
   console.log('PASS: actual daily/monthly attendance, detailed timeline, dashboard, site holidays and overlap-safe date-range payroll queries.');
+  await require('./professionalAttendanceIdentity.integration')(client, dependencies);
 };

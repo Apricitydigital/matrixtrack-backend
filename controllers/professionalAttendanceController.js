@@ -8,6 +8,7 @@ const { ensureProfessionalLeaveSchema } = require('../utils/professionalLeaveSch
 const { sendTrackedRekognition, trackSuccessfulAttendanceEvent } = require('../utils/cityTrafficCost');
 const { validateProfessionalGeofenceAccess } = require('./professionalGeofenceController');
 const { logUserConsent } = require('./consentController');
+const { reviewedHistorySql, attendanceSourceIds } = require('../utils/professionalAttendanceIdentity');
 
 let attendanceColumnsPromise = null;
 
@@ -454,11 +455,11 @@ const punchIn = async (req, res) => {
     const leaveCheck = await client.query(
       `SELECT leave_type
        FROM professional_leave_requests
-       WHERE professional_id = $1
+       WHERE professional_id = ANY($1::uuid[])
          AND requested_date = $2
          AND status = 'approved'
        LIMIT 1`,
-      [professional_id, today]
+      [attendanceSourceIds(professional_id), today]
     );
     if (leaveCheck.rows.length > 0) {
       await client.query('ROLLBACK');
@@ -471,10 +472,10 @@ const punchIn = async (req, res) => {
     // 1. Check if already punched in today
     const checkQuery = `
       SELECT id FROM professional_attendance 
-      WHERE professional_id = $1 AND date = $2
+      WHERE professional_id = ANY($1::uuid[]) AND date = $2
       FOR UPDATE
     `;
-    const checkResult = await client.query(checkQuery, [professional_id, today]);
+    const checkResult = await client.query(checkQuery, [attendanceSourceIds(professional_id), today]);
 
     if (checkResult.rows.length > 0) {
       await client.query('ROLLBACK');
@@ -655,11 +656,11 @@ const punchOut = async (req, res) => {
     const leaveCheck = await pool.query(
       `SELECT leave_type
        FROM professional_leave_requests
-       WHERE professional_id = $1
+       WHERE professional_id = ANY($1::uuid[])
          AND requested_date = $2
          AND status = 'approved'
        LIMIT 1`,
-      [professional_id, today]
+      [attendanceSourceIds(professional_id), today]
     );
     if (leaveCheck.rows.length > 0) {
       return res.status(409).json({
@@ -835,6 +836,11 @@ const getMonthlyAttendance = async (req, res) => {
   try {
     await ensurePunchCutoffSchema();
     await ensureProfessionalLeaveSchema();
+    const identityHistory = reviewedHistorySql(professional_id);
+    const historyProfiles = identityHistory || `SELECT id FROM professional_employees
+        WHERE id = $1
+           OR (mobile = (SELECT mobile FROM professional_employees WHERE id = $1) AND mobile IS NOT NULL AND mobile != '')
+           OR (LOWER(email) = (SELECT LOWER(email) FROM professional_employees WHERE id = $1) AND email IS NOT NULL AND email != '')`;
     const query = `
       SELECT 
         date::text AS date, professional_id,
@@ -842,12 +848,8 @@ const getMonthlyAttendance = async (req, res) => {
         punch_out, attempted_punch_in, punch_approval_status,
         CASE WHEN punch_out IS NULL AND date < CURRENT_DATE THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(punch_out, NOW()) - punch_in)) / 3600 END AS hours_worked
       FROM professional_attendance
-      WHERE professional_id IN (
-        SELECT id FROM professional_employees 
-        WHERE id = $1
-           OR (mobile = (SELECT mobile FROM professional_employees WHERE id = $1) AND mobile IS NOT NULL AND mobile != '')
-           OR (LOWER(email) = (SELECT LOWER(email) FROM professional_employees WHERE id = $1) AND email IS NOT NULL AND email != '')
-      )
+      WHERE professional_id IN (${historyProfiles})
+        AND $1::uuid IS NOT NULL
         AND EXTRACT(YEAR FROM date) = $2 
         AND EXTRACT(MONTH FROM date) = $3
       ORDER BY date DESC
@@ -870,12 +872,8 @@ const getMonthlyAttendance = async (req, res) => {
          u.name AS reviewed_by_name
        FROM professional_leave_requests plr
        LEFT JOIN users u ON u.user_id = plr.reviewed_by
-       WHERE plr.professional_id IN (
-         SELECT id FROM professional_employees 
-         WHERE id = $1
-            OR (mobile = (SELECT mobile FROM professional_employees WHERE id = $1) AND mobile IS NOT NULL AND mobile != '')
-            OR (LOWER(email) = (SELECT LOWER(email) FROM professional_employees WHERE id = $1) AND email IS NOT NULL AND email != '')
-       )
+       WHERE plr.professional_id IN (${historyProfiles})
+         AND $1::uuid IS NOT NULL
          AND EXTRACT(YEAR FROM plr.requested_date) = $2
          AND EXTRACT(MONTH FROM plr.requested_date) = $3`,
       [professional_id, yyyy, mm]

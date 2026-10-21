@@ -1,4 +1,6 @@
-const { runQueryWithTimeout } = require('../utils/queryRunner');
+const { runQueryWithTimeout: runRawQuery } = require('../utils/queryRunner');
+const { withAttendanceIdentity, reviewedPaidDaySql, reviewedSearchSql } = require('../utils/professionalAttendanceIdentity');
+const runQueryWithTimeout = (sql, params = []) => runRawQuery(withAttendanceIdentity(sql, params), params);
 const { buildVisibilityScope } = require('../utils/professionalAccess');
 const { getSignedS3Url } = require('../utils/s3SelfPunch');
 const logger = require('../utils/logger');
@@ -146,6 +148,7 @@ const getAttendanceList = async (req, res) => {
           OR pe.emp_code ILIKE $${paramCount}
           OR pe.mobile ILIKE $${paramCount}
           OR pe.email ILIKE $${paramCount}
+          OR ${reviewedSearchSql('pe.id',`$${paramCount}`)}
           OR z.zone_name ILIKE $${paramCount}
           OR c.city_name ILIKE $${paramCount}
           OR EXISTS (
@@ -407,6 +410,7 @@ const getAttendanceSummary = async (req, res) => {
           OR pe.emp_code ILIKE $${peParamCount}
           OR pe.mobile ILIKE $${peParamCount}
           OR pe.email ILIKE $${peParamCount}
+          OR ${reviewedSearchSql('pe.id',`$${peParamCount}`)}
           OR z.zone_name ILIKE $${peParamCount}
           OR c.city_name ILIKE $${peParamCount}
           OR EXISTS (
@@ -736,6 +740,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
           OR pe.emp_code ILIKE $${paramCount}
           OR pe.mobile ILIKE $${paramCount}
           OR pe.email ILIKE $${paramCount}
+          OR ${reviewedSearchSql('pe.id',`$${paramCount}`)}
           OR z.zone_name ILIKE $${paramCount}
           OR c.city_name ILIKE $${paramCount}
           OR EXISTS (
@@ -894,7 +899,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       LEFT JOIN LATERAL (
         SELECT
           COUNT(gs.d) FILTER (WHERE professional_is_week_off(pe.id,gs.d::date)) AS week_off_count,
-          COUNT(gs.d) FILTER (WHERE professional_is_paid_day(pe.id,gs.d::date)) AS payable_days
+          COUNT(gs.d) FILTER (WHERE ${reviewedPaidDaySql('pe.id','gs.d::date')}) AS payable_days
         FROM generate_series($${startParam}::date, $${endParam}::date, INTERVAL '1 day') AS gs(d)
       ) weekoff_agg ON TRUE
       LEFT JOIN LATERAL (
@@ -1070,7 +1075,7 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         professional_is_week_off(pe.id,cd.date) AS is_weekly_off,
         EXISTS(SELECT 1 FROM professional_holidays h WHERE h.holiday_date=cd.date AND h.city_id=pe.city_id
           AND (h.zone_id IS NULL OR h.zone_id=pe.zone_id) AND (h.ward_id IS NULL OR h.ward_id=pe.ward_id) AND (h.kothi_id IS NULL OR h.kothi_id=pe.kothi_id)) AS is_holiday,
-        professional_is_paid_day(pe.id,cd.date) AS is_payable_day,
+        ${reviewedPaidDaySql('pe.id','cd.date')} AS is_payable_day,
         pa.punch_in, pa.attempted_punch_in, pa.punch_approval_status,
         pa.punch_out,
         pa.auto_punched_out,
@@ -1225,6 +1230,7 @@ const getEmployeesList = async (req, res) => {
           OR pe.emp_code ILIKE $${paramCount}
           OR pe.mobile ILIKE $${paramCount}
           OR pe.email ILIKE $${paramCount}
+          OR ${reviewedSearchSql('pe.id',`$${paramCount}`)}
           OR z.zone_name ILIKE $${paramCount}
           OR c.city_name ILIKE $${paramCount}
           OR EXISTS (
@@ -1379,7 +1385,7 @@ const getEmployeeAttendance = async (req, res) => {
         professional_is_week_off($1,d::date) AS is_weekly_off,
         EXISTS(SELECT 1 FROM professional_holidays h JOIN professional_employees p ON p.id=$1 WHERE h.holiday_date=d::date AND h.city_id=p.city_id
           AND (h.zone_id IS NULL OR h.zone_id=p.zone_id) AND (h.ward_id IS NULL OR h.ward_id=p.ward_id) AND (h.kothi_id IS NULL OR h.kothi_id=p.kothi_id)) AS is_holiday,
-        professional_is_paid_day($1,d::date) AS is_payable_day,
+        ${reviewedPaidDaySql('$1','d::date')} AS is_payable_day,
         CASE WHEN a.punch_in IS NULL OR (a.punch_out IS NULL AND d::date < CURRENT_DATE) THEN NULL ELSE EXTRACT(EPOCH FROM (COALESCE(a.punch_out, NOW()) - a.punch_in)) / 3600 END AS hours_worked
       FROM generate_series(make_date($2::int,$3::int,1),(make_date($2::int,$3::int,1)+INTERVAL '1 month - 1 day')::date,INTERVAL '1 day') d
       LEFT JOIN professional_attendance a ON a.professional_id=$1 AND a.date=d::date

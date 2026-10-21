@@ -7,7 +7,7 @@ const { uploadToS3, deleteFromS3 } = require('../utils/s3SelfPunch');
 const socketio = require('../utils/socket');
 const { trackCityTraffic, getIstDateKey } = require('../utils/cityTrafficCost');
 const { logUserConsent } = require('./consentController');
-const { findProfessionalIdentityConflict, hasAadhaarRequestAtWard } = require('../utils/professionalIdentity');
+const { findProfessionalIdentityConflict } = require('../utils/professionalIdentity');
 
 // Multer memory storage to hold files before uploading to S3
 const storage = multer.memoryStorage();
@@ -249,12 +249,14 @@ const submitRequest = async (req, res) => {
     await client.query('BEGIN');
     // Same ordering as approvals and list updates prevents concurrent duplicate identities.
     await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
-    const identityConflict = await findProfessionalIdentityConflict(client, { mobile, email: sanitizedEmail, empCode: sanitizedEmpCode });
+    const identityConflict = await findProfessionalIdentityConflict(client, {
+      mobile, email: sanitizedEmail, empCode: sanitizedEmpCode, aadharNumber:aadhar_number, requireAadhaar:true,
+    });
     if (identityConflict) {
       await client.query('ROLLBACK');
       return res.status(409).json({ success: false, message: identityConflict.source === 'account'
-        ? 'A professional account already exists for this mobile, email or employee code. Use the existing account; ask an administrator to correct its details.'
-        : 'A professional request already exists for this mobile, email or employee code. Check the existing request instead of registering again.' });
+        ? 'A professional account already exists for this mobile, email, employee code or Aadhaar. Use the existing account; ask an administrator to correct its details.'
+        : 'A professional request already exists for this mobile, email, employee code or Aadhaar. Check the existing request instead of registering again.' });
     }
 
     // Daily cap: max 10 requests per mobile per day (IST)
@@ -290,15 +292,6 @@ const submitRequest = async (req, res) => {
         errors: {
           ward_id: 'Selected ward/sector is not mapped to a valid ward. Please refresh location and try again.'
         }
-      });
-    }
-
-    if (await hasAadhaarRequestAtWard(client, aadhar_number, safeWardId)) {
-      await client.query('ROLLBACK');
-      logger.info('[SelfPunch] Duplicate request rejected', { ward_id, ip: req.ip });
-      return res.status(409).json({
-        success: false,
-        message: 'A request for this Aadhar number at this location is already pending or approved.'
       });
     }
 
@@ -419,14 +412,13 @@ const submitRequest = async (req, res) => {
     if (aadharDocKey) await deleteFromS3(aadharDocKey);
     if (selfieKey) await deleteFromS3(selfieKey);
 
-    if (
-      error?.code === '23505' &&
-      (error?.constraint === 'uidx_spr_mobile_pending' ||
-        String(error?.detail || '').toLowerCase().includes('(mobile)'))
-    ) {
+    if (error?.code === 'PROFESSIONAL_IDENTITY_UNVERIFIED') {
+      return res.status(409).json({success:false,message:error.message});
+    }
+    if (error?.code === '23505') {
       return res.status(409).json({
         success: false,
-        message: 'DB still enforces single pending request per mobile. Drop uidx_spr_mobile_pending to allow multiple pending requests.'
+        message: 'An account or request already uses these identity details. Use the existing record or contact your administrator.'
       });
     }
 

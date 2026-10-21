@@ -354,10 +354,11 @@ const approveRequest = async (req, res) => {
     }
     const identityConflict = await findProfessionalIdentityConflict(client, {
       mobile: request.mobile, email: request.email, empCode: request.emp_code, excludeRequestId: request.id,
+      aadharNumber:request.aadhar_number, requireAadhaar:true,
     });
     if (identityConflict) {
       await client.query('ROLLBACK');
-      return res.status(409).json({ success: false, message: 'Another professional account or request already uses this mobile, email or employee code. Review the existing record; approval would create a duplicate.' });
+      return res.status(409).json({ success: false, message: 'Another professional account or request already uses this mobile, email, employee code or Aadhaar. Review the existing record; approval would create a duplicate.' });
     }
 
     const mobileDigits = String(request.mobile || '').replace(/[^\d]/g, '');
@@ -600,6 +601,7 @@ const approveRequest = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
     logger.error(`[Supervisor] Failed to approve request ${id}`, error);
+    if (error?.code === 'PROFESSIONAL_IDENTITY_UNVERIFIED') return res.status(409).json({success:false,message:error.message});
     res.status(500).json({ success: false, message: 'Internal server error' });
   } finally {
     client.release();

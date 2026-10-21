@@ -3,6 +3,7 @@ const { encryptAadhar, decryptAadhar } = require('../utils/encryption');
 const { getVisibilityCTE, visibilityWhereClause } = require('./supervisorSelfPunchController');
 const { getSignedS3Url } = require('../utils/s3SelfPunch');
 const { buildProfessionalRequestFilters } = require('../utils/professionalRequestFilters');
+const { normalizeProfessionalIdentifier, professionalIdentifierSql, findProfessionalAadhaarConflict } = require('../utils/professionalIdentity');
 
 const editable = ['full_name', 'mobile', 'email', 'emp_code', 'aadhar_number', 'city_id', 'zone_id', 'ward_id', 'kothi_id'];
 const identifierLabels = { mobile: 'Mobile', email: 'Email', emp_code: 'Employee code' };
@@ -76,6 +77,7 @@ const updateApprovedList = async (req, res) => {
     const changes = [];
     const errors = [];
     const plans = [];
+    const aadhaarCache = {};
     let unchanged = 0;
     const validIds = input.map(row => row?.id).filter(id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
     const existing = validIds.length ? await client.query(`SELECT spr.*, pe.id AS professional_id
@@ -137,18 +139,29 @@ const updateApprovedList = async (req, res) => {
       }
       const identifiers = ['mobile', 'email', 'emp_code'].filter(key => changed[key]);
       if (identifiers.length) {
-        const params = [row.id, ...identifiers.map(key => next[key])];
-        const condition = identifiers.map((key, index) => key === 'email'
-          ? `LOWER(email) = LOWER($${index + 2})` : `${key} = $${index + 2}`).join(' OR ');
-        const duplicates = await client.query(`SELECT id, full_name, mobile, email, emp_code FROM professional_employees WHERE id <> $1
-          AND (${condition}) ORDER BY full_name, id`, params);
+        const params = [row.id, ...identifiers.map(key => normalizeProfessionalIdentifier(key,next[key]))];
+        const condition = identifiers.map((key,index) => `${professionalIdentifierSql(key)} = $${index+2}`).join(' OR ');
+        const duplicates = await client.query(`SELECT id,full_name,mobile,email,emp_code,'professional_employees' AS identity_source FROM professional_employees WHERE id <> $1
+          AND (${condition})
+          UNION ALL SELECT id,full_name,mobile,email,emp_code,'self_punch_requests' AS identity_source FROM self_punch_requests
+          WHERE id <> $1 AND status IN ('pending','approved') AND (${condition}) ORDER BY full_name,id,identity_source`, params);
         const conflicts = [];
+        const seenConflicts = new Set();
         for (const person of duplicates.rows) for (const key of identifiers) {
-          const normalize = value => key === 'email' ? String(value || '').toLowerCase() : String(value || '');
-          if (normalize(person[key]) === normalize(next[key])) conflicts.push({ field: key, value: next[key], source: 'professional_employees',
-            employee_id: person.id, full_name: person.full_name, emp_code: person.emp_code });
+          const matchKey = `${person.id}:${key}`;
+          if (normalizeProfessionalIdentifier(key,person[key]) === normalizeProfessionalIdentifier(key,next[key]) && !seenConflicts.has(matchKey)) {
+            seenConflicts.add(matchKey);
+            conflicts.push({ field: key, value: next[key], source: person.identity_source || 'professional_employees',
+              employee_id: person.id, full_name: person.full_name, emp_code: person.emp_code });
+          }
         }
         if (conflicts.length) fail(conflicts.map(conflict => `${identifierLabels[conflict.field]} "${conflict.value}" belongs to another professional: ${describeProfessional({ ...conflict, id: conflict.employee_id })}.`).join(' '), conflicts);
+      }
+      if (changed.aadhar_number) {
+        const duplicate = await findProfessionalAadhaarConflict(client,next.aadhar_number,{excludeRequestId:row.id,cache:aadhaarCache});
+        if (duplicate) fail(`Aadhaar belongs to another account or pending request: ${describeProfessional(duplicate)}.`,[
+          {field:'aadhar_number',value:'[redacted]',source:duplicate.source,employee_id:duplicate.id,full_name:duplicate.full_name,emp_code:duplicate.emp_code},
+        ]);
       }
       const oldCode = old.emp_code || `EMP-${old.mobile ? old.mobile.slice(-6) : old.id.slice(0, 8)}`;
       const master = await client.query(`SELECT emp_id, designation_id FROM employee WHERE emp_code = $1 ${preview ? '' : 'FOR UPDATE'}`, [oldCode]);
@@ -166,18 +179,19 @@ const updateApprovedList = async (req, res) => {
           message: error.message.replace(/^Row \d+: /, ''), conflicts: error.conflicts || [] });
       }
     }
-    for (const key of ['mobile', 'email', 'emp_code']) {
+    for (const key of ['mobile', 'email', 'emp_code', 'aadhar_number']) {
       const values = new Map();
       for (const plan of plans.filter(plan => plan.changed[key])) {
-        const value = String(plan.next[key]);
+        const value = key === 'aadhar_number' ? String(plan.next[key]) : normalizeProfessionalIdentifier(key,plan.next[key]);
         values.set(value, [...(values.get(value) || []), plan]);
       }
       for (const group of values.values()) {
         if (group.length < 2) continue;
         for (const plan of group) {
           const others = group.filter(other => other !== plan);
-          const message = `${identifierLabels[key]} "${plan.next[key]}" is repeated in this upload: also used in ${others.map(other => `Row ${other.rowNumber} (${other.next.full_name}; employee code: ${other.next.emp_code || 'not assigned'})`).join(', ')}.`;
-          const conflicts = others.map(other => ({ field: key, value: plan.next[key], source: 'upload', row_number: other.rowNumber,
+          const label = key === 'aadhar_number' ? 'Aadhaar' : `${identifierLabels[key]} "${plan.next[key]}"`;
+          const message = `${label} is repeated in this upload: also used in ${others.map(other => `Row ${other.rowNumber} (${other.next.full_name}; employee code: ${other.next.emp_code || 'not assigned'})`).join(', ')}.`;
+          const conflicts = others.map(other => ({ field: key, value: key === 'aadhar_number' ? '[redacted]' : plan.next[key], source: 'upload', row_number: other.rowNumber,
             employee_id: other.row.id, full_name: other.next.full_name, emp_code: other.next.emp_code }));
           const existingError = errors.find(error => error.row_number === plan.rowNumber);
           if (existingError) { existingError.message += ` ${message}`; existingError.conflicts.push(...conflicts); }

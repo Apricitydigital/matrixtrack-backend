@@ -147,6 +147,7 @@ async function main() {
       UPDATE professional_punch_cutoffs SET cutoff_time='00:00';`);
     let faceAllowed=true, geoAllowed=true, faceCalls=0;
     const controller=load('../controllers/professionalAttendanceController.js',{
+      '../utils/professionalAttendanceIdentity':require('../utils/professionalAttendanceIdentity'),
       '../config/db':pool,'../utils/professionalPunchCutoff':utility,
       '../utils/logger':{info(){},warn(){},error:(label,e)=>console.error(label,e)},
       '../utils/faceService':{verifyFaceMatch:async()=>{faceCalls++;return {isMatch:faceAllowed};}},

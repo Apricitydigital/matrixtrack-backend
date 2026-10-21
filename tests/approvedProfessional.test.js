@@ -26,9 +26,15 @@ function harness(options = {}) {
   };
   const pool = { connect: async () => client, query: async () => ({ rows: [{ email: options.adminEmail || 'mtadmin@apricitydigital.in', role: 'admin' }] }) };
   const module = { exports: {} };
+  const encryption = { encryptAadhar: value => `encrypted:${value}`, decryptAadhar: value => value.replace('encrypted:', '') };
+  const identityModule = {exports:{}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../utils/professionalIdentity.js'),'utf8'), {
+    module:identityModule,require:()=>encryption,
+  });
   const dependencies = {
     '../config/db': pool,
-    '../utils/encryption': { encryptAadhar: value => `encrypted:${value}`, decryptAadhar: value => value.replace('encrypted:', '') },
+    '../utils/encryption': encryption,
+    '../utils/professionalIdentity': identityModule.exports,
     '../controllers/supervisorSelfPunchController': {},
     './supervisorSelfPunchController': { getVisibilityCTE: () => '', visibilityWhereClause: 'TRUE' },
     '../utils/s3SelfPunch': { getSignedS3Url: async value => value },
@@ -180,8 +186,9 @@ test('changed mobile checks only mobile, so an unchanged legacy duplicate employ
   const res = await h.run({ id, updated_at: timestamp, mobile: '9123456789', emp_code: employee.emp_code });
   assert.equal(res.body.changed, 1);
   const query = h.queries.find(q => q.sql.includes('FROM professional_employees WHERE id <>'));
-  assert.match(query.sql, /mobile = \$2/);
-  assert.doesNotMatch(query.sql, /emp_code =|LOWER\(email\)/);
+  assert.equal(query.params[1],'9123456789');
+  assert.match(query.sql,/REGEXP_REPLACE\(TRIM\(mobile\)/);
+  assert.doesNotMatch(query.sql,/TRIM\(emp_code\)|TRIM\(email\)/);
 });
 
 test('email casing alone is unchanged and does not invoke duplicate validation', async () => {

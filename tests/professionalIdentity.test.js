@@ -10,11 +10,11 @@ test('identity check looks at accounts and pending/approved requests, excluding 
   const client = { query: async (sql, params) => { captured = { sql, params }; return { rows: [{ id: 'existing', source: 'account' }] }; } };
   const result = await findProfessionalIdentityConflict(client, { mobile: '9876543210', email: ' TEST@EXAMPLE.COM ', empCode: ' NEWCODE ', excludeRequestId: 'own-id' });
   assert.equal(result.source, 'account');
-  assert.deepEqual(captured.params, ['9876543210', 'test@example.com', 'NEWCODE', 'own-id']);
+  assert.deepEqual(captured.params, ['9876543210', 'test@example.com', 'newcode', 'own-id']);
   assert.match(captured.sql, /professional_employees/);
   assert.match(captured.sql, /status IN \('pending', 'approved'\)/);
-  assert.match(captured.sql, /pe.mobile = \$1/);
-  assert.match(captured.sql, /LOWER\(TRIM\(pe.emp_code\)\)/);
+  assert.match(captured.sql, /REGEXP_REPLACE\(TRIM\(pe.mobile\)/);
+  assert.match(captured.sql, /REGEXP_REPLACE\(TRIM\(pe.emp_code\)/);
   assert.match(captured.sql, /pe.id <> \$4/);
 });
 
@@ -26,6 +26,20 @@ test('Aadhaar duplicate check compares decrypted values even with different ciph
   const client = { query: async () => ({ rows: [{ aadhar_number: 'iv1:cipher1' }, { aadhar_number: 'iv2:cipher2' }] }) };
   assert.equal(await module.exports.hasAadhaarRequestAtWard(client, '123456789012', 1), true);
   assert.equal(await module.exports.hasAadhaarRequestAtWard(client, '999999999999', 1), false);
+});
+
+test('an unreadable Aadhaar index fails closed and cannot be reused partially by an upload', async () => {
+  const module={exports:{}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../utils/professionalIdentity.js'),'utf8'),{
+    module,require:()=>({decryptAadhar:value=>{if(value==='broken')throw Error('Unreadable');return value;}}),
+  });
+  const cache={};let reads=0;
+  const client={query:async()=>{reads++;return {rows:[{id:'owner',aadhar_number:'111111111111'},{id:'bad',aadhar_number:'broken'}]};}};
+  for(let i=0;i<2;i++) await assert.rejects(
+    module.exports.findProfessionalAadhaarConflict(client,'222222222222',{cache}),
+    error=>error.code==='PROFESSIONAL_IDENTITY_UNVERIFIED');
+  assert.equal(cache.aadhaarOwners,undefined);
+  assert.equal(reads,2);
 });
 
 function loadController(file, client, identityConflict) {

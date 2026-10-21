@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../config/db');
 const authenticateProfessional = require('../middleware/professionalAuth');
+const { resolveAttendanceIdentity } = require('../utils/professionalAttendanceIdentity');
 
 const { login } = require('../controllers/professionalAuthController');
 const { sendOtp, verifyOtp } = require('../controllers/professionalOtpController');
@@ -44,10 +45,10 @@ router.use(authenticateProfessional);
 router.get('/profile', getProfile);
 
 // Attendance
-router.post('/attendance/punch-in', punchIn);
-router.post('/attendance/punch-out', punchOut);
-router.get('/attendance/monthly', getMonthlyAttendance);
-router.get('/attendance/status', getTodayStatus);
+router.post('/attendance/punch-in', resolveAttendanceIdentity, punchIn);
+router.post('/attendance/punch-out', resolveAttendanceIdentity, punchOut);
+router.get('/attendance/monthly', resolveAttendanceIdentity, getMonthlyAttendance);
+router.get('/attendance/status', resolveAttendanceIdentity, getTodayStatus);
 router.get('/geofencing/status', getMyGeofenceStatus);
 router.post('/geofencing/request', submitProfessionalGeofenceRequest);
 
