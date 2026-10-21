@@ -69,11 +69,11 @@ const sources = {
 const attendanceColumns = ['id','professional_id','date','punch_in','punch_out','attempted_punch_in',
   'punch_approval_status','auto_punched_out','out_address','punch_in_latitude','punch_in_longitude',
   'punch_out_latitude','punch_out_longitude','punch_in_photo_url','punch_out_photo_url',
-  'ward_id','city_id','zone_id'];
+  'ward_id','city_id','zone_id','kothi_id'];
 const leaveColumns = ['id','professional_id','requested_date','leave_type','status','requested_at',
   'reviewed_at','review_note','reviewed_by','pm_reviewer_id','ho_reviewer_id','hod_reviewer_id'];
 const projectColumns = (columns, alias, linked=false) => columns.map(column => linked && column==='professional_id'
-  ? 'm.primary_id AS professional_id' : `${alias}.${column}`).join(',');
+  ? 'm.primary_id AS professional_id' : column==='kothi_id'?`(to_jsonb(${alias})->>'kothi_id')::integer AS kothi_id`:`${alias}.${column}`).join(',');
 
 // Only SELECT queries from the reporting controller use this projection. The
 // stored rows, approval foreign keys, photos and original source IDs never move.

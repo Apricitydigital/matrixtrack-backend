@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const pool = require('../config/db');
+const {resolveEmployeeAlias}=require('../utils/employeeAliases');
 
 /**
  * Middleware specifically for professional employees (self punch-in).
@@ -21,6 +22,7 @@ const authenticateProfessional = async (req, res, next) => {
     if (!decoded.professional_id) {
       return res.status(403).json({ success: false, error: "Invalid token type for professional routes" });
     }
+    decoded.professional_id=await resolveEmployeeAlias('professional',decoded.professional_id);
 
     // Read current geography after profile edits even for an existing login token.
     const { rows } = await pool.query('SELECT city_id, zone_id, ward_id, kothi_id, is_active FROM professional_employees WHERE id = $1', [decoded.professional_id]);

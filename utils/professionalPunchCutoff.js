@@ -2,19 +2,27 @@ const fs = require('fs');
 const path = require('path');
 const pool = require('../config/db');
 let ready;
+function markPunchCutoffSchemaReady(){ready=Promise.resolve();}
 function ensurePunchCutoffSchema() {
   if (!ready) ready = (async () => {
     const client = await pool.connect();
+    let schemaError;
     try {
       await client.query('BEGIN');
+      await client.query("SET LOCAL lock_timeout='5s'");
+      await client.query("SET LOCAL idle_in_transaction_session_timeout='60s'");
       await client.query(fs.readFileSync(path.join(__dirname,'../db/migrations/20261016_professional_hod.sql'),'utf8'));
       await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-punch-cutoff-schema'))");
       await client.query(fs.readFileSync(path.join(__dirname, '../db/migrations/20261014_professional_punch_cutoff.sql'), 'utf8'));
       await client.query(fs.readFileSync(path.join(__dirname, '../db/migrations/20261014_professional_punch_cutoff_bulk.sql'), 'utf8'));
       await client.query(fs.readFileSync(path.join(__dirname,'../db/migrations/20261016_professional_hod_punch_approval.sql'),'utf8'));
       await client.query('COMMIT');
-    } catch (error) { await client.query('ROLLBACK'); throw error; }
-    finally { client.release(); }
+    } catch (error) {
+      schemaError=error;
+      if(error.message!=='Query read timeout')try{await client.query('ROLLBACK');}catch(rollbackError){console.error('[PunchCutoff Schema] Rollback failed:',rollbackError.message);}
+      throw error;
+    }
+    finally { client.release(schemaError); }
   })().catch(error => { ready = null; throw error; });
   return ready;
 }
@@ -83,4 +91,4 @@ function approvalProgress(record, reviews=[]) {
     ho:stage(ho,ho ? (ho.action==='ho_allow' ? 'approved' : 'rejected') : pm?.action==='pm_reject' ? 'not_required' : record.punch_approval_status==='pending_ho' ? 'pending' : 'waiting_for_pm'),
   };
 }
-module.exports = { ensurePunchCutoffSchema, capabilities, nextDecision, notifyStage, PM_ROLES, getPunchSettings, loadPunchApprovals, approvalProgress };
+module.exports = { ensurePunchCutoffSchema, markPunchCutoffSchemaReady, capabilities, nextDecision, notifyStage, PM_ROLES, getPunchSettings, loadPunchApprovals, approvalProgress };

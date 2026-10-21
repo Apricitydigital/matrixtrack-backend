@@ -4,7 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const path = require("path");
-const cron = require("node-cron");
+const cron = require('./utils/startupCron').createStartupCron(require('node-cron'));
 const { runAutoPunchOut } = require("./utils/autoPunchOutScheduler");
 const { runMigrations } = require("./db/migrations");
 const pool = require("./config/db");
@@ -540,6 +540,7 @@ runMigrations().then(() => {
   // Initialize socket.io on the HTTP server
   socketUtil.init(httpServer);
   httpServer.listen(PORT, "0.0.0.0", () => {
+    cron.start();
     console.log(`Server running on port ${PORT}`);
   });
 }).catch(err => {

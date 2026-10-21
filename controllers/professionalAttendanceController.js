@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const {hasAttendanceSite}=require('../utils/professionalAttendanceSite');
 const { capabilities, ensurePunchCutoffSchema, notifyStage, getPunchSettings, loadPunchApprovals, approvalProgress } = require('../utils/professionalPunchCutoff');
 const logger = require('../utils/logger');
 const { verifyFaceMatch } = require('../utils/faceService');
@@ -17,17 +18,10 @@ const ensureProfessionalAttendanceColumns = async (client) => {
   if (attendanceColumnsPromise) return attendanceColumnsPromise;
   attendanceColumnsPromise = (async () => {
 
-    await client.query(`
-      ALTER TABLE professional_attendance
-        ADD COLUMN IF NOT EXISTS punch_in_latitude DOUBLE PRECISION,
-        ADD COLUMN IF NOT EXISTS punch_in_longitude DOUBLE PRECISION,
-        ADD COLUMN IF NOT EXISTS punch_out_latitude DOUBLE PRECISION,
-        ADD COLUMN IF NOT EXISTS punch_out_longitude DOUBLE PRECISION,
-        ADD COLUMN IF NOT EXISTS punch_in_photo_url VARCHAR(1024),
-        ADD COLUMN IF NOT EXISTS punch_out_photo_url VARCHAR(1024),
-        ADD COLUMN IF NOT EXISTS auto_punched_out BOOLEAN DEFAULT false,
-        ADD COLUMN IF NOT EXISTS out_address TEXT
-    `);
+    const required=['punch_in_latitude','punch_in_longitude','punch_out_latitude','punch_out_longitude','punch_in_photo_url','punch_out_photo_url','auto_punched_out','out_address'];
+    const {rows}=await client.query(`SELECT column_name FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='professional_attendance' AND column_name=ANY($1::text[])`,[required]);
+    if(rows.length!==required.length)throw new Error('Professional attendance schema upgrade is required.');
 
   })().catch(error => { attendanceColumnsPromise = null; throw error; });
   return attendanceColumnsPromise;
@@ -573,14 +567,15 @@ const punchIn = async (req, res) => {
     });
 
     // 5. Insert Punch In record
+    const recordSite=await hasAttendanceSite(client);
     const insertQuery = `
       INSERT INTO professional_attendance (
         professional_id, date, punch_in, ward_id, zone_id, city_id,
         punch_in_latitude, punch_in_longitude, punch_in_photo_url,
-        attempted_punch_in, punch_approval_status, punch_cutoff
+        attempted_punch_in, punch_approval_status, punch_cutoff${recordSite?', kothi_id':''}
       )
       VALUES ($1, $2, CASE WHEN $10='accepted' THEN $9::timestamptz ELSE NULL END, $3, $4, $5, $6, $7, $8,
-        CASE WHEN $10='accepted' THEN NULL ELSE $9::timestamptz END, $10, $11)
+        CASE WHEN $10='accepted' THEN NULL ELSE $9::timestamptz END, $10, $11${recordSite?', $12':''})
       RETURNING punch_in
     `;
 
@@ -595,7 +590,8 @@ const punchIn = async (req, res) => {
       punchInPhotoKey,
       cutoff.attempted_at,
       approvalStatus,
-      cutoff.cutoff_time || null
+      cutoff.cutoff_time || null,
+      ...(recordSite?[req.professional.kothi_id || null]:[])
     ]);
 
     if (['pending_pm','pending_hod'].includes(approvalStatus)) await notifyStage(client, professional_id, today, approvalStatus);

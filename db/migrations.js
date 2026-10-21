@@ -9,10 +9,14 @@ const path = require("path");
 const { ensureProfessionalLeaveSchema } = require("../utils/professionalLeaveSchema");
 const { ensureProfessionalPushSchema } = require("../utils/professionalPushService");
 const { markAttendanceBlockSchemaReady } = require('../utils/professionalAttendanceBlock');
+const { markPunchCutoffSchemaReady } = require('../utils/professionalPunchCutoff');
+const { migrationConnection } = require('../utils/migrationConnection');
 
 async function runMigrations() {
-  const client = await pool.connect();
+  const client = await migrationConnection(pool);
+  let migrationError;
   try {
+    client.setStep('core attendance and employee schema');
     console.log("[Migration] Running auto punch-out migrations...");
 
     await client.query(`
@@ -59,6 +63,7 @@ async function runMigrations() {
     console.log("[Migration] idx_attendance_punch_out_time index ready.");
 
     console.log("[Migration] Running Self Punch-In migrations...");
+    client.setStep('self punch-in schema');
     const selfPunchInSqlPath = path.join(__dirname, "migrations", "20260505_self_punch_in_up.sql");
     if (fs.existsSync(selfPunchInSqlPath)) {
       const selfPunchInSql = fs.readFileSync(selfPunchInSqlPath, "utf8");
@@ -88,10 +93,13 @@ async function runMigrations() {
       console.warn("[Migration] Designation City linkage SQL file not found at:", desigCitySqlPath);
     }
 
-    await ensureProfessionalLeaveSchema();
+    client.setStep('professional leave schema');
+    await ensureProfessionalLeaveSchema({expirePending:false});
     console.log("[Migration] Professional leave schema ready.");
+    client.setStep('professional push schema');
     await ensureProfessionalPushSchema(client);
     console.log("[Migration] Professional push schema ready.");
+    client.setStep('startup account and reporting schema');
 
     // ── emp_code columns ────────────────────────────────────────────────────
     await client.query(`
@@ -258,10 +266,12 @@ async function runMigrations() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_api_key_logs_key ON api_key_usage_logs (api_key_id)`);
     console.log("[Migration] ✅ api_key_usage_logs table ready.");
 
+    client.setStep('professional weekly-off schema');
     await client.query('BEGIN');
     await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-weekly-off-schema'))");
     await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261016_professional_hod.sql'),'utf8'));
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261009_professional_weekly_off.sql'), 'utf8'));
+    client.setStep('professional punch-cutoff schema');
     await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-punch-cutoff-schema'))");
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_professional_punch_cutoff.sql'), 'utf8'));
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_professional_punch_cutoff_bulk.sql'), 'utf8'));
@@ -271,12 +281,18 @@ async function runMigrations() {
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261021_professional_attendance_blocks.sql'), 'utf8'));
     await client.query('COMMIT');
     markAttendanceBlockSchemaReady();
+    markPunchCutoffSchemaReady();
     console.log("[Migration] All migrations complete.");
   } catch (err) {
-    await client.query('ROLLBACK');
-    console.error("[Migration] Migration error (non-fatal):", err.message);
+    migrationError=err;
+    // A client-side read timeout leaves the protocol/query state uncertain.
+    // Destroy that connection; issuing another queued query can hide the cause.
+    if(err.message!=='Query read timeout')try{await client.query('ROLLBACK');}
+    catch(rollbackError){console.error('[Migration] Rollback failed:',rollbackError.message);}
+    console.error('[Migration] Failed at',err.migrationStep || 'schema initialization',err.message);
+    throw err;
   } finally {
-    client.release();
+    await client.release(migrationError);
   }
 }
 

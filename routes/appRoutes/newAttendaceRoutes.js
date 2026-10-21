@@ -121,6 +121,8 @@
 const express = require("express");
 const axios = require("axios");
 const router = express.Router();
+const {resolveRegularRequest,resolveEmployeeAlias,hasRelation}=require('../../utils/employeeAliases');
+router.use(resolveRegularRequest);
 const pool = require("../../config/db");
 const bcrypt = require("bcryptjs");
 const multer = require("multer");
@@ -666,7 +668,7 @@ async function resolveEmployeeFromFaceIdentifiers({
   const tryResolveByEmpIdOnly = async (empIdStr) => {
     const normalized = normalizeText(empIdStr);
     if (!normalized) return null;
-    const numericEmpId = normalizeId(normalized);
+    const numericEmpId = normalizeId(await resolveEmployeeAlias('regular',normalized));
     if (numericEmpId === null) return null;
     const { rows } = await pool.query(
       `SELECT emp_id, emp_code, name, face_embedding FROM employee WHERE emp_id = $1 LIMIT 1`,
@@ -699,11 +701,13 @@ async function resolveEmployeeFromFaceIdentifiers({
   let employeeRecord = null;
 
   if (faceId) {
+    const useAliases=await hasRelation('workforce_employee_aliases');
     const { rows } = await pool.query(
       `
         SELECT emp_id, emp_code, name, face_embedding
           FROM employee
          WHERE face_id = $1
+            ${useAliases?"OR emp_id::text IN (SELECT target_id FROM workforce_employee_aliases WHERE employee_kind='regular' AND face_id=$1)":''}
             OR emp_id::text = $1
             OR LOWER(TRIM(emp_code)) = LOWER(TRIM($1))
          LIMIT 1
@@ -2185,7 +2189,7 @@ router.get("/image", async (req, res) => {
   }
 });
 
-router.post("/face-attendance", authenticate, upload.single("image"), async (req, res) => {
+router.post("/face-attendance", authenticate, upload.single("image"), resolveRegularRequest, async (req, res) => {
   try {
     safeDebugLog(`[${new Date().toISOString()}] /face-attendance hit! mode: ${req.body?.groupMode}`);
     const actorRole = String(req.user?.role || "").trim().toLowerCase();
@@ -2997,7 +3001,7 @@ router.post("/face-attendance", authenticate, upload.single("image"), async (req
 });
 
 // Face attendance with AWS liveness pre-check (single employee)
-router.post("/face-liveness", upload.single("image"), async (req, res) => {
+router.post("/face-liveness", upload.single("image"), resolveRegularRequest, async (req, res) => {
   try {
     const {
       punch_type: rawPunchType,

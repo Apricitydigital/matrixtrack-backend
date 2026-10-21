@@ -1,6 +1,13 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../../config/db");
+router.use(require('../../utils/employeeAliases').resolveRegularRequest);
+router.use(async(req,res,next)=>{
+ try {
+  if(req.query.id!==undefined) req.query.id=await require('../../utils/employeeAliases').resolveEmployeeAlias('regular',req.query.id);
+  next();
+ }catch(error){next(error);}
+});
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_RANGE_DAYS = 120;

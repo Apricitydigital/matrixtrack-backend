@@ -6,8 +6,11 @@ const ensureProfessionalLeaveSchema = async ({ expirePending = true } = {}) => {
   if (!schemaPromise) {
     schemaPromise = (async () => {
       const client = await pool.connect();
+      let schemaError;
       try {
         await client.query("BEGIN");
+        await client.query("SET LOCAL lock_timeout='5s'");
+        await client.query("SET LOCAL idle_in_transaction_session_timeout='60s'");
         await client.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
 
         await client.query(`
@@ -159,10 +162,11 @@ const ensureProfessionalLeaveSchema = async ({ expirePending = true } = {}) => {
         await client.query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/20261016_professional_hod_leave_approval.sql'), 'utf8'));
         await client.query("COMMIT");
       } catch (error) {
-        await client.query("ROLLBACK");
+        schemaError=error;
+        if(error.message!=='Query read timeout')try{await client.query('ROLLBACK');}catch(rollbackError){console.error('[Leave Schema] Rollback failed:',rollbackError.message);}
         throw error;
       } finally {
-        client.release();
+        client.release(schemaError);
       }
     })().catch((error) => {
       schemaPromise = null;

@@ -2,6 +2,8 @@ const pool = require('../config/db');
 const jwt = require('jsonwebtoken');
 const { sendSms } = require('../utils/smsNotifier');
 const logger = require('../utils/logger');
+const {hasLoginAliases,resolveEmployeeAlias}=require('../utils/employeeAliases');
+const {findProfessionalMobile}=require('../utils/professionalMergeLogin');
 const PROFESSIONAL_JWT_EXPIRES_IN = process.env.PROFESSIONAL_JWT_EXPIRES_IN || '45d';
 const APP_JWT_EXPIRES_IN = process.env.APP_JWT_EXPIRES_IN || '45d';
 
@@ -162,14 +164,7 @@ const sendOtp = async (req, res) => {
 
   try {
     // ── Check Professional table ──────────────────────────────────────────────
-    const profResult = await pool.query(
-      `SELECT id, full_name, is_active
-       FROM professional_employees
-       WHERE mobile = $1 OR mobile = $2
-       ORDER BY is_active DESC, created_at DESC
-       LIMIT 1`,
-      [normalizedMobile, `+91${normalizedMobile}`]
-    );
+    const profResult = await findProfessionalMobile(pool,normalizedMobile,await hasLoginAliases());
 
     // ── Check Supervisor/Admin table ──────────────────────────────────────────
     const supResult = await pool.query(
@@ -325,14 +320,7 @@ const verifyOtp = async (req, res) => {
       if (supResult.rows.length > 0) {
         record = { userType: 'supervisor', supervisorId: supResult.rows[0].user_id, attempts: 0, expiresAt: Date.now() + OTP_TTL_MS };
       } else {
-        const profResult = await pool.query(
-          `SELECT id, full_name, is_active
-           FROM professional_employees
-           WHERE mobile = $1 OR mobile = $2
-           ORDER BY is_active DESC, created_at DESC
-           LIMIT 1`,
-          [normalizedMobile, `+91${normalizedMobile}`]
-        );
+        const profResult = await findProfessionalMobile(pool,normalizedMobile,await hasLoginAliases());
         if (profResult.rows.length > 0) {
           record = { userType: 'professional', professionalId: profResult.rows[0].id, attempts: 0, expiresAt: Date.now() + OTP_TTL_MS };
         }
@@ -371,8 +359,9 @@ const verifyOtp = async (req, res) => {
   try {
     // ── PROFESSIONAL login ────────────────────────────────────────────────────
     if (record.userType === 'professional') {
+      record.professionalId=await resolveEmployeeAlias('professional',record.professionalId);
       const { rows } = await pool.query(
-        `SELECT pe.id, pe.email, pe.face_locked, pe.ward_id, pe.zone_id, pe.city_id,
+        `SELECT pe.id, pe.email, pe.face_locked, pe.ward_id, pe.zone_id, pe.city_id,pe.is_active,
                 c.city_name, z.zone_name, w.ward_name
          FROM professional_employees pe
          LEFT JOIN cities c ON c.city_id = pe.city_id
@@ -387,6 +376,7 @@ const verifyOtp = async (req, res) => {
       }
 
       const professional = rows[0];
+      if(!professional.is_active)return res.status(403).json({success:false,message:'Account is deactivated. Please contact your supervisor.'});
       const payload = {
         professional_id: professional.id,
         ward_id: professional.ward_id,

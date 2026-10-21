@@ -2,6 +2,8 @@ const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
+const {hasLoginAliases}=require('../utils/employeeAliases');
+const {findProfessionalLogin}=require('../utils/professionalMergeLogin');
 let professionalPasswordColumnCache = null;
 const PROFESSIONAL_JWT_EXPIRES_IN = process.env.PROFESSIONAL_JWT_EXPIRES_IN || '45d';
 
@@ -55,29 +57,20 @@ const login = async (req, res) => {
     // (e.g. one rejected request + one approved request).
     const identifier = email.trim().toLowerCase();
     const rawIdentifier = email.trim();
-    const query = `
-      SELECT pe.id, pe.email, pe.mobile, ${passwordColumn} AS password_hash, pe.is_active, pe.face_locked, pe.ward_id, pe.zone_id, pe.city_id 
-      FROM professional_employees pe
-      WHERE LOWER(pe.email) = $1 OR pe.mobile = $1 OR pe.mobile = $2
-      ORDER BY pe.is_active DESC,
-               (SELECT COUNT(*) FROM professional_attendance pa WHERE pa.professional_id = pe.id) DESC,
-               pe.created_at DESC
-      LIMIT 1
-    `;
-    const { rows } = await pool.query(query, [identifier, rawIdentifier]);
-
-    if (rows.length === 0) {
+    const {professional,retiredHashes}=await findProfessionalLogin(pool,identifier,rawIdentifier,passwordColumn,await hasLoginAliases());
+    if (!professional) {
       return res.status(401).json({ success: false, message: 'Invalid credentials.' });
     }
-
-    const professional = rows[0];
 
     if (!professional.is_active) {
       return res.status(403).json({ success: false, message: 'Account is deactivated. Please contact your supervisor.' });
     }
 
     // Verify Password
-    const isMatch = await bcrypt.compare(password, professional.password_hash);
+    let isMatch=false;
+    for(const hash of new Set([professional.password_hash,...retiredHashes].filter(Boolean))) {
+      if(await bcrypt.compare(password,hash)){isMatch=true;break;}
+    }
     if (!isMatch) {
       return res.status(401).json({ success: false, message: 'Invalid credentials.' });
     }

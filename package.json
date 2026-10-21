@@ -8,7 +8,9 @@
     "migrate:structure:safe": "node scripts/migrate-structure-safe.js",
     "migrate:structure:safe:dry": "node scripts/migrate-structure-safe.js --dry-run",
     "migrate:structure:safe:force": "node scripts/migrate-structure-safe.js --force",
-    "migrate:structure:safe:force:autopunch": "node scripts/migrate-structure-safe.js --force --skip=20260311_expand_leave_types.sql"
+    "migrate:structure:safe:force:autopunch": "node scripts/migrate-structure-safe.js --force --skip=20260311_expand_leave_types.sql",
+    "test:workforce": "node --test --test-concurrency=1 tests/startupDatabase.test.js tests/mergeSchemaReadiness.test.js tests/attendanceReportBudget.test.js tests/workforceAttendanceMerge.test.js tests/workforceReview.integration.js tests/combinedAttendance.integration.js",
+    "migrate:workforce": "node scripts/migrate-workforce.js"
   },
   "keywords": [],
   "author": "",
@@ -46,6 +48,7 @@
   "devDependencies": {
     "autoprefixer": "^10.4.20",
     "postcss": "^8.5.3",
-    "tailwindcss": "^4.0.7"
+    "tailwindcss": "^4.0.7",
+    "@electric-sql/pglite": "0.5.8"
   }
 }

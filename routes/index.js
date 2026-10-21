@@ -57,6 +57,7 @@ router.use("/sectors", sectorRoutes);
 router.use("/geofencing", geofencingRoutes);
 router.use("/departments", departmentRoutes);
 router.use("/designations", designationRoutes);
+router.use('/attendance/combined',require('./combinedAttendanceRoutes'));
 router.use("/attendance", attendanceRoutes);
 router.use("/supervisor", supervisorRoutes);
 router.use("/supervisor/self-punch", supervisorSelfPunchRoutes);
