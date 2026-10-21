@@ -72,6 +72,7 @@ router.use("/professional", professionalRoutes);
 // allowing both admins and supervisors to access these specific reporting endpoints.
 router.use('/admin/professional-holidays',require('./professionalHolidayRoutes'));
 router.use('/admin/professional-employee-blocks',require('./professionalEmployeeBlockRoutes'));
+router.use('/admin/workforce-review',require('./workforceReviewRoutes'));
 router.use("/admin", professionalReportsRoutes);
 router.use("/admin", professionalGeofencingAdminRoutes);
 
