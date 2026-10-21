@@ -6,7 +6,12 @@
 
 const express = require('express');
 const router = express.Router();
-const { recordConsentApi } = require('../controllers/consentController');
+const { recordConsentApi, getConsentStatusApi } = require('../controllers/consentController');
+const authenticateToken = require('../middleware/authMiddleware');
+const authenticateProfessional = require('../middleware/professionalAuth');
+
+router.get('/professional/status', authenticateProfessional, getConsentStatusApi);
+router.get('/supervisor/status', authenticateToken, getConsentStatusApi);
 
 /**
  * POST /api/consent/log

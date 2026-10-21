@@ -96,7 +96,27 @@ const recordConsentApi = async (req, res) => {
     }
 };
 
+// Identity comes from the verified login token, never from a supplied account ID.
+const getConsentStatusApi = async (req, res) => {
+    try {
+        const isProfessional = Boolean(req.professional);
+        const id = isProfessional ? req.professional.professional_id : req.user.user_id;
+        if (!id) return res.status(400).json({ success: false, message: 'Account identity is required.' });
+        const { rows } = await pool.query(`
+            SELECT consent_given FROM user_consent_logs
+            WHERE ${isProfessional ? 'user_id = $1' : 'supervisor_id = $1'}
+              AND actor_type = $2 AND consent_type = $3 AND consent_version = $4
+            ORDER BY created_at DESC, id DESC LIMIT 1
+        `, [id, isProfessional ? 'SELF' : 'SUPERVISOR_PROXY', 'BIOMETRIC_FACE_AND_AADHAR', 'v1.0']);
+        return res.json({ success: true, consentGiven: rows[0]?.consent_given === true });
+    } catch (error) {
+        logger.error('[Consent] Failed to check consent:', error);
+        return res.status(500).json({ success: false, message: 'Failed to check consent.' });
+    }
+};
+
 module.exports = {
+    getConsentStatusApi,
     logUserConsent,
     recordConsentApi
 };
