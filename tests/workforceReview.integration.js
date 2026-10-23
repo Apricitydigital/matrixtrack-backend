@@ -11,9 +11,12 @@ for(const verb of ['get','post','patch','delete'])router[verb]=(route,...handler
 const pool={query:(sql,params)=>params ? db.query(sql,params) : db.exec(sql).then(results=>results.at(-1)),connect:async()=>({query:(sql,params)=>db.query(sql,params),release(){}})};
 const mergeMigration=async()=>{
  await pool.query(fs.readFileSync(path.join(__dirname,'../db/migrations/20261021_workforce_merge.sql'),'utf8'));
+ await pool.query(fs.readFileSync(path.join(__dirname,'../db/migrations/20261022_workforce_merge_recovery.sql'),'utf8'));
+ await pool.query(fs.readFileSync(path.join(__dirname,'../db/migrations/20261022_merge_weeklyoff_recovery.sql'),'utf8'));
  // Explicit fixture deployment setup, separate from production's read-only gate.
  const {references,installAliasTriggers}=require('../utils/workforceMerge');
  for(const kind of ['regular','professional'])await installAliasTriggers(pool,{kind,links:await references(pool,kind)});
+ await require('../utils/workforceMergeRecovery').installRecoveryTriggers(pool);
 };
 const filename=path.join(__dirname,'../routes/workforceReviewRoutes.js');
 const mocks={'../utils/employeeAliases':{ensureMergeSchema:mergeMigration},express:{Router:()=>router},'../config/db':pool,'../middleware/authMiddleware':(req,res,next)=>next(),
@@ -139,6 +142,8 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  await db.exec('DROP INDEX fixture_single_note');
  // Alias chains are flattened when the former main ID is merged again.
  const nextParams={kind:'regular',id:'12'},nextBody={sourceIds:['10']};
+ assert.equal((await call('post','/:kind/:id/merge-preview',{params:nextParams,body:nextBody})).code,409,'Another merge must not invalidate an open recovery window');
+ await db.query("UPDATE workforce_merge_audit SET restore_until=NOW()-INTERVAL '1 second'");
  mp=await call('post','/:kind/:id/merge-preview',{params:nextParams,body:nextBody});assert.equal(mp.code,200);
  r=await call('post','/:kind/:id/merge',{params:nextParams,body:{...nextBody,confirmation:'12',reason:'Keep newest profile',fingerprint:mp.data.fingerprint}});assert.equal(r.code,200,JSON.stringify(r.data));
  assert.equal((await db.query("SELECT target_id FROM workforce_employee_aliases WHERE source_id='11'")).rows[0].target_id,'12');
@@ -224,6 +229,9 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
   console.log(`PASS: ${label} (${original.length} rows -> ${final.length} unique attendance days)`);
  }
  const day=(person,date,inTime='09:00',outTime='18:00',extra={})=>({person,date,in:inTime && `${date} ${inTime}`,out:outTime && `${date} ${outTime}`,...extra});
+ await professionalCase('Requested example: 12,13 plus 11,14 plus 11,20 counts five present dates',[
+  day(0,'2026-10-12'),day(0,'2026-10-13'),day(1,'2026-10-11'),day(1,'2026-10-14'),day(2,'2026-10-11'),day(2,'2026-10-20'),
+ ],{expectedDays:5,expectedMerged:async final=>assert.deepEqual(final.map(row=>row.date).sort(),['2026-10-11','2026-10-12','2026-10-13','2026-10-14','2026-10-20'])});
  await professionalCase('Ashu: three IDs, same code/mobile, 2 + 3 days with one common date',[
   day(0,'2026-10-01'),day(0,'2026-10-02'),
   day(1,'2026-10-02'),day(1,'2026-10-03'),day(1,'2026-10-04'),day(2,'2026-10-02')
@@ -268,6 +276,26 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  await professionalCase('Dependent evidence conflict rolls back consolidation',[day(0,'2026-10-01'),day(1,'2026-10-01')],{blocked:true,beforePreview:async ids=>{
   await db.query(`INSERT INTO professional_punch_evidence(attendance_id,label) SELECT id,'same-label' FROM professional_attendance WHERE professional_id=ANY($1::uuid[])`,[ids]);
  }});
+ await db.query(`INSERT INTO employee(emp_id,name,emp_code,phone,ward_id,face_embedding) VALUES
+ (800,'Restore Person','UNDO800','8888888888',10,'face'),(801,'Restore Person','UNDO801','8888888888',10,'face')`);
+ await db.query("INSERT INTO attendance(emp_id,date,punch_in_time) VALUES(801,'2026-10-10','2026-10-10 09:00')");
+ const undoParams={kind:'regular',id:'800'};
+ const undoPreview=await call('post','/:kind/:id/merge-preview',{params:undoParams,body:{sourceIds:['801']}});
+ assert.equal(undoPreview.code,200);
+ const merged=await call('post','/:kind/:id/merge',{params:undoParams,body:{sourceIds:['801'],confirmation:'800',reason:'Recovery fixture',fingerprint:undoPreview.data.fingerprint}});
+ assert.equal(merged.code,200);
+ await db.query("INSERT INTO attendance(emp_id,date,punch_in_time) VALUES(800,'2026-10-11','2026-10-11 09:00')");
+ const restoreParams={mergeId:String(merged.data.mergeId)};
+ const restore=await call('post','/merges/:mergeId/revert-preview',{params:restoreParams});
+ assert.equal(restore.code,200,JSON.stringify(restore.data));
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM employee WHERE emp_id=801')).rows[0].n,0,'Preview must not restore persistently');
+ const reverted=await call('post','/merges/:mergeId/revert',{params:restoreParams,body:{confirmation:'800',reason:'Undo test merge',fingerprint:restore.data.fingerprint}});
+ assert.equal(reverted.code,200,JSON.stringify(reverted.data));
+ assert.equal((await db.query("SELECT emp_id FROM attendance WHERE date='2026-10-10' AND emp_id=801")).rows.length,1);
+ assert.equal((await db.query("SELECT emp_id FROM attendance WHERE date='2026-10-11' AND emp_id=800")).rows.length,1,'New main punches survive');
+ assert.equal((await call('post','/merges/:mergeId/revert-preview',{params:restoreParams})).code,409,'Cannot revert twice');
+ console.log('PASS: merge recovery preview, exact ownership restoration, new main punches preserved and repeated revert blocked.');
+ await require('./workforceMergeRecovery.integration')({db,pool,call});
  await require('./professionalMergeSession.integration')({db,pool,call});
  await require('./professionalMergeCredentials.integration')({db,pool,call});
  console.log('PASS: delayed old-ID attendance writes, old employee-code login lookup, request ID redirection, professional credential conflict protection, professional history transfer and existing-token continuity.');

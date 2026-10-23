@@ -1,11 +1,11 @@
 /**
  * ⏰ AUTO PUNCH-OUT SCHEDULER
  * ----------------------------
- * Runs every hour (e.g. at XX:00) and processes for 10 minutes.
+ * Runs at 00:00 and 07:00 IST.
  * Automatically punches out employees who:
- *   - Have punched IN today
+ *   - Have an open punch from today or an earlier date
  *   - Have NOT punched OUT
- *   - Have been punched in for >= 9 hours
+ *   - Have been punched in for >= 8 hours
  *
  * Marks these records with: auto_punched_out = true
  */
@@ -24,18 +24,18 @@ const getNowIST = () =>
 
 /**
  * Core function: finds all attendance records where:
- *  - today's date
+ *  - today or an earlier date (includes overnight shifts)
  *  - punch_in_time IS NOT NULL
  *  - punch_out_time IS NULL
  *  - punch_in_time was >= AUTO_PUNCHOUT_HOURS hours ago
  * Then sets punch_out_time = NOW() and marks auto_punched_out = true
  */
-const configuredAutoPunchOutHours = Number.parseInt(process.env.AUTO_PUNCHOUT_HOURS || "9", 10);
+const configuredAutoPunchOutHours = Number.parseInt(process.env.AUTO_PUNCHOUT_HOURS || "8", 10);
 const AUTO_PUNCHOUT_HOURS = Number.isInteger(configuredAutoPunchOutHours)
-  && configuredAutoPunchOutHours >= 1
+  && configuredAutoPunchOutHours >= 8
   && configuredAutoPunchOutHours <= 24
   ? configuredAutoPunchOutHours
-  : 9;
+  : 8;
 
 async function runAutoPunchOut() {
   const today = getTodayIST();
@@ -60,7 +60,7 @@ async function runAutoPunchOut() {
           auto_punched_out = true,
           out_address = 'Auto Punch-Out (System)',
           updated_at = NOW()
-        WHERE a.date::date = $1::date
+        WHERE a.date::date <= $1::date
           AND a.punch_in_time IS NOT NULL
           AND a.punch_out_time IS NULL
           AND ((NOW() AT TIME ZONE 'Asia/Kolkata') - a.punch_in_time) >= make_interval(hours => $2)
@@ -84,7 +84,7 @@ async function runAutoPunchOut() {
           punch_out = NOW(),
           auto_punched_out = true,
           out_address = 'Auto Punch-Out (System)'
-        WHERE pa.date = $1::date
+        WHERE pa.date <= $1::date
           AND pa.punch_in IS NOT NULL
           AND pa.punch_out IS NULL
           AND (NOW() - pa.punch_in) >= make_interval(hours => $2)

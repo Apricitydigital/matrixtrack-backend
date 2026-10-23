@@ -1,3 +1,5 @@
+const {reviewIdentity,assertSameAadhaar}=require('../utils/workforceAadhaar');
+const {pairKey,exclusions}=require('../utils/workforceNonDuplicates');
 const router = require('express').Router();
 const pool = require('../config/db');
 const authenticate = require('../middleware/authMiddleware');
@@ -8,6 +10,7 @@ const { recordsSql, summarize, deletionPlan, fingerprint, quote } = require('../
 const {duplicateIndex,matchingSignals,mergePlan,moveReferences,validateMove,assertAliasTriggers}=require('../utils/workforceMerge');
 const {ensureMergeSchema}=require('../utils/employeeAliases');
 const {retainMergedLogins}=require('../utils/professionalMergeLogin');
+const recovery=require('../utils/workforceMergeRecovery');
 const fail = (message, status=400) => { throw Object.assign(new Error(message), { status }); };
 const wrap = fn => async (req,res,next) => { try { await fn(req,res,next); } catch(e) {
  console.error('[WorkforceReview]', e.message); res.status(e.status || 500).json({message:e.status ? e.message : 'Unable to load workforce review.'});
@@ -74,14 +77,14 @@ async function records(req, client=pool) {
  FROM professional_attendance a WHERE a.professional_id=(CASE WHEN s.kind='professional' THEN s.id END)::uuid AND a.date BETWEEN $3::date AND $4::date) p ON true
  LEFT JOIN LATERAL (SELECT bool_or(status='approved') AS on_leave FROM professional_leave_requests
  WHERE professional_id=(CASE WHEN s.kind='professional' THEN s.id END)::uuid AND requested_date BETWEEN $3::date AND $4::date) l ON true
- ORDER BY s.name,s.kind,s.id`,[...params,start,end])).rows;
+ ORDER BY s.name,s.kind,s.id`,[...params,start,end])).rows.map(reviewIdentity);
 }
 async function employee(req,client=pool) {
  if(!['regular','professional'].includes(req.params.kind)) fail('Invalid employee type.');
  const params=await filters(req);
  const row=(await client.query(`${recordsSql} SELECT * FROM scoped WHERE kind=$3 AND id=$4`,[...params,req.params.kind,req.params.id])).rows[0];
  if(!row) fail('Employee not found or outside your access.',404);
- return row;
+ return reviewIdentity(row);
 }
 router.post('/summary',permission('view'),wrap(async(req,res)=>{
  const rows=await records(req);
@@ -93,12 +96,13 @@ router.get('/',permission('view'),wrap(async(req,res)=>{
  await schema();
  const rows=await records(req);
  const issues=(await pool.query('SELECT * FROM workforce_review_issues ORDER BY updated_at DESC')).rows;
- const duplicates=duplicateIndex(rows);
+ const excluded=await exclusions(pool),index=duplicateIndex(rows);
+ const duplicates=row=>index(row).filter(other=>!excluded.has(pairKey(row,other)));
  const q=String(req.query.search || '').trim().toLowerCase();
  const names=new Map(),mobiles=new Map(),codes=new Map();
  for(const r of rows) for(const [map,key] of [[names,r.name?.trim().toLowerCase()],[mobiles,r.mobile?.replace(/\D/g,'')],[codes,r.emp_code?.trim().toLowerCase()]]) if(key) map.set(key,(map.get(key)||0)+1);
  const enriched=rows.map(r=>({...r,duplicate_count:duplicates(r).length,issues:issues.filter(i=>i.employee_kind===r.kind && i.employee_id===r.id),
- signals:[names.get(r.name?.trim().toLowerCase())>1 && 'Same name',mobiles.get(r.mobile?.replace(/\D/g,''))>1 && 'Same mobile',codes.get(r.emp_code?.trim().toLowerCase())>1 && 'Same employee code',!r.site_id && 'No site assignment',r.active==='false' && 'Inactive',r.deleted==='true' && 'Deleted/ghost record'].filter(Boolean)}));
+ signals:[duplicates(r).some(other=>matchingSignals(r,other).includes('Same Aadhaar')) && 'Same Aadhaar',names.get(r.name?.trim().toLowerCase())>1 && 'Same name',mobiles.get(r.mobile?.replace(/\D/g,''))>1 && 'Same mobile',codes.get(r.emp_code?.trim().toLowerCase())>1 && 'Same employee code',!r.site_id && 'No site assignment',r.active==='false' && 'Inactive',r.deleted==='true' && 'Deleted/ghost record'].filter(Boolean)}));
  const filtered=enriched.filter(r=>(!q || [r.name,r.emp_code,r.mobile,r.id].some(v=>String(v||'').toLowerCase().includes(q))) &&
  (!req.query.kind || req.query.kind==='all' || r.kind===req.query.kind) &&
  (!req.query.status || req.query.status==='all' || (req.query.status==='faceRegistered' ? r.face_registered : req.query.status==='midShiftPunchIn' ? r.mid_shift : r.status===req.query.status)) &&
@@ -120,29 +124,45 @@ router.patch('/:kind/:id/issues/:issueId',permission('write'),wrap(async(req,res
  const data=(await pool.query(`UPDATE workforce_review_issues SET status=$1,updated_by=$2,updated_at=NOW() WHERE id=$3 AND employee_kind=$4 AND employee_id=$5 RETURNING *`,[req.body.status,req.reviewActor.user_id,req.params.issueId,row.kind,row.id])).rows[0];
  if(!data) fail('Issue not found.',404); res.json({data});
 }));
-const ownerOnly=(req,res,next)=>req.reviewOwner ? next() : res.status(403).json({message:'Only a superadmin can permanently delete employee records.'});
+const ownerOnly=(req,res,next)=>req.reviewOwner ? next() : res.status(403).json({message:'Only a superadmin can merge employees, revert merges or permanently delete employee records.'});
 router.get('/:kind/:id/duplicates',permission('view'),wrap(async(req,res)=>{
  const row=await employee(req),rows=await records(req);
- res.json({employee:row,candidates:duplicateIndex(rows)(row).map(other=>({...other,match_signals:matchingSignals(row,other)}))});
+ const excluded=await exclusions(pool);
+ const enriched=await require('../utils/workforceMergeDetails').mergeDetails(pool,[row,...duplicateIndex(rows)(row).filter(other=>!excluded.has(pairKey(row,other)))]);
+ res.json({employee:enriched[0],candidates:enriched.slice(1).map(other=>({...other,match_signals:matchingSignals(row,other)}))});
+}));
+router.post('/:kind/:id/non-duplicate',ownerOnly,wrap(async(req,res)=>{
+ const target=await employee(req);
+ const other=await employee({...req,params:{kind:req.body.otherKind,id:req.body.otherId}});
+ if(target.kind===other.kind && target.id===other.id) fail('Choose a different employee.');
+ const ready=(await pool.query("SELECT to_regclass('workforce_non_duplicate_pairs') AS ready")).rows[0]?.ready;
+ if(!ready)fail('Run the workforce schema upgrade before marking non-duplicates.',503);
+ await pool.query('INSERT INTO workforce_non_duplicate_pairs(pair_key,created_by) VALUES($1,$2) ON CONFLICT DO NOTHING',[pairKey(target,other),req.reviewActor.user_id]);
+ res.json({message:'Marked as different people. Employee records are unchanged.'});
 }));
 async function prepareMerge(req,client) {
  const ids=req.body.sourceIds;
  if(!Array.isArray(ids) || !ids.length || ids.length>20 || !ids.every(id=>typeof id==='string' && id!==req.params.id) || new Set(ids).size!==ids.length) fail('Select between 1 and 20 different duplicate IDs.');
  const target=await employee(req,client);
+ const excluded=await exclusions(client);
+ const selected=[target];
  for(const id of ids) {
   const source=await employee({...req,params:{...req.params,id}},client);
-  if(!matchingSignals(target,source).length) fail('Each duplicate must match the main employee by name, mobile or code.');
+  if(selected.some(other=>excluded.has(pairKey(other,source)))) fail('Selected employees were marked as different people. Refresh the duplicate review.',409);
+  selected.push(source);
+  if(!matchingSignals(target,source).length) fail('Each duplicate must match the main employee by Aadhaar, name, mobile or code.');
  }
- return mergePlan(client,target.kind,target.id,[...ids].sort());
+ assertSameAadhaar(selected);
+ return mergePlan(client,target.kind,target.id,[...ids].sort(),{weeklyOffSourceId:req.body.weeklyOffSourceId});
 }
 router.post('/:kind/:id/merge-preview',ownerOnly,wrap(async(req,res)=>{
  await schema();await ensureMergeSchema();const client=await pool.connect();
  try {
   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
   await client.query("SET LOCAL lock_timeout='2s'");
-  const plan=await prepareMerge(req,client);await assertAliasTriggers(client,plan);await validateMove(client,plan);
+  const plan=await prepareMerge(req,client);await assertAliasTriggers(client,plan);await recovery.assertRecoveryReady(client,plan);await validateMove(client,plan);
   await client.query('ROLLBACK');
-  res.json({targetId:plan.targetId,sourceIds:plan.sourceIds,login:plan.login,attendance:plan.attendance?.summary,affected:plan.affected.map(({table,column,count})=>({table,column,count})),fingerprint:plan.fingerprint});
+  res.json({targetId:plan.targetId,sourceIds:plan.sourceIds,login:plan.login,attendance:plan.attendance?.summary,weeklyOff:plan.weeklyOff?{selectedId:plan.weeklyOff.selectedId,days:plan.weeklyOff.days}:null,restoreWindowHours:48,affected:plan.affected.map(({table,column,count})=>({table,column,count})),fingerprint:plan.fingerprint});
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }));
 router.post('/:kind/:id/merge',ownerOnly,wrap(async(req,res)=>{
@@ -156,7 +176,9 @@ router.post('/:kind/:id/merge',ownerOnly,wrap(async(req,res)=>{
   await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
   const plan=await prepareMerge(req,client);
   if(plan.fingerprint!==req.body.fingerprint) fail('Employee or attendance data changed. Preview this merge again.',409);
-  await assertAliasTriggers(client,plan);await validateMove(client,plan);await moveReferences(client,plan);
+  await assertAliasTriggers(client,plan);await recovery.assertRecoveryReady(client,plan);await validateMove(client,plan);
+  const audit=await recovery.beginRecovery(client,plan,req.reviewActor.user_id,reason);
+  await moveReferences(client,plan);
   await retainMergedLogins(client,plan);
   const key=plan.kind==='regular'?'emp_id':'id',table=plan.kind==='regular'?'employee':'professional_employees';
   for(const source of plan.profiles.filter(row=>String(row[key])!==plan.targetId)) {
@@ -164,10 +186,52 @@ router.post('/:kind/:id/merge',ownerOnly,wrap(async(req,res)=>{
    await client.query('UPDATE workforce_employee_aliases SET target_id=$1 WHERE employee_kind=$2 AND target_id=$3',[plan.targetId,plan.kind,id]);
    await client.query('INSERT INTO workforce_employee_aliases(employee_kind,source_id,target_id,emp_code,face_id) VALUES($1,$2,$3,$4,$5)',[plan.kind,id,plan.targetId,source.emp_code || null,source.face_id || null]);
   }
-  await client.query(`INSERT INTO workforce_merge_audit(employee_kind,target_id,source_ids,actor_user_id,reason,profile_snapshots,affected_rows,attendance_snapshots) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[plan.kind,plan.targetId,plan.sourceIds,req.reviewActor.user_id,reason,JSON.stringify(plan.profiles),JSON.stringify(plan.affected),JSON.stringify(plan.attendance?.groups.flatMap(group=>group.originals) || [])]);
   await client.query(`DELETE FROM ${quote(table)} WHERE ${quote(key)}::text=ANY($1::text[])`,[plan.sourceIds]);
-  await client.query('COMMIT');res.json({message:'Duplicate IDs merged. Attendance and dependent records retained; old IDs redirect to the main employee.',targetId:plan.targetId});
+  await client.query('COMMIT');res.json({message:'Duplicate IDs merged. You can preview and revert this merge within 48 hours from Merge history.',targetId:plan.targetId,mergeId:audit.id,restoreUntil:audit.restore_until});
  }catch(error){await client.query('ROLLBACK');if(['40001','40P01','23505','23503'].includes(error.code)) fail('Records changed or conflicting settings were found. No merge was saved. Refresh and preview again.',409);throw error;}finally{client.release();}
+}));
+router.get('/merges',ownerOnly,wrap(async(req,res)=>{
+ await recovery.ensureRecoverySchema(pool);
+ const page=Math.max(1,parseInt(req.query.page,10)||1);
+ const {rows}=await pool.query(`SELECT id,employee_kind,target_id,source_ids,reason,created_at,restore_until,reverted_at,
+ COALESCE(profile_snapshots->0->>'full_name',profile_snapshots->0->>'name','Employee') AS employee_name,
+ (recovery_version=1 AND reverted_at IS NULL AND restore_until>clock_timestamp()) AS can_revert
+ FROM workforce_merge_audit ORDER BY id DESC LIMIT 25 OFFSET $1`,[(page-1)*25]);
+ const count=(await pool.query('SELECT count(*)::int AS total FROM workforce_merge_audit')).rows[0].total;
+ res.json({data:rows,total:count,pages:Math.max(1,Math.ceil(count/25))});
+}));
+router.post('/merges/:mergeId/revert-preview',ownerOnly,wrap(async(req,res)=>{
+ const client=await pool.connect();
+ try {
+  await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+  await client.query("SET LOCAL lock_timeout='2s'");
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
+  const audit=await recovery.auditForRestore(client,req.params.mergeId);
+  const preview=await recovery.previewRestore(client,audit);
+  await client.query('ROLLBACK');
+  res.json({mergeId:audit.id,targetId:audit.target_id,sourceIds:audit.source_ids,restoreUntil:audit.restore_until,...preview});
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}));
+router.post('/merges/:mergeId/revert',ownerOnly,wrap(async(req,res)=>{
+ const reason=String(req.body.reason || '').trim();
+ if(reason.length<3 || reason.length>1000 || typeof req.body.fingerprint!=='string')fail('Preview the revert and enter a reason between 3 and 1000 characters.');
+ const client=await pool.connect();
+ try {
+  await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+  await client.query("SET LOCAL lock_timeout='2s'");
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
+  const audit=await recovery.auditForRestore(client,req.params.mergeId);
+  if(req.body.confirmation!==audit.target_id)fail('Type the main employee ID to confirm reverting this merge.');
+  const preview=await recovery.previewRestore(client,audit);
+  if(preview.fingerprint!==req.body.fingerprint)fail('Employee data changed. Preview the revert again.',409);
+  // PostgreSQL time is checked again after potentially expensive replay checks.
+  await recovery.auditForRestore(client,req.params.mergeId);
+  await recovery.replayUndo(client,audit);
+  await recovery.auditForRestore(client,req.params.mergeId);
+  await client.query(`UPDATE workforce_merge_audit SET reverted_at=clock_timestamp(),reverted_by=$2,revert_reason=$3 WHERE id=$1`,[audit.id,req.reviewActor.user_id,reason]);
+  await client.query('COMMIT');
+  res.json({message:'Merge reverted. Original employee profiles and record ownership restored; unrelated newer records preserved.'});
+ }catch(error){await client.query('ROLLBACK');if(['40001','40P01','23505','23503','23514'].includes(error.code))fail('Newer changes or dependent settings conflict with this revert. No records were restored. Refresh and preview again.',409);throw error;}finally{client.release();}
 }));
 router.get('/:kind/:id/delete-preview',ownerOnly,wrap(async(req,res)=>{
  const row=await employee(req); const client=await pool.connect();

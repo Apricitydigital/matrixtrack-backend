@@ -6,7 +6,7 @@ const { decryptAadhar } = require('../utils/encryption');
 const bcrypt = require('bcryptjs');
 const { sendSms } = require('../utils/smsNotifier');
 const { ensureProfessionalDesignation } = require('../utils/professionalDesignation');
-const { buildProfessionalRequestFilters, employeeMasterCode } = require('../utils/professionalRequestFilters');
+const { buildScopedProfessionalRequestFilters, employeeMasterCode } = require('../utils/professionalRequestFilters');
 const { findProfessionalIdentityConflict } = require('../utils/professionalIdentity');
 let professionalEmployeeColumnsCache = null;
 
@@ -146,7 +146,11 @@ const getRequests = async (req, res) => {
       listParams.push(normalizedStatus);
       listStatusFilter = `AND spr.status = $${listParams.length}`;
     }
-    listStatusFilter += buildProfessionalRequestFilters(req.query, listParams);
+    const visibilitySql = isAdmin ? '' : getVisibilityCTE();
+    listStatusFilter += await buildScopedProfessionalRequestFilters(req.query, listParams, {
+      client: pool, visibilitySql,
+      where: `${isAdmin ? 'TRUE' : visibilityWhereClause} ${listStatusFilter}`,
+    });
     const countParams = [...listParams];
     const countStatusFilter = listStatusFilter;
     listParams.push(limitNumber);
@@ -154,7 +158,6 @@ const getRequests = async (req, res) => {
     listParams.push(offset);
     const offsetParamIndex = listParams.length;
 
-    const visibilitySql = isAdmin ? '' : getVisibilityCTE();
     const query = `
       ${visibilitySql}
       SELECT 

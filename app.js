@@ -458,43 +458,23 @@ if (PROFESSIONAL_REMINDER_CRON_ENABLED && isPrimaryCronInstance) {
 
 // =======================
 // ⏰ AUTO PUNCH-OUT CRON
-// Runs at the top of every hour.
-// Keeps re-running for 10 minutes (every 30s) to catch all eligible employees.
+// Runs once at 00:00 and 07:00 IST.
+// Only open records with at least eight elapsed hours are eligible.
 // Set AUTO_PUNCHOUT_CRON_ENABLED=false in .env to disable.
 // =======================
 const AUTO_PUNCHOUT_CRON_ENABLED = process.env.AUTO_PUNCHOUT_CRON_ENABLED !== "false";
-const AUTO_PUNCHOUT_CRON_EXPR = process.env.AUTO_PUNCHOUT_CRON_EXPR || "0 * * * *";
-
+const AUTO_PUNCHOUT_CRON_EXPR = process.env.AUTO_PUNCHOUT_CRON_EXPR || "0 0,7 * * *";
+let autoPunchOutRunning = false;
 if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
-  cron.schedule(
-    AUTO_PUNCHOUT_CRON_EXPR,
-    async () => {
-      console.log("[AutoPunchOut Cron] ⏰ Hourly trigger started — will run for 10 minutes.");
-
-
-
-      const WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-      const INTERVAL_MS = 30 * 1000;    // every 30 seconds
-      const startTime = Date.now();
-
-      // Run immediately on trigger
-      await runAutoPunchOut();
-
-      // Then repeat every 30s for 10 minutes
-      const intervalId = setInterval(async () => {
-        if (Date.now() - startTime >= WINDOW_MS) {
-          clearInterval(intervalId);
-          console.log("[AutoPunchOut Cron] ✅ 10-minute window complete. Stopping.");
-          return;
-        }
-        await runAutoPunchOut();
-      }, INTERVAL_MS);
-    },
-    { timezone: "Asia/Kolkata" }
-  );
-  console.log(`[AutoPunchOut Cron] ✅ Registered — schedule: "${AUTO_PUNCHOUT_CRON_EXPR}", runs for 10 minutes.`);
+  cron.schedule(AUTO_PUNCHOUT_CRON_EXPR, async () => {
+    if (autoPunchOutRunning) return;
+    autoPunchOutRunning = true;
+    try { await runAutoPunchOut(); }
+    finally { autoPunchOutRunning = false; }
+  }, { timezone: "Asia/Kolkata" });
+  console.log(`[AutoPunchOut Cron] Registered: "${AUTO_PUNCHOUT_CRON_EXPR}" (IST).`);
 } else {
-  console.log("[AutoPunchOut Cron] ⏭ Disabled or non-primary instance — skipping.");
+  console.log("[AutoPunchOut Cron] Disabled or non-primary instance; skipping.");
 }
 
 // General API Route

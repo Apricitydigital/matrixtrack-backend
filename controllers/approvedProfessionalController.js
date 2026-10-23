@@ -2,7 +2,7 @@ const pool = require('../config/db');
 const { encryptAadhar, decryptAadhar } = require('../utils/encryption');
 const { getVisibilityCTE, visibilityWhereClause } = require('./supervisorSelfPunchController');
 const { getSignedS3Url } = require('../utils/s3SelfPunch');
-const { buildProfessionalRequestFilters } = require('../utils/professionalRequestFilters');
+const { buildScopedProfessionalRequestFilters } = require('../utils/professionalRequestFilters');
 const { normalizeProfessionalIdentifier, professionalIdentifierSql, findProfessionalAadhaarConflict } = require('../utils/professionalIdentity');
 
 const editable = ['full_name', 'mobile', 'email', 'emp_code', 'aadhar_number', 'city_id', 'zone_id', 'ward_id', 'kothi_id'];
@@ -22,7 +22,10 @@ const getApprovedList = async (req, res) => {
   try {
     const admin = String(req.user.role).toLowerCase() === 'admin';
     const params = admin ? [] : [req.supervisorId];
-    const filter = buildProfessionalRequestFilters(req.query, params);
+    const filter = await buildScopedProfessionalRequestFilters(req.query, params, {
+      client: pool, visibilitySql: admin ? '' : getVisibilityCTE(),
+      where: `spr.status = 'approved' AND ${admin ? 'TRUE' : visibilityWhereClause}`,
+    });
     const { rows } = await pool.query(`${admin ? '' : getVisibilityCTE()}
       SELECT spr.id, spr.full_name, spr.mobile, spr.email, spr.emp_code, spr.aadhar_number,
         spr.city_id, spr.zone_id, spr.ward_id, spr.kothi_id, spr.created_at, spr.updated_at,

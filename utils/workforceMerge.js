@@ -1,10 +1,11 @@
+const {aadhaar}=require('./workforceAadhaar');
 const {quote, fingerprint, deletionPlan} = require('./workforceReview');
 const {attendanceMergePlan,consolidateAttendance}=require('./workforceAttendanceMerge');
 const reject = message => { throw Object.assign(new Error(message), {status:409}); };
 const normalized = value => String(value || '').trim().toLowerCase().replace(/\s+/g,' ');
 const mobile = value => String(value || '').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
 function matchingSignals(a,b) {
- return [normalized(a.name) && normalized(a.name)===normalized(b.name) && 'Same name',
+ return [aadhaar(a.aadhaar_number) && aadhaar(a.aadhaar_number)===aadhaar(b.aadhaar_number) && 'Same Aadhaar',normalized(a.name) && normalized(a.name)===normalized(b.name) && 'Same name',
  mobile(a.mobile).length>=10 && mobile(a.mobile)===mobile(b.mobile) && 'Same mobile',
  normalized(a.emp_code) && normalized(a.emp_code)===normalized(b.emp_code) && 'Same employee code'].filter(Boolean);
 }
@@ -20,7 +21,7 @@ function duplicateIndex(rows) {
   .filter(other=>other.kind!==row.kind || other.id!==row.id).map(other=>[`${other.kind}:${other.id}`,other])).values()];
 }
 function candidateKeys(row) {
- return [normalized(row.name) && `n:${normalized(row.name)}`,mobile(row.mobile).length>=10 && `m:${mobile(row.mobile)}`,normalized(row.emp_code) && `c:${normalized(row.emp_code)}`].filter(Boolean);
+ return [aadhaar(row.aadhaar_number) && `a:${aadhaar(row.aadhaar_number)}`,normalized(row.name) && `n:${normalized(row.name)}`,mobile(row.mobile).length>=10 && `m:${mobile(row.mobile)}`,normalized(row.emp_code) && `c:${normalized(row.emp_code)}`].filter(Boolean);
 }
 async function references(client,kind) {
  const table=kind==='regular'?'employee':'professional_employees';
@@ -34,12 +35,13 @@ async function references(client,kind) {
  WHERE f.contype='f' AND ns.nspname=current_schema() AND parent.relname=$1`,[table])).rows;
  if(links.some(link=>!link.local || link.columns!==1 || link.parent_column!==(kind==='regular'?'emp_id':'id'))) reject('This employee has dependencies that require a manual migration.');
  // Older installations also have employee references without foreign keys.
- const loose=(await client.query(`SELECT table_name AS "table",column_name AS "column" FROM information_schema.columns
- WHERE table_schema=current_schema() AND column_name=ANY($1::text[]) AND table_name<>$2
- AND data_type=ANY($3::text[])`,[kind==='regular'?['emp_id','employee_id']:['professional_id','actor_professional_id','updated_by_professional','pm_reviewer_id','ho_reviewer_id','hod_reviewer_id'],table,kind==='regular'?['integer','bigint']:['uuid']])).rows;
+ const loose=(await client.query(`SELECT c.table_name AS "table",c.column_name AS "column" FROM information_schema.columns c
+ JOIN information_schema.tables t ON t.table_schema=c.table_schema AND t.table_name=c.table_name
+ WHERE c.table_schema=current_schema() AND t.table_type='BASE TABLE' AND c.column_name=ANY($1::text[]) AND c.table_name<>$2
+ AND c.data_type=ANY($3::text[])`,[kind==='regular'?['emp_id','employee_id']:['professional_id','actor_professional_id','updated_by_professional','pm_reviewer_id','ho_reviewer_id','hod_reviewer_id'],table,kind==='regular'?['integer','bigint']:['uuid']])).rows;
  return [...new Map([...links,...loose].filter(link=>link.table!=='workforce_professional_login_aliases').map(link=>[`${link.table}:${link.column}`,{table:link.table,column:link.column}])).values()].sort((a,b)=>`${a.table}:${a.column}`.localeCompare(`${b.table}:${b.column}`));
 }
-async function mergePlan(client,kind,targetId,sourceIds) {
+async function mergePlan(client,kind,targetId,sourceIds,options={}) {
  const table=kind==='regular'?'employee':'professional_employees',key=kind==='regular'?'emp_id':'id';
  const ids=[targetId,...sourceIds];
  if(kind==='professional' && require('../config/professionalAttendanceIdentities').some(group=>group.profileIds.some(id=>ids.includes(id)))) reject('These profiles already use reviewed attendance identity links. Reconcile those links before permanently merging their IDs.');
@@ -71,9 +73,16 @@ async function mergePlan(client,kind,targetId,sourceIds) {
  for(const id of ids) plans.push(await deletionPlan(client,kind,id));
  const loginAliases=kind==='professional'?(await client.query('SELECT * FROM workforce_professional_login_aliases WHERE target_id::text=ANY($1::text[]) ORDER BY source_id',[ids])).rows:[];
  const login=kind==='professional'?{mainId:targetId,name:target.full_name,email:target.email || null,mobile:target.mobile || null,retainedAccounts:sourceIds.length,mainCredentialsPreserved:true,existingSessionsPreserved:true,faceReference:'main'}:null;
- return {kind,targetId,sourceIds,profiles,links,affected,attendance,login,fingerprint:fingerprint({profiles,affected,plans,attendance,loginAliases})};
+ const weeklyOff=await require('./professionalMergeWeeklyOff').weeklyOffPlan(client,kind,ids,options.weeklyOffSourceId);
+ return {kind,targetId,sourceIds,profiles,links,affected,attendance,login,weeklyOff,fingerprint:fingerprint({profiles,affected,plans,attendance,loginAliases,weeklyOff})};
 }
 async function moveReferences(client,plan) {
+ await require('./professionalMergeWeeklyOff').consolidateWeeklyOff(client,plan.weeklyOff);
+ if(plan.kind==='professional'){
+  const settings=new Set(['professional_designation_assignments','professional_site_access','professional_geofences','professional_leave_allocations','professional_punch_cutoffs','professional_attendance_blocks']);
+  for(const table of settings)if(plan.links.some(link=>link.table===table && link.column==='professional_id'))
+   await client.query(`DELETE FROM ${quote(table)} WHERE professional_id::text=ANY($1::text[])`,[plan.sourceIds]);
+ }
  await consolidateAttendance(client,plan.attendance);
  for(const link of plan.links) await client.query(`UPDATE ${quote(link.table)} SET ${quote(link.column)}=$1 WHERE ${quote(link.column)}::text=ANY($2::text[])`,[plan.targetId,plan.sourceIds]);
  await client.query(`UPDATE workforce_review_issues SET employee_id=$1,updated_at=NOW() WHERE employee_kind=$2 AND employee_id=ANY($3::text[])`,[plan.targetId,plan.kind,plan.sourceIds]);

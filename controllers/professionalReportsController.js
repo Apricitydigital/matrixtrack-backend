@@ -834,6 +834,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
         c.city_name,
 
         -- Attendance & leave
+        pe.city_id, pe.zone_id, pe.ward_id, pe.kothi_id,
         COUNT(pa.id) FILTER (WHERE pa.punch_in IS NOT NULL) AS attendance_count,
         COALESCE(leave_agg.leave_days, 0) AS leave_days,
         leave_agg.latest_reviewer_name AS leave_reviewed_by_name,
@@ -928,6 +929,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
       LEFT JOIN wards w ON pa.ward_id = w.ward_id
       LEFT JOIN sectors sec_w ON w.sector_id = sec_w.sector_id
       GROUP BY pe.id, pe.full_name, pe.emp_code, pe.mobile, pe.email,
+               pe.city_id, pe.zone_id, pe.ward_id, pe.kothi_id,
                COALESCE(
                  sec_pe.sector_name,
                  sec_w_pe.sector_name,
@@ -951,7 +953,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
                z.zone_name, c.city_name,
                leave_agg.leave_days, leave_agg.latest_reviewer_name,
                weekoff_agg.week_off_count, weekoff_agg.payable_days, holiday_agg.holiday_days
-      ORDER BY (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0) + COALESCE(holiday_agg.holiday_days, 0)) DESC, pe.full_name ASC
+      ORDER BY (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0) + COALESCE(holiday_agg.holiday_days, 0)) DESC, pe.full_name ASC, pe.id ASC
       LIMIT $${startParam + 2} OFFSET $${startParam + 3}
     `;
 

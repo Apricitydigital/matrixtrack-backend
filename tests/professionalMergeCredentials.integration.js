@@ -80,6 +80,7 @@ module.exports=async({db,pool,call})=>{
  // A second merge must flatten credential routing without reviving passwords
  // already invalidated by the first main account's password reset.
  const nextParams={kind:'professional',id:ids[3]},nextBody={sourceIds:[ids[0]]};
+ await db.query("UPDATE workforce_merge_audit SET restore_until=NOW()-INTERVAL '1 second' WHERE target_id=$1",[ids[0]]);
  const nextPreview=await call('post','/:kind/:id/merge-preview',{params:nextParams,body:nextBody});assert.equal(nextPreview.code,200,JSON.stringify(nextPreview.data));
  const chained=await call('post','/:kind/:id/merge',{params:nextParams,body:{...nextBody,identityConfirmed:true,reason:'Move to final working main account',confirmation:ids[3],fingerprint:nextPreview.data.fingerprint}});
  assert.equal(chained.code,200,JSON.stringify(chained.data));

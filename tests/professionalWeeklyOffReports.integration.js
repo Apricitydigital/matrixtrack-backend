@@ -33,6 +33,8 @@ module.exports = async function verifyReports(client) {
   };
   const summary=await run('getDateRangeAttendanceSummary',{professional_id:person,start_date:'2026-10-13',end_date:'2026-10-20'});
   const row=summary.data[0];
+  assert.equal(row.city_id,1,'Site report exposes stable geography IDs');
+  assert.equal(row.kothi_id,1,'Site grouping uses the assigned site ID');
   assert.equal(row.week_off_days_count,2);assert.equal(row.payable_days,2);assert.equal(row.absent_days,6);
   const details=await run('getDateRangeAttendanceDetails',{professional_id:person,start_date:'2026-10-13',end_date:'2026-10-20'});
   assert.equal(details.data.records.length,8);assert.equal(details.data.weekly_off_days,2);assert.equal(details.data.payable_days,2);

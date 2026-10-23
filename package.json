@@ -9,7 +9,7 @@
     "migrate:structure:safe:dry": "node scripts/migrate-structure-safe.js --dry-run",
     "migrate:structure:safe:force": "node scripts/migrate-structure-safe.js --force",
     "migrate:structure:safe:force:autopunch": "node scripts/migrate-structure-safe.js --force --skip=20260311_expand_leave_types.sql",
-    "test:workforce": "node --test --test-concurrency=1 tests/startupDatabase.test.js tests/mergeSchemaReadiness.test.js tests/attendanceReportBudget.test.js tests/workforceAttendanceMerge.test.js tests/workforceReview.integration.js tests/combinedAttendance.integration.js",
+    "test:workforce": "node --test --test-concurrency=1 tests/startupDatabase.test.js tests/mergeSchemaReadiness.test.js tests/attendanceReportBudget.test.js tests/workforceAttendanceMerge.test.js tests/workforceMergeMatrix.test.js tests/workforceReview.integration.js tests/combinedAttendance.integration.js",
     "migrate:workforce": "node scripts/migrate-workforce.js"
   },
   "keywords": [],

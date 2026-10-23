@@ -5,12 +5,13 @@ const recordsSql = `WITH records AS (
  SELECT 'regular'::text AS kind,e.emp_id::text AS id,e.name AS name,e.emp_code,e.phone AS mobile,
  c.city_id,c.city_name,w.ward_name AS site_name,e.ward_id AS site_id,
  to_jsonb(e)->>'is_active' AS active,to_jsonb(e)->>'is_deleted' AS deleted,
- (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL) AS face_registered
+ (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL) AS face_registered,
+ COALESCE(to_jsonb(e)->>'aadhar_number',to_jsonb(e)->>'aadhaar_number',to_jsonb(e)->>'aadhar_no') AS aadhaar_stored
  FROM employee e LEFT JOIN wards w ON w.ward_id=e.ward_id
  LEFT JOIN zones z ON z.zone_id=w.zone_id LEFT JOIN cities c ON c.city_id=z.city_id
  UNION ALL
  SELECT 'professional',p.id::text,p.full_name,p.emp_code,p.mobile,p.city_id,c.city_name,w.ward_name,p.kothi_id,
- p.is_active::text,to_jsonb(p)->>'is_deleted',p.selfie_url IS NOT NULL
+ p.is_active::text,to_jsonb(p)->>'is_deleted',p.selfie_url IS NOT NULL,to_jsonb(p)->>'aadhar_number'
  FROM professional_employees p LEFT JOIN cities c ON c.city_id=p.city_id
  LEFT JOIN wards w ON w.ward_id=p.kothi_id
 ), scoped AS (

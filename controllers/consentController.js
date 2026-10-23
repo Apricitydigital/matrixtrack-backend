@@ -33,7 +33,7 @@ const logUserConsent = async ({
         RETURNING id;
     `;
     const values = [
-        userId ? parseInt(userId, 10) : null,
+        userId != null ? String(userId).trim() : null,
         mobile ? String(mobile).trim() : null,
         empCode ? String(empCode).trim() : null,
         consentType,
@@ -104,7 +104,7 @@ const getConsentStatusApi = async (req, res) => {
         if (!id) return res.status(400).json({ success: false, message: 'Account identity is required.' });
         const { rows } = await pool.query(`
             SELECT consent_given FROM user_consent_logs
-            WHERE ${isProfessional ? 'user_id = $1' : 'supervisor_id = $1'}
+            WHERE ${isProfessional ? 'user_id::text = $1' : 'supervisor_id = $1'}
               AND actor_type = $2 AND consent_type = $3 AND consent_version = $4
             ORDER BY created_at DESC, id DESC LIMIT 1
         `, [id, isProfessional ? 'SELF' : 'SUPERVISOR_PROXY', 'BIOMETRIC_FACE_AND_AADHAR', 'v1.0']);

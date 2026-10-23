@@ -16,6 +16,9 @@ async function runMigrations() {
   const client = await migrationConnection(pool);
   let migrationError;
   try {
+    client.setStep('consent account identity');
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations/20260915_add_user_consent_logs.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations/20261023_consent_identity.sql'), 'utf8'));
     client.setStep('core attendance and employee schema');
     console.log("[Migration] Running auto punch-out migrations...");
 
