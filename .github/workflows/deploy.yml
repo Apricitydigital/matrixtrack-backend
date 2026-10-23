@@ -18,16 +18,24 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            set -e
             # Navigate to the project directory on your server
             # CHANGE THIS to your actual server path
             cd /home/ubuntu/matrixtrack-backend
             
             # Pull latest changes
-            git pull origin main
+            git pull --ff-only origin main
             
             # Install dependencies
-            npm install
+            npm ci
+
+            # Upgrade the database configured on this server before restarting.
+            npm run migrate:workforce -- --apply
             
             # Restart the service (Assuming PM2 is used and process name is 'matrixtrack-api')
             # CHANGE 'matrixtrack-api' to your actual PM2 process name
-            pm2 restart matrixtrack-api || pm2 start app.js --name matrixtrack-api
+            if pm2 describe matrixtrack-api > /dev/null 2>&1; then
+              pm2 restart matrixtrack-api --update-env
+            else
+              pm2 start app.js --name matrixtrack-api
+            fi

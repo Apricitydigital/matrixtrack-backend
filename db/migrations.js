@@ -274,6 +274,10 @@ async function runMigrations() {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-weekly-off-schema'))");
     await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261016_professional_hod.sql'),'utf8'));
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261009_professional_weekly_off.sql'), 'utf8'));
+    // The legacy weekly-off migration recreates its function on every boot.
+    // Reapply the recovery guard in the same transaction, after that definition.
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261022_merge_weeklyoff_recovery.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261023_non_duplicate_pairs.sql'), 'utf8'));
     client.setStep('professional punch-cutoff schema');
     await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-punch-cutoff-schema'))");
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_professional_punch_cutoff.sql'), 'utf8'));
