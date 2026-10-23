@@ -152,7 +152,7 @@ async function prepareMerge(req,client) {
   const source=await employee({...req,params:{...req.params,id}},client);
   if(selected.some(other=>excluded.has(pairKey(other,source)))) fail('Selected employees were marked as different people. Refresh the duplicate review.',409);
   selected.push(source);
-  if(!matchingSignals(target,source).length) fail('Each duplicate must match the main employee by Aadhaar, name, mobile or code.');
+  if(!matchingSignals(target,source).length) fail('Each duplicate must match the main employee by Aadhaar, name or mobile.');
  }
  assertSameAadhaar(selected);
  return mergePlan(client,target.kind,target.id,[...ids].sort(),{weeklyOffSourceId:req.body.weeklyOffSourceId});

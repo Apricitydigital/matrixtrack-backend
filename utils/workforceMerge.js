@@ -7,8 +7,7 @@ const mobile = value => String(value || '').replace(/\D/g,'').replace(/^91(?=\d{
 function matchingSignals(a,b) {
  if(a.kind!==b.kind)return [];
  return [aadhaar(a.aadhaar_number) && aadhaar(a.aadhaar_number)===aadhaar(b.aadhaar_number) && 'Same Aadhaar',normalized(a.name) && normalized(a.name)===normalized(b.name) && 'Same name',
- mobile(a.mobile).length>=10 && mobile(a.mobile)===mobile(b.mobile) && 'Same mobile',
- normalized(a.emp_code) && normalized(a.emp_code)===normalized(b.emp_code) && 'Same employee code'].filter(Boolean);
+ mobile(a.mobile).length>=10 && mobile(a.mobile)===mobile(b.mobile) && 'Same mobile'].filter(Boolean);
 }
 // Indexed buckets avoid comparing every pair in large directories. Candidates are
 // direct matches; a shared name never silently joins a transitive identity group.
@@ -22,7 +21,7 @@ function duplicateIndex(rows) {
   .filter(other=>other.kind===row.kind && other.id!==row.id).map(other=>[`${other.kind}:${other.id}`,other])).values()];
 }
 function candidateKeys(row) {
- return [aadhaar(row.aadhaar_number) && `a:${aadhaar(row.aadhaar_number)}`,normalized(row.name) && `n:${normalized(row.name)}`,mobile(row.mobile).length>=10 && `m:${mobile(row.mobile)}`,normalized(row.emp_code) && `c:${normalized(row.emp_code)}`].filter(Boolean);
+ return [aadhaar(row.aadhaar_number) && `a:${aadhaar(row.aadhaar_number)}`,normalized(row.name) && `n:${normalized(row.name)}`,mobile(row.mobile).length>=10 && `m:${mobile(row.mobile)}`].filter(Boolean);
 }
 async function references(client,kind) {
  const table=kind==='regular'?'employee':'professional_employees';
