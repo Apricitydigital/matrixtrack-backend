@@ -5,6 +5,7 @@ const reject = message => { throw Object.assign(new Error(message), {status:409}
 const normalized = value => String(value || '').trim().toLowerCase().replace(/\s+/g,' ');
 const mobile = value => String(value || '').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
 function matchingSignals(a,b) {
+ if(a.kind!==b.kind)return [];
  return [aadhaar(a.aadhaar_number) && aadhaar(a.aadhaar_number)===aadhaar(b.aadhaar_number) && 'Same Aadhaar',normalized(a.name) && normalized(a.name)===normalized(b.name) && 'Same name',
  mobile(a.mobile).length>=10 && mobile(a.mobile)===mobile(b.mobile) && 'Same mobile',
  normalized(a.emp_code) && normalized(a.emp_code)===normalized(b.emp_code) && 'Same employee code'].filter(Boolean);
@@ -18,7 +19,7 @@ function duplicateIndex(rows) {
   index.get(key).push(row);
  }
  return row => [...new Map(candidateKeys(row).flatMap(key=>index.get(key)||[])
-  .filter(other=>other.kind!==row.kind || other.id!==row.id).map(other=>[`${other.kind}:${other.id}`,other])).values()];
+  .filter(other=>other.kind===row.kind && other.id!==row.id).map(other=>[`${other.kind}:${other.id}`,other])).values()];
 }
 function candidateKeys(row) {
  return [aadhaar(row.aadhaar_number) && `a:${aadhaar(row.aadhaar_number)}`,normalized(row.name) && `n:${normalized(row.name)}`,mobile(row.mobile).length>=10 && `m:${mobile(row.mobile)}`,normalized(row.emp_code) && `c:${normalized(row.emp_code)}`].filter(Boolean);

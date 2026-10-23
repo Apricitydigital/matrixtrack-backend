@@ -99,10 +99,12 @@ router.get('/',permission('view'),wrap(async(req,res)=>{
  const excluded=await exclusions(pool),index=duplicateIndex(rows);
  const duplicates=row=>index(row).filter(other=>!excluded.has(pairKey(row,other)));
  const q=String(req.query.search || '').trim().toLowerCase();
- const names=new Map(),mobiles=new Map(),codes=new Map();
- for(const r of rows) for(const [map,key] of [[names,r.name?.trim().toLowerCase()],[mobiles,r.mobile?.replace(/\D/g,'')],[codes,r.emp_code?.trim().toLowerCase()]]) if(key) map.set(key,(map.get(key)||0)+1);
- const enriched=rows.map(r=>({...r,duplicate_count:duplicates(r).length,issues:issues.filter(i=>i.employee_kind===r.kind && i.employee_id===r.id),
- signals:[duplicates(r).some(other=>matchingSignals(r,other).includes('Same Aadhaar')) && 'Same Aadhaar',names.get(r.name?.trim().toLowerCase())>1 && 'Same name',mobiles.get(r.mobile?.replace(/\D/g,''))>1 && 'Same mobile',codes.get(r.emp_code?.trim().toLowerCase())>1 && 'Same employee code',!r.site_id && 'No site assignment',r.active==='false' && 'Inactive',r.deleted==='true' && 'Deleted/ghost record'].filter(Boolean)}));
+ const enriched=rows.map(r=>{
+  const candidates=duplicates(r);
+  const signals=[...new Set(candidates.flatMap(other=>matchingSignals(r,other)))];
+  return {...r,duplicate_count:candidates.length,issues:issues.filter(i=>i.employee_kind===r.kind && i.employee_id===r.id),
+   signals:[...signals,!r.site_id && 'No site assignment',r.active==='false' && 'Inactive',r.deleted==='true' && 'Deleted/ghost record'].filter(Boolean)};
+ });
  const filtered=enriched.filter(r=>(!q || [r.name,r.emp_code,r.mobile,r.id].some(v=>String(v||'').toLowerCase().includes(q))) &&
  (!req.query.kind || req.query.kind==='all' || r.kind===req.query.kind) &&
  (!req.query.status || req.query.status==='all' || (req.query.status==='faceRegistered' ? r.face_registered : req.query.status==='midShiftPunchIn' ? r.mid_shift : r.status===req.query.status)) &&
