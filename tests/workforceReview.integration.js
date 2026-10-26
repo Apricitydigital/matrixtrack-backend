@@ -65,6 +65,8 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
    if(['present','notMarked','onLeave'].includes(status)) assert.ok(details.data.data.every(row=>row.status===status));
    if(kind!=='all') assert.ok(details.data.data.every(row=>row.kind===kind));
  }
+ const duplicatesOnly=await call('get','/',{query:{...dates,review:'duplicates'}});
+ assert.equal(duplicatesOnly.data.total,4);assert.ok(duplicatesOnly.data.data.every(row=>row.duplicate_count>0));
  assert.equal((await call('get','/',{user:2})).code,403);assert.equal((await call('get','/',{user:4})).code,403);
  r=await call('get','/',{user:3,query:dates});assert.equal(r.data.total,3);assert.equal(r.data.canHardDelete,false);
  assert.equal((await call('post','/:kind/:id/issues',{user:3,params:{kind:'regular',id:'1'},body:{reason:'duplicate'}})).code,403);
@@ -105,6 +107,9 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  (11,'2026-10-20','2026-10-20 09:00',NULL),(12,'2026-10-21','2026-10-21 09:00',NULL);
  CREATE TABLE legacy_employee_notes(id SERIAL PRIMARY KEY,emp_id INT,note TEXT);
  INSERT INTO legacy_employee_notes(emp_id,note) VALUES(11,'retain non-FK reference');`);
+ await db.exec(`ALTER TABLE employee ADD COLUMN aadhar_number TEXT;
+ UPDATE employee SET aadhar_number='123456789012' WHERE emp_id=10;
+ UPDATE employee SET aadhar_number='234567890123' WHERE emp_id=11;`);
  const mergeParams={kind:'regular',id:'10'};
  const mergeBody={sourceIds:['11']};
  assert.equal((await call('get','/',{query:{...dates,search:'M10'}})).data.data[0].duplicate_count,3);
@@ -114,6 +119,9 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  assert.equal((await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:{sourceIds:['13']}})).code,400);
  assert.equal((await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:{sourceIds:['14']}})).code,409);
  assert.equal((await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:{sourceIds:['10']}})).code,400);
+ await db.query("UPDATE employee SET phone='8765432109' WHERE emp_id=11");
+ assert.equal((await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:mergeBody})).code,409,'Different Aadhaar plus name alone must not allow a merge');
+ await db.query("UPDATE employee SET phone='9998887777' WHERE emp_id=11");
  let mp=await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:mergeBody});
  assert.equal(mp.code,200,JSON.stringify(mp.data));
  assert.equal((await db.query('SELECT emp_id FROM attendance WHERE date=$1',['2026-10-20'])).rows[0].emp_id,11,'preview must not persist changes');

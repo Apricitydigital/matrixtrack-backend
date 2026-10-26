@@ -8,3 +8,16 @@ test('different valid Aadhaar blocks merging, including conflicts between source
 test('regular and professional never match even with identical Aadhaar, mobile, name and code',()=>{const a={kind:'regular',id:'1',name:'Same',mobile:'9876543210',emp_code:'CODE',aadhaar_number:'123456789012'},b={...a,kind:'professional',id:'2'},c={...a,id:'3'},d={...b,id:'4'};const index=duplicateIndex([a,b,c,d]);assert.deepEqual(matchingSignals(a,b),[]);assert.deepEqual(index(a).map(r=>r.id),['3']);assert.deepEqual(index(b).map(r=>r.id),['4']);assert.equal(duplicateIndex([a,b])(a).length,0);});
 
 test('shared employee code alone does not produce candidates or signals',()=>{const a={kind:'professional',id:'1',name:'First',mobile:'9876543210',emp_code:'MP09',aadhaar_number:'123456789012'},b={kind:'professional',id:'2',name:'Second',mobile:'8765432109',emp_code:'MP09',aadhaar_number:'234567890123'};assert.deepEqual(matchingSignals(a,b),[]);assert.deepEqual(duplicateIndex([a,b])(a),[]);const c={...b,mobile:a.mobile};assert.deepEqual(matchingSignals(a,c),['Same mobile']);assert.equal(duplicateIndex([a,c])(a).length,1);});
+
+
+test('different Aadhaar can merge only with a direct normalized mobile, assigned site and city match',()=>{
+ const {assertSameAadhaar}=require('../utils/workforceAadhaar');
+ const main={kind:'professional',aadhaar_number:'123456789012',mobile:'+91 98765 43210',site_id:10,city_id:1};
+ const duplicate={...main,aadhaar_number:'234567890123',mobile:'9876543210'};
+ assert.doesNotThrow(()=>assertSameAadhaar([main,duplicate]));
+ for(const change of [{mobile:'8765432109'},{site_id:20},{city_id:2},{site_id:null},{city_id:null},{kind:'regular'},{mobile:''}]) {
+  assert.throws(()=>assertSameAadhaar([main,{...duplicate,...change}]),{status:409});
+ }
+ assert.throws(()=>assertSameAadhaar([{...main,site_id:null},{...duplicate,site_id:null}]),{status:409});
+ assert.throws(()=>assertSameAadhaar([main,duplicate,{...duplicate,mobile:'8765432109'}]),{status:409});
+});

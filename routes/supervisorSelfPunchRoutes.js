@@ -2,6 +2,8 @@ const express = require('express');
 const { requireSupervisor } = require('../middleware/supervisorAccess');
 const authenticate = require('../middleware/authMiddleware');
 const { authorize } = require('../middleware/permissionMiddleware');
+const { attachCityScope } = require('../middleware/cityScope');
+const { requireTransferAdmin, transferRequest } = require('../controllers/professionalTransferController');
 const {
   getRequests,
   getRequestDetails,
@@ -52,5 +54,6 @@ router.post('/requests/:id/approve', authorize('field-access-requests', 'write')
  * @access  Private (Supervisor only)
  */
 router.post('/requests/:id/reject', authorize('field-access-requests', 'write'), rejectRequest);
+router.post('/requests/:id/transfer', requireTransferAdmin, authorize('field-access-requests', 'write'), attachCityScope, transferRequest);
 
 module.exports = router;

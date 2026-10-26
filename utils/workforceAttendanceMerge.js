@@ -20,7 +20,7 @@ async function attendanceMergePlan(client,ids,targetId) {
   const values={...survivor},updates={};
   for(const row of records) for(const [field,value] of Object.entries(row)) {
    if(['id','professional_id','created_at','updated_at'].includes(field) || value===null) continue;
-   if(values[field]!==null && values[field]!==undefined && JSON.stringify(values[field])!==JSON.stringify(value)) reject(`Attendance conflict on ${date}: different ${field.replace(/_/g,' ')}. No records were changed.`);
+   if(values[field]!==null && values[field]!==undefined && JSON.stringify(values[field])!==JSON.stringify(value)) reject(`Attendance conflict on ${date}: different ${field.replace(/_/g,' ')}. No records were changed. Correct the conflicting attendance before merging. To discard an incorrect account and its attendance instead, use Delete this duplicate and review the deletion preview.`);
    if(values[field]===null || values[field]===undefined) {values[field]=value;updates[field]=value;}
   }
   if(values.punch_in && values.punch_out && Date.parse(values.punch_out)<Date.parse(values.punch_in)) reject(`Invalid punch order on ${date}. Review these punches before merging.`);

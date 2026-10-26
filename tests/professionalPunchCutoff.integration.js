@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
-const { PGlite } = require('../../scratch/weekly-off-verification/node_modules/@electric-sql/pglite');
+const { PGlite } = require('@electric-sql/pglite');
 async function main() {
   const db = new PGlite();
   const client = {release(){},query:async(sql,params=[])=>params.length ? db.query(sql,params) : (await db.exec(sql)).at(-1) || {rows:[]}};
@@ -138,7 +138,11 @@ async function main() {
     // Exercise the real punch-in controller with PostgreSQL, stubbing only
     // external biometrics/storage and geofencing services.
     await client.query(`ALTER TABLE professional_employees ADD COLUMN selfie_url TEXT,ADD COLUMN mobile TEXT,ADD COLUMN email TEXT,ADD COLUMN zone_id INT,ADD COLUMN ward_id INT;
-      ALTER TABLE professional_attendance ADD COLUMN ward_id INT,ADD COLUMN zone_id INT,ADD COLUMN city_id INT;
+      ALTER TABLE professional_attendance ADD COLUMN ward_id INT,ADD COLUMN zone_id INT,ADD COLUMN city_id INT,
+        ADD COLUMN kothi_id INT,ADD COLUMN punch_in_latitude DOUBLE PRECISION,ADD COLUMN punch_in_longitude DOUBLE PRECISION,
+        ADD COLUMN punch_out_latitude DOUBLE PRECISION,ADD COLUMN punch_out_longitude DOUBLE PRECISION,
+        ADD COLUMN punch_in_photo_url TEXT,ADD COLUMN punch_out_photo_url TEXT,
+        ADD COLUMN auto_punched_out BOOLEAN DEFAULT FALSE,ADD COLUMN out_address TEXT;
       CREATE TABLE professional_leave_requests(id SERIAL,professional_id UUID,requested_date DATE,status TEXT,leave_type TEXT,reason TEXT,requested_at TIMESTAMPTZ,reviewed_at TIMESTAMPTZ,review_note TEXT,reviewed_by INT);
       CREATE TABLE professional_holidays(id SERIAL,holiday_date DATE,holiday_name TEXT,description TEXT,city_id INT,zone_id INT,ward_id INT,kothi_id INT,created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE FUNCTION professional_is_week_off(UUID,DATE) RETURNS BOOLEAN LANGUAGE SQL AS 'SELECT FALSE';
@@ -150,6 +154,7 @@ async function main() {
       fs,path,'../config/db':pool,'./professionalAttendanceIdentity':require('../utils/professionalAttendanceIdentity'),
     });
     const controller=load('../controllers/professionalAttendanceController.js',{
+      '../utils/professionalAttendanceSite':require('../utils/professionalAttendanceSite'),
       '../utils/professionalAttendanceBlock':blocks,
       '../utils/professionalAttendanceIdentity':require('../utils/professionalAttendanceIdentity'),
       '../config/db':pool,'../utils/professionalPunchCutoff':utility,
