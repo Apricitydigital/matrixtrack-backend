@@ -19,6 +19,16 @@ const attendanceIds=['20000000-0000-4000-8000-000000000001','20000000-0000-4000-
  await db.query('INSERT INTO evidence(attendance_id) VALUES($1)',[attendanceIds[1]]);
  await db.query("INSERT INTO legacy_evidence(attendance_id,note) VALUES($1,'retain original evidence')",[attendanceIds[1]]);
  await db.query('BEGIN');
+ await db.query('SAVEPOINT conflict_review');
+ await db.query("UPDATE professional_attendance SET punch_in='2026-10-01 10:00+05:30',metadata='{\"device\":\"other\"}' WHERE id=$1",[attendanceIds[1]]);
+ await assert.rejects(attendanceMergePlan(db,ids,ids[0]),error=>error.status===409 && error.attendanceConflicts[0].records.length===2 && error.attendanceConflicts[0].fields.includes('punch_in'));
+ await assert.rejects(attendanceMergePlan(db,ids,ids[0],[]),{status:400});
+ await assert.rejects(attendanceMergePlan(db,ids,ids[0],{'2026-10-01':'another-record'}),{status:409});
+ await assert.rejects(attendanceMergePlan(db,ids,ids[0],{'2026-10-02':attendanceIds[1]}),{status:409});
+ const chosen=await attendanceMergePlan(db,ids,ids[0],{'2026-10-01':attendanceIds[1]});
+ assert.equal(chosen.groups[0].survivorId,attendanceIds[1]);assert.deepEqual(chosen.groups[0].updates,{});
+ assert.equal(chosen.groups[0].originals.length,2);assert.equal(chosen.summary.resolvedConflicts[0].professionalId,ids[1]);
+ await db.query('ROLLBACK TO SAVEPOINT conflict_review');
  const plan=await attendanceMergePlan(db,ids,ids[0]);
  assert.deepEqual(plan.summary,{originalRows:2,uniqueDays:1,overlapDays:1,consolidatedRows:1});
  assert.equal(plan.groups[0].originals.length,2);

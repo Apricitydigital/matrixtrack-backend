@@ -196,14 +196,27 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  ALTER TABLE professional_attendance ADD COLUMN punch_approval_status TEXT DEFAULT 'accepted',ADD COLUMN city_id INT DEFAULT 1,ADD COLUMN note TEXT,ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
  CREATE TABLE professional_punch_evidence(id SERIAL PRIMARY KEY,attendance_id INT REFERENCES professional_attendance(id),label TEXT);`);
  let caseNumber=10;
- async function professionalCase(label,entries,{blocked=false,expectedDays,afterPreview,beforePreview,expectedMerged}={}) {
+ async function professionalCase(label,entries,{blocked=false,expectedDays,afterPreview,beforePreview,expectedMerged,chooseAttendanceFrom,restore=false}={}) {
   const n=caseNumber++,ids=[1,2,3].map(i=>`a0000000-0000-4000-8000-${String(n*10+i).padStart(12,'0')}`);
   for(const id of ids) await db.query(`INSERT INTO professional_employees(id,full_name,emp_code,mobile,city_id,kothi_id,is_active,selfie_url,email,password_hash) VALUES($1,'Ashu','ASHU-SAME','9876543210',1,10,true,'same-face','ashu@example.test','same-hash')`,[id]);
   for(const entry of entries) await db.query(`INSERT INTO professional_attendance(professional_id,date,punch_in,punch_out,punch_approval_status,city_id,note) VALUES($1,$2,$3,$4,$5,$6,$7)`,[ids[entry.person],entry.date,entry.in || null,entry.out || null,entry.status || 'accepted',entry.city ?? 1,entry.note ?? null]);
   if(beforePreview) await beforePreview(ids);
   const original=(await db.query('SELECT to_jsonb(a) AS row FROM professional_attendance a WHERE professional_id=ANY($1::uuid[]) ORDER BY id',[ids])).rows.map(result=>result.row);
+  const evidenceBefore=restore ? (await db.query('SELECT * FROM professional_punch_evidence WHERE attendance_id=ANY($1::int[]) ORDER BY id',[original.map(row=>row.id)])).rows : [];
   const cp={kind:'professional',id:ids[0]},cb={sourceIds:ids.slice(1)};
-  const pv=await call('post','/:kind/:id/merge-preview',{params:cp,body:cb});
+  let pv=await call('post','/:kind/:id/merge-preview',{params:cp,body:cb});
+  if(chooseAttendanceFrom!==undefined) {
+   assert.equal(pv.code,409);assert.ok(pv.data.attendanceConflicts.length);
+   const hidden=await call('post','/:kind/:id/merge-preview',{user:3,params:cp,body:cb});assert.equal(hidden.code,403);assert.equal(hidden.data.attendanceConflicts,undefined);
+   cb.attendanceResolutions=Object.fromEntries(pv.data.attendanceConflicts.map(conflict=>[conflict.date,String(original.find(row=>row.date===conflict.date && row.professional_id===ids[chooseAttendanceFrom]).id)]));
+   const invalid=Object.fromEntries(Object.keys(cb.attendanceResolutions).map(date=>[date,'outside-record']));
+   assert.equal((await call('post','/:kind/:id/merge-preview',{params:cp,body:{...cb,attendanceResolutions:invalid}})).code,409);
+   pv=await call('post','/:kind/:id/merge-preview',{params:cp,body:cb});
+   assert.equal(pv.code,200,JSON.stringify(pv.data));assert.equal(pv.data.attendance.resolvedConflicts.length,Object.keys(cb.attendanceResolutions).length);
+   const otherChoice=Object.fromEntries(Object.keys(cb.attendanceResolutions).map(date=>[date,String(original.find(row=>row.date===date && row.professional_id!==ids[chooseAttendanceFrom]).id)]));
+   const staleChoice=await call('post','/:kind/:id/merge',{params:cp,body:{...cb,attendanceResolutions:otherChoice,confirmation:ids[0],reason:label,fingerprint:pv.data.fingerprint}});
+   assert.equal(staleChoice.code,409,'Changing an attendance choice requires a new preview');
+  }
   assert.equal(pv.code,blocked?409:200,`${label}: ${JSON.stringify(pv.data)}`);
   assert.deepEqual((await db.query('SELECT to_jsonb(a) AS row FROM professional_attendance a WHERE professional_id=ANY($1::uuid[]) ORDER BY id',[ids])).rows.map(result=>result.row),original,`${label}: preview never mutates data`);
   if(blocked) {
@@ -234,6 +247,15 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
   assert.equal(audit.attendance_snapshots.length,originalsOverlapping.length,`${label}: all overlapping originals archived`);
   for(const row of originalsOverlapping) assert.ok(audit.attendance_snapshots.some(snapshot=>snapshot.id===row.id && snapshot.professional_id===row.professional_id),`${label}: original attendance identity retained in audit`);
   if(expectedMerged) await expectedMerged(final,ids,original);
+  if(restore) {
+   const rp={mergeId:String(merged.data.mergeId)};
+   const preview=await call('post','/merges/:mergeId/revert-preview',{params:rp});assert.equal(preview.code,200,JSON.stringify(preview.data));
+   const reverted=await call('post','/merges/:mergeId/revert',{params:rp,body:{confirmation:ids[0],reason:'Restore conflicting attendance originals',fingerprint:preview.data.fingerprint}});
+   assert.equal(reverted.code,200,JSON.stringify(reverted.data));
+   assert.deepEqual((await db.query('SELECT to_jsonb(a) AS row FROM professional_attendance a WHERE professional_id=ANY($1::uuid[]) ORDER BY id',[ids])).rows.map(result=>result.row),original,'Recovery restores all conflicting original attendance facts');
+   assert.equal((await db.query('SELECT count(*)::int AS n FROM professional_employees WHERE id=ANY($1::uuid[])',[ids])).rows[0].n,3);
+   assert.deepEqual((await db.query('SELECT * FROM professional_punch_evidence WHERE attendance_id=ANY($1::int[]) ORDER BY id',[original.map(row=>row.id)])).rows,evidenceBefore,'Recovery restores original evidence links');
+  }
   console.log(`PASS: ${label} (${original.length} rows -> ${final.length} unique attendance days)`);
  }
  const day=(person,date,inTime='09:00',outTime='18:00',extra={})=>({person,date,in:inTime && `${date} ${inTime}`,out:outTime && `${date} ${outTime}`,...extra});
@@ -275,6 +297,23 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
   ['Accepted versus rejected approval',day(1,'2026-10-01','09:00','18:00',{status:'rejected'})],
   ['Conflicting non-time metadata',day(1,'2026-10-01','09:00','18:00',{note:'different note'})]
  ]) await professionalCase(label,[day(0,'2026-10-01','09:00','18:00',{note:label.includes('metadata')?'original note':null}),second],{blocked:true});
+ for(const chosen of [0,1]) await professionalCase(`Explicitly keep ${chosen===0?'main':'source'} attendance on conflicting dates`,[
+  day(0,'2026-08-25','08:08',null,{note:'main facts'}),day(1,'2026-08-25','08:10','18:00',{note:'source facts'}),
+  day(0,'2026-08-26','08:00','17:00'),day(1,'2026-08-26','09:00','19:00'),day(2,'2026-08-27')
+ ],{expectedDays:3,chooseAttendanceFrom:chosen,restore:true,beforePreview:async ids=>{
+  await db.query(`INSERT INTO professional_punch_evidence(attendance_id,label) SELECT id,'conflicting-record-evidence' FROM professional_attendance WHERE professional_id=ANY($1::uuid[])`,[ids]);
+ },expectedMerged:async(final,ids,original)=>{
+  for(const date of ['2026-08-25','2026-08-26']) {
+   const expected=original.find(row=>row.date===date && row.professional_id===ids[chosen]);
+   assert.deepEqual(final.find(row=>row.date===date),{...expected,professional_id:ids[0]},'Keep the complete chosen row without borrowing facts from a different punch');
+   assert.equal((await db.query('SELECT count(*)::int AS n FROM professional_punch_evidence WHERE attendance_id=$1',[expected.id])).rows[0].n,2,'Both records keep their evidence links on the chosen row');
+  }
+ }});
+ await professionalCase('Explicitly choosing rejected attendance never promotes it to present',[
+  day(0,'2026-08-25','08:08','17:00'),day(1,'2026-08-25',null,null,{status:'rejected'})
+ ],{expectedDays:1,chooseAttendanceFrom:1,restore:true,expectedMerged:async final=>{
+  assert.equal(final[0].punch_in,null);assert.equal(final[0].punch_out,null);assert.equal(final[0].punch_approval_status,'rejected');
+ }});
  await professionalCase('Complementary punches with invalid time order',[day(0,'2026-10-01','10:00',null),day(1,'2026-10-01',null,'09:00')],{blocked:true});
  await professionalCase('Metadata fills a missing value',[day(0,'2026-10-01'),day(1,'2026-10-01','09:00','18:00',{note:'original evidence'})],{expectedDays:1,expectedMerged:async final=>assert.equal(final[0].note,'original evidence')});
  await professionalCase('Punch changes after overlap preview',[day(0,'2026-10-01','09:00',null),day(1,'2026-10-01','09:00',null)],{expectedDays:1,afterPreview:async ids=>{

@@ -13,7 +13,7 @@ const {retainMergedLogins}=require('../utils/professionalMergeLogin');
 const recovery=require('../utils/workforceMergeRecovery');
 const fail = (message, status=400) => { throw Object.assign(new Error(message), { status }); };
 const wrap = fn => async (req,res,next) => { try { await fn(req,res,next); } catch(e) {
- console.error('[WorkforceReview]', e.message); res.status(e.status || 500).json({message:e.status ? e.message : 'Unable to load workforce review.'});
+ console.error('[WorkforceReview]', e.message); res.status(e.status || 500).json({message:e.status ? e.message : 'Unable to load workforce review.',...(e.attendanceConflicts ? {attendanceConflicts:e.attendanceConflicts} : {})});
 } };
 let schemaReady=false;
 const schema = async () => {
@@ -155,7 +155,7 @@ async function prepareMerge(req,client) {
   if(!matchingSignals(target,source).length) fail('Each duplicate must match the main employee by Aadhaar, name or mobile.');
  }
  assertSameAadhaar(selected);
- return mergePlan(client,target.kind,target.id,[...ids].sort(),{weeklyOffSourceId:req.body.weeklyOffSourceId});
+ return mergePlan(client,target.kind,target.id,[...ids].sort(),{weeklyOffSourceId:req.body.weeklyOffSourceId,attendanceResolutions:req.body.attendanceResolutions});
 }
 router.post('/:kind/:id/merge-preview',ownerOnly,wrap(async(req,res)=>{
  await schema();await ensureMergeSchema();const client=await pool.connect();

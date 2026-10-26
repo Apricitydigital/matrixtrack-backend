@@ -64,7 +64,7 @@ async function mergePlan(client,kind,targetId,sourceIds,options={}) {
  const attendanceTable=kind==='regular'?'attendance':'professional_attendance',attendanceKey=kind==='regular'?'emp_id':'professional_id';
  const overlaps=await client.query(`SELECT date::date FROM ${quote(attendanceTable)} WHERE ${quote(attendanceKey)}::text=ANY($1::text[]) GROUP BY date::date HAVING count(DISTINCT ${quote(attendanceKey)})>1 LIMIT 1`,[ids]);
  if(kind==='regular' && overlaps.rows.length) reject('These IDs have attendance on the same date. Review the overlapping attendance before merging; no punches will be overwritten.');
- const attendance=kind==='professional'?await attendanceMergePlan(client,ids,targetId):null;
+ const attendance=kind==='professional'?await attendanceMergePlan(client,ids,targetId,options.attendanceResolutions):null;
  for(const link of links) {
   const state=(await client.query(`SELECT count(*)::int AS count,md5(COALESCE(string_agg(md5(to_jsonb(t)::text),'' ORDER BY md5(to_jsonb(t)::text)),'')) AS digest FROM ${quote(link.table)} t WHERE ${quote(link.column)}::text=ANY($1::text[])`,[ids])).rows[0];
   if(state.count) affected.push({...link,...state});
