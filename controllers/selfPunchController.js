@@ -348,6 +348,7 @@ const submitRequest = async (req, res) => {
 
     // 4b. Record Biometric & Aadhaar Consent Log (DPDP Act Compliance)
     await logUserConsent({
+      userId: requestId,
       mobile,
       empCode: sanitizedEmpCode,
       consentType: 'BIOMETRIC_FACE_AND_AADHAR',

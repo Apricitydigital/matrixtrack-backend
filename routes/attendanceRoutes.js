@@ -103,6 +103,8 @@ const handleAttendanceReport = async (req, res) => {
         des.designation_name AS designation,
            a.leave_type,
         e.phone AS contact_no, 
+        to_jsonb(a)->>'register_status' AS register_status,to_jsonb(a)->>'register_marked_by_name' AS register_marked_by_name,
+        to_jsonb(a)->>'register_marked_at' AS register_marked_at,to_jsonb(a)->>'register_request_id' AS register_request_id,
         TO_CHAR(a.punch_in_time , 'HH24:MI:SS') AS punch_in, 
         TO_CHAR(a.mid_shift_punch_in_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI:SS') AS mid_shift_punch_in,
         a.in_address,
@@ -241,7 +243,7 @@ router.get("/short-report", async (req, res) => {
 
     COUNT(
       DISTINCT CASE
-        WHEN a.punch_in_time IS NOT NULL
+        WHEN a.punch_in_time IS NOT NULL OR to_jsonb(a)->>'register_status'='present'
         THEN e.emp_id
       END
     ) AS total_present_employees,
@@ -291,7 +293,7 @@ router.get("/short-report", async (req, res) => {
     ARRAY_REMOVE(
       ARRAY_AGG(
         DISTINCT CASE
-          WHEN a.punch_in_time IS NOT NULL
+          WHEN a.punch_in_time IS NOT NULL OR to_jsonb(a)->>'register_status'='present'
           THEN e.emp_id
         END
       ),
@@ -343,7 +345,7 @@ router.get("/short-report", async (req, res) => {
       punch_out_time,
       mid_shift_punch_in_time,
       auto_punched_out,
-      leave_type
+      leave_type,to_jsonb(attendance)->>'register_status' AS register_status
     FROM public.attendance
     WHERE date = $2::date
     ORDER BY emp_id, attendance_id DESC

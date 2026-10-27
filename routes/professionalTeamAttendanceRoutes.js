@@ -32,6 +32,8 @@ router.get('/sites', wrap(async (req, res) => {
 }));
 
 router.get('/', wrap(async (req, res) => {
+  const employeeType=req.query.employeeType||'all';
+  if(!['all','regular','professional'].includes(employeeType))return res.status(400).json({success:false,message:'Choose an employee type.'});
   const today = todayIST();
   const month = req.query.month || today.slice(0, 7);
   const site = req.query.site || '';
@@ -50,6 +52,11 @@ router.get('/', wrap(async (req, res) => {
     if (!allowed.rows.length) return res.status(403).json({ success: false, message: 'Site outside your assigned access.' });
   }
   const start = `${month}-01`;
+  if(employeeType==='regular'){
+    const query=require('../utils/regularTeamAttendance').regularTeamAttendanceQuery([req.professional.professional_id,start,site||null,day||null,search,today,(page-1)*50]);
+    const result=await pool.query(query.sql,query.params);
+    return res.json({success:true,...result.rows[0],page,page_size:50,month});
+  }
   // Every employee/date pair is included, so missing punches remain visible.
   // Identity matching by phone/email is deliberately avoided: it could cross site boundaries.
   const cte = `WITH scoped AS (
@@ -60,7 +67,7 @@ router.get('/', wrap(async (req, res) => {
       AND (p.is_active=TRUE OR EXISTS(SELECT 1 FROM professional_attendance a WHERE a.professional_id=p.id
         AND a.date >= $2::date AND a.date < $2::date + INTERVAL '1 month'))
   ), records AS (
-    SELECT p.id AS employee_id,p.full_name,p.emp_code,p.kothi_id AS site_id,w.ward_name AS site_name,
+    SELECT 'professional'::text AS employee_kind,p.id AS employee_id,p.full_name,p.emp_code,p.kothi_id AS site_id,w.ward_name AS site_name,
       d::date::text AS date,a.punch_in,a.punch_out,a.attempted_punch_in,a.punch_approval_status,
       CASE WHEN a.punch_in IS NOT NULL AND a.punch_out IS NOT NULL
         THEN ROUND((EXTRACT(EPOCH FROM (a.punch_out-a.punch_in))/3600)::numeric,2) END AS hours_worked,
@@ -82,6 +89,12 @@ router.get('/', wrap(async (req, res) => {
     WHERE ($4::date IS NULL OR d::date=$4::date)
   )`;
   const params = [req.professional.professional_id,start,site || null,day || null,search,today];
+  if(employeeType==='all'){
+    const regular=require('../utils/regularTeamAttendance').regularTeamAttendanceQuery([...params,(page-1)*50]);
+    const query=require('../utils/combinedTeamAttendance').combinedTeamAttendanceQuery(cte,regular.cte,[...params,(page-1)*50]);
+    const result=await pool.query(query.sql,query.params);
+    return res.json({success:true,...result.rows[0],page,page_size:50,month});
+  }
   const result = await pool.query(`${cte} SELECT
     (SELECT COALESCE(json_agg(r ORDER BY (r.date>$6::text),r.date DESC,r.full_name,r.employee_id),'[]'::json) FROM
       (SELECT * FROM records ORDER BY (date>$6::text),date DESC,full_name,employee_id LIMIT 50 OFFSET $7) r) AS data,

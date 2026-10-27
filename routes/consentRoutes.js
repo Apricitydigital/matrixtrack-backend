@@ -11,6 +11,7 @@ const authenticateToken = require('../middleware/authMiddleware');
 const authenticateProfessional = require('../middleware/professionalAuth');
 
 router.get('/professional/status', authenticateProfessional, getConsentStatusApi);
+router.post('/professional/log', authenticateProfessional, recordConsentApi);
 router.get('/supervisor/status', authenticateToken, getConsentStatusApi);
 
 /**

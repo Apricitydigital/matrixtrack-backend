@@ -286,6 +286,9 @@ async function runMigrations() {
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261016_professional_holiday_permissions.sql'), 'utf8'));
     await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-attendance-block-schema'))");
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261021_professional_attendance_blocks.sql'), 'utf8'));
+    client.setStep('Register Attendance schema');
+    await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261026_register_attendance.sql'),'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261026_supervisor_attendance.sql'),'utf8'));
     await client.query('COMMIT');
     markAttendanceBlockSchemaReady();
     markPunchCutoffSchemaReady();

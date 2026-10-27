@@ -78,6 +78,11 @@ function normalizeReport(rows) {
    records.push({...person,...entry.location,report_locations:undefined,historical_site_unknown:professional && Boolean(entry.record) && !entry.location?.ward_id,attendance_id:professional?`professional:${a.id || entry.date}`:a.attendance_id,
     source_attendance_id:professional?a.id:a.attendance_id,date,contact_no:person.phone,
     punch_in:punchIn,punch_out:out,mid_shift_punch_in:professional?null:time(a.mid_shift_punch_in_time,true),
+    register_status:a.register_status,register_request_id:a.register_request_id,register_marked_by:a.register_marked_by,
+    register_marked_by_name:a.register_marked_by_name,register_marked_at:a.register_marked_at,
+    attendance_source:a.register_status?'register':a.supervisor_in_by||a.supervisor_out_by?'supervisor':'punch',
+    supervisor_in_name:a.supervisor_in_name,supervisor_out_name:a.supervisor_out_name,
+    supervisor_in_capture:a.supervisor_in_capture,supervisor_out_capture:a.supervisor_out_capture,
     leave_type:professional && punchIn?null:entry.leave_type,
     attendance_status:professional && status?.startsWith('pending_')?'in-consideration':status==='rejected'?'punch-not-accepted':null,
     punch_approval_status:status,attempted_punch_in:a.attempted_punch_in,
@@ -87,8 +92,8 @@ function normalizeReport(rows) {
     latitude_mid_in:a.latitude_mid_in,longitude_mid_in:a.longitude_mid_in,mid_in_address:a.mid_in_address,
     punch_in_image:professional?a.punch_in_photo_url:a.punch_in_image,punch_out_image:professional?a.punch_out_photo_url:a.punch_out_image,
     mid_shift_punch_in_image:a.mid_shift_punch_in_image,
-    punched_in_by:professional?(punchIn?person.name:null):a.punched_in_by,
-    punched_out_by:professional?(out?person.name:null):a.punched_out_by,mid_shift_punched_in_by:a.mid_shift_punched_in_by,
+    punched_in_by:professional?(punchIn?person.name:null):(a.supervisor_in_name||a.punched_in_by),
+    punched_out_by:professional?(out?person.name:null):(a.supervisor_out_name||a.punched_out_by),mid_shift_punched_in_by:a.mid_shift_punched_in_by,
    });
   }
  }

@@ -15,6 +15,7 @@ const response = () => ({ statusCode: 200, status(code) { this.statusCode = code
 
 test('professional status uses token identity and latest versioned self consent', async () => {
   const handler = controller(async (sql, args) => {
+    if (sql.includes('to_regclass')) return { rows: [{ aliases: false, registration: false }] };
     assert.equal(args[0], 17);
     assert.equal(args[1], 'SELF');
     assert.equal(args[3], 'v1.0');

@@ -93,7 +93,7 @@ router.get(
         e.emp_id, 
         e.name, 
         e.emp_code, 
-        e.phone, 
+        e.phone, COALESCE((to_jsonb(e)->>'no_personal_phone')::boolean,FALSE) AS no_personal_phone,
         c.city_name AS city, 
         z.zone_name AS zone, 
         w.ward_name AS ward, 
@@ -133,8 +133,8 @@ router.post("/", async (req, res) => {
   }
 
   const insertEmployeeQuery = `
-    INSERT INTO employee (emp_code, name, phone, ward_id, designation_id, aadhar_no)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO employee (emp_code, name, phone, ward_id, designation_id, aadhar_no,no_personal_phone)
+    VALUES ($1, $2, $3, $4, $5, $6,$7)
     RETURNING *;
   `;
 
@@ -142,10 +142,11 @@ router.post("/", async (req, res) => {
     const result = await pool.query(insertEmployeeQuery, [
       emp_code,
       name,
-      phone,
+      req.body.no_personal_phone===true ? null : phone,
       parseId(ward_id),
       parseId(designation_id),
-      req.body.aadhar_no || null
+      req.body.aadhar_no || null,
+      req.body.no_personal_phone===true
     ]);
     return res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -167,10 +168,11 @@ router.put("/:id", async (req, res) => {
     const { name, emp_code, phone, ward_id, designation_id } = req.body;
     const result = await pool.query(
       `UPDATE employee 
-       SET name = $1, emp_code = $2, phone = $3, ward_id = $4, designation_id = $5, aadhar_no = $6 
+       SET name = $1, emp_code = $2, phone = $3, ward_id = $4, designation_id = $5, aadhar_no = $6,
+        no_personal_phone=COALESCE($8::boolean,no_personal_phone)
        WHERE emp_id = $7 
        RETURNING *`,
-      [name, emp_code, phone, parseId(ward_id), parseId(designation_id), req.body.aadhar_no || null, id]
+      [name, emp_code, req.body.no_personal_phone===true ? null : phone, parseId(ward_id), parseId(designation_id), req.body.aadhar_no || null, id, typeof req.body.no_personal_phone==='boolean'?req.body.no_personal_phone:null]
     );
 
     if (result.rowCount === 0) {

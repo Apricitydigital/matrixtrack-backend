@@ -68,17 +68,19 @@ const recordConsentApi = async (req, res) => {
             deviceInfo = ''
         } = req.body;
 
-        if (!consentGiven) {
+        if (consentGiven !== true) {
             return res.status(400).json({ success: false, message: 'Explicit consent is required.' });
         }
 
         const logId = await logUserConsent({
-            userId,
-            mobile,
-            empCode,
+            // The professional route uses the verified, alias-resolved account.
+            // A stale mobile profile must not save consent under a retired ID.
+            userId: req.professional ? req.professional.professional_id : userId,
+            mobile: req.professional ? null : mobile,
+            empCode: req.professional ? null : empCode,
             consentType,
-            actorType,
-            supervisorId,
+            actorType: req.professional ? 'SELF' : actorType,
+            supervisorId: req.professional ? 0 : supervisorId,
             consentGiven,
             languageUsed: language,
             ipAddress: req.ip,
@@ -102,9 +104,30 @@ const getConsentStatusApi = async (req, res) => {
         const isProfessional = Boolean(req.professional);
         const id = isProfessional ? req.professional.professional_id : req.user.user_id;
         if (!id) return res.status(400).json({ success: false, message: 'Account identity is required.' });
+        let identityPredicate = isProfessional ? 'user_id = $1' : 'supervisor_id = $1';
+        if (isProfessional) {
+            const { rows: schema } = await pool.query(`SELECT
+                to_regclass('workforce_employee_aliases') IS NOT NULL AS aliases,
+                to_regclass('self_punch_requests') IS NOT NULL AS registration`);
+            // Only reviewed permanent merge aliases count; shared names/mobile alone do not.
+            const aliases = schema[0]?.aliases
+                ? "SELECT source_id FROM workforce_employee_aliases WHERE employee_kind='professional' AND target_id=$1"
+                : null;
+            if (aliases) identityPredicate += ` OR user_id IN (${aliases})`;
+            if (schema[0]?.registration) {
+                // Older registrations recorded consent without user_id. Recover only
+                // the exact mobile AND nonempty employee code on this account's request.
+                identityPredicate += ` OR (user_id IS NULL AND EXISTS (
+                    SELECT 1 FROM self_punch_requests r
+                    WHERE (r.id::text=$1${aliases ? ` OR r.id::text IN (${aliases})` : ''})
+                      AND r.mobile=user_consent_logs.mobile
+                      AND NULLIF(BTRIM(r.emp_code),'')=NULLIF(BTRIM(user_consent_logs.emp_code),'')
+                ))`;
+            }
+        }
         const { rows } = await pool.query(`
             SELECT consent_given FROM user_consent_logs
-            WHERE ${isProfessional ? 'user_id::text = $1' : 'supervisor_id = $1'}
+            WHERE (${identityPredicate})
               AND actor_type = $2 AND consent_type = $3 AND consent_version = $4
             ORDER BY created_at DESC, id DESC LIMIT 1
         `, [id, isProfessional ? 'SELF' : 'SUPERVISOR_PROXY', 'BIOMETRIC_FACE_AND_AADHAR', 'v1.0']);

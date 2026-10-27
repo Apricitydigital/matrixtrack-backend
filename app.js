@@ -68,7 +68,7 @@ const app = express();
 // Middleware
 app.use(compression());
 app.use((req, res, next) => {
-  console.log(`[HTTP] ${req.method} ${req.url}`);
+  console.log(`[HTTP] ${req.method} ${require('./utils/safeRequestUrl')(req.url)}`);
   next();
 });
 // PROD SAFETY: 2 MB JSON limit. 8 MB was too large — allowed clients to bypass
@@ -492,6 +492,8 @@ app.use("/api/v1/external", externalApiRoutes);
 
 // Mount Global Audit Logger Middleware (Asynchronous S3 logging)
 const auditLoggerMiddleware = require("./middleware/auditLoggerMiddleware");
+app.use("/api", require('./utils/androidAppVersion').androidAppVersionGate);
+app.use("/api", require('./middleware/attendanceImageGuard'));
 app.use("/api", auditLoggerMiddleware);
 
 // Auth & Consent Routes

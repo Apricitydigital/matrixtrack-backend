@@ -1,5 +1,4 @@
 const express = require('express');
-const pool = require('../config/db');
 const authenticateProfessional = require('../middleware/professionalAuth');
 const { resolveAttendanceIdentity } = require('../utils/professionalAttendanceIdentity');
 
@@ -28,6 +27,7 @@ const {
 } = require("../controllers/professionalGeofenceController");
 
 const router = express.Router();
+const { getReminderSettings, saveReminderSettings } = require('../controllers/professionalReminderSettingsController');
 
 // -----------------------------------------------------
 // PUBLIC ROUTES
@@ -62,38 +62,8 @@ router.get("/notifications", getMyNotifications);
 router.post("/notifications/:id/read", markNotificationRead);
 router.post("/push-token/register", registerPushToken);
 router.post("/push-token/unregister", unregisterPushToken);
-router.get('/reminder-settings', async (req, res) => {
-  try {
-    const { professional_id } = req.professional;
-    const result = await pool.query(
-      `SELECT true AS reminder_enabled, '10:00' AS reminder_time FROM professional_employees WHERE id = $1`,
-      [professional_id]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Professional employee not found' });
-    }
-    res.json({ success: true, data: result.rows[0] });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.post('/reminder-settings', async (req, res) => {
-  try {
-    const { professional_id } = req.professional;
-    await pool.query(
-      `UPDATE professional_employees 
-       SET reminder_enabled = TRUE,
-           reminder_time = '10:00'
-       WHERE id = $1`,
-      [professional_id]
-    );
-
-    res.json({ success: true, message: 'Notification reminder settings updated successfully' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+router.get('/reminder-settings', getReminderSettings);
+router.post('/reminder-settings', saveReminderSettings);
 
 const { runProfessionalPunchInReminder } = require('../utils/professionalPunchInReminder');
 

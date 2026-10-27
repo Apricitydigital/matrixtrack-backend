@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
-const {PGlite}=require('../../scratch/weekly-off-verification/node_modules/@electric-sql/pglite');
+const {PGlite}=require('@electric-sql/pglite');
 (async()=>{
  const db=new PGlite();const id=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
  let now='2026-10-16T03:59:00Z',locked=true,unlocks=0,releases=0,pushes=[],templates=[];

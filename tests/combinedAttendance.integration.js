@@ -8,7 +8,7 @@ const routes=[],middleware=[];
 const router={use:(...handlers)=>middleware.push(...handlers)};
 for(const verb of ['get','post'])router[verb]=(url,...handlers)=>routes.push({verb,url,handlers});
 let checkedOut=0,failNextQuery=null,destroyed=0,rollbacks=0;
-const pool={connect:async()=>{checkedOut++;return {
+const pool={query:(sql,params)=>db.query(sql,params),connect:async()=>{checkedOut++;return {
  query:(sql,params)=>{if(failNextQuery){const error=failNextQuery;failNextQuery=null;return Promise.reject(error);}if(sql==='ROLLBACK')rollbacks++;return db.query(sql,params);},
  release(error){checkedOut--;if(error)destroyed++;}
 };}};
@@ -105,6 +105,13 @@ const id=n=>`d0000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
  assert.equal(legacy.ward,'Site not recorded');assert.equal(legacy.ward_id,null);assert.equal(legacy.historical_site_unknown,true);
  r=await call({...query,cityId:'2',kothiIds:'20'});assert.ok(r.body.records.every(row=>row.city_id===2 && row.ward_id===20));
  assert.equal((await call({...query,kothiIds:'invalid'})).code,400);
- console.log('PASS: default combined population, type filters, stable identities, IST punches/photos, regular actor names, multi-designations, leave/pending/rejection, historical inactive rows, separate permission scopes, site/supervisor access and date validation.');
+ await db.exec(`CREATE TABLE supervisor_attendance_captures(id UUID PRIMARY KEY,image_key TEXT);
+ INSERT INTO supervisor_attendance_captures VALUES('${id(900)}','supervisor-attendance/private-group.jpg');
+ ALTER TABLE attendance ADD COLUMN supervisor_in_by UUID,ADD COLUMN supervisor_in_name TEXT,ADD COLUMN supervisor_in_capture UUID,ADD COLUMN register_status TEXT,ADD COLUMN register_marked_by_name TEXT;
+ UPDATE attendance SET supervisor_in_by='${id(1)}',supervisor_in_name='Project Head',supervisor_in_capture='${id(900)}' WHERE emp_id=1;
+ INSERT INTO attendance(emp_id,ward_id,date,register_status,register_marked_by_name) VALUES(2,10,'2026-10-21','present','Site Head');`);
+ r=await call(query);const faceRow=r.body.records.find(row=>row.emp_id==='1');assert.equal(faceRow.attendance_source,'supervisor');assert.equal(faceRow.punched_in_by,'Project Head');assert.equal(faceRow.supervisor_in_capture,id(900));assert.equal(faceRow.punch_in,'09:00:00');assert.equal(faceRow.punch_in_image_url,'https://signed.example.test/supervisor-attendance/private-group.jpg');
+ const manualRow=r.body.records.find(row=>row.emp_id==='2');assert.equal(manualRow.attendance_source,'register');assert.equal(manualRow.register_status,'present');assert.equal(manualRow.punch_in,null);assert.equal(manualRow.register_marked_by_name,'Site Head');
+ console.log('PASS: default combined population, type filters, stable identities, IST punches/photos, regular actor names, supervisor/Register source and evidence, multi-designations, leave/pending/rejection, historical inactive rows, separate permission scopes, site/supervisor access and date validation.');
  await db.close();
 })().catch(async error=>{console.error(error);await db.close();process.exitCode=1;});

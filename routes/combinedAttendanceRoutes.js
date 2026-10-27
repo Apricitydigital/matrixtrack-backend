@@ -45,6 +45,8 @@ async function report(req,res) {
   // before processing what may be thousands of photos in a range report.
   client.release();client=null;
   const result=normalizeReport(rows);
+  await require('../utils/attendanceImageAccess').addAttendanceImageTokens(result.records);
+  await require('../utils/supervisorAttendancePhotos').signSupervisorAttendancePhotos(result.records,pool,getSignedS3Url);
   // Sign only actual punch photos, in bounded batches; no regular-image endpoint
   // receives a professional UUID. No biometric/profile data is returned here.
   const photos=result.records.filter(row=>row.employee_kind==='professional');
