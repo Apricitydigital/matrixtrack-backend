@@ -94,15 +94,25 @@ const id=n=>`d0000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
  await db.query('UPDATE professional_employees SET city_id=2,zone_id=2,ward_id=200,kothi_id=20 WHERE id=$1',[id(1)]);
  r=await call(query,{cityScope:{all:false,ids:[1]},cities:{attendance_reports:[1],'professional-attendance':[1]},kothiScope:{all:false,ids:[10]}});
  assert.equal(r.code,200,JSON.stringify(r.body));
- for(const employeeId of ['1',`professional:${id(1)}`]){
+ for(const employeeId of ['1']){
   const history=r.body.records.find(row=>row.emp_id===employeeId);
   assert.ok(history,'Transfer must not hide attendance from the former site');assert.equal(history.ward_id,10);assert.equal(history.city_id,1);
   const person=r.body.employees.find(row=>row.emp_id===employeeId);assert.equal(person.ward_id,10);
   assert.ok(person.report_locations.every(location=>location.city_id===1),'Unapproved current location must not leak');
  }
+ assert.ok(!r.body.employees.some(row=>row.emp_id===`professional:${id(1)}`),'Transferred professional history leaves the former posting employee report');
+ r=await call({...query,cityId:'2',zoneId:'2',sectorId:'200',kothiIds:'20'},
+  {cityScope:{all:false,ids:[2]},cities:{attendance_reports:[2],'professional-attendance':[2]},kothiScope:{all:false,ids:[20]}});
+ assert.equal(r.code,200,JSON.stringify(r.body));
+ const transferred=r.body.records.filter(row=>row.emp_id===`professional:${id(1)}`);
+ assert.equal(transferred.length,1,'Destination report carries historical attendance exactly once');
+ assert.equal(transferred[0].punch_in,'09:00:00');assert.equal(transferred[0].city_id,2);assert.equal(transferred[0].ward_id,20);
+ assert.equal(transferred[0].sector_id,200);assert.equal(transferred[0].zone_id,2);
+ const original=(await db.query('SELECT city_id,kothi_id FROM professional_attendance WHERE professional_id=$1',[id(1)])).rows[0];
+ assert.deepEqual(original,{city_id:1,kothi_id:10},'Original punch location stays available for site-wise history');
  await db.query('UPDATE professional_attendance SET kothi_id=NULL WHERE professional_id=$1',[id(3)]);
  r=await call(query);const legacy=r.body.records.find(row=>row.emp_id===`professional:${id(3)}`);
- assert.equal(legacy.ward,'Site not recorded');assert.equal(legacy.ward_id,null);assert.equal(legacy.historical_site_unknown,true);
+ assert.equal(legacy.ward,'Site One');assert.equal(legacy.ward_id,10);assert.equal(legacy.historical_site_unknown,false,'Legacy punches without a saved site also follow the current posting');
  r=await call({...query,cityId:'2',kothiIds:'20'});assert.ok(r.body.records.every(row=>row.city_id===2 && row.ward_id===20));
  assert.equal((await call({...query,kothiIds:'invalid'})).code,400);
  await db.exec(`CREATE TABLE supervisor_attendance_captures(id UUID PRIMARY KEY,image_key TEXT);

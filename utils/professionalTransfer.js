@@ -3,6 +3,8 @@ const fail = (message, status = 400) => { throw Object.assign(new Error(message)
 
 // The caller owns the transaction. Only current assignment columns are written;
 // attendance, credentials, documents, leave and face records are never rewritten.
+// Employee reports use this current assignment for the complete attendance
+// history, so past and future transfers carry history without a data backfill.
 async function transferProfessional(client, id, body, actorId, cityIds = null) {
   const next = {};
   for (const field of fields) {

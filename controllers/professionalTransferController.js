@@ -19,7 +19,7 @@ const transferRequest = async (req,res) => {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
     const data = await transferProfessional(client, req.params.id, req.body, req.supervisorId, getPermissionCityFilter(req,'field-access-requests','write'));
     await client.query('COMMIT');
-    res.json({ success:true, message:'Professional transferred. Previous attendance and account details are preserved.', data });
+    res.json({ success:true, message:'Professional transferred. Previous attendance now counts under the new posting in employee reports. Account details are preserved.', data });
   } catch (error) {
     if (client) await client.query('ROLLBACK');
     res.status(error.status || (['40001','40P01','55P03'].includes(error.code) ? 409 : 500)).json({ message:error.status ? error.message : 'Transfer could not be saved. No changes were made. Refresh and try again.' });

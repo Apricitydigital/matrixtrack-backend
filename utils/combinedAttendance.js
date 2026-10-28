@@ -32,11 +32,12 @@ function reportQuery(kind,{cities,sites,user,cityScope,start,end,zoneId=null,sec
    LEFT JOIN department d ON d.department_id=des.department_id WHERE da.professional_id=pe.id) roles ON true`
  :`employee e LEFT JOIN wards w ON w.ward_id=e.ward_id LEFT JOIN zones z ON z.zone_id=w.zone_id LEFT JOIN cities c ON c.city_id=z.city_id
   LEFT JOIN designation des ON des.designation_id=e.designation_id LEFT JOIN department dept ON dept.department_id=des.department_id`;
+ // Employee reports follow the current posting, including punches made before
+ // transfer. Keep stored punch locations intact for the separate site-wise report.
  const entries=professional?`SELECT jsonb_build_object('record',to_jsonb(a),'date',a.date::text,'location',${location('geo.city_id','geo.zone_id','geo.ward_id','geo.kothi_id','ac.city_name','az.zone_name',"COALESCE(aw.ward_name,'Site not recorded')")},'leave_type',
    (SELECT l.leave_type FROM professional_leave_requests l WHERE l.professional_id=pe.id AND l.requested_date=a.date AND l.status='approved' ORDER BY l.id LIMIT 1)) AS entry
    FROM professional_attendance a
-   CROSS JOIN LATERAL(SELECT COALESCE(a.city_id,pe.city_id) AS city_id,COALESCE(a.zone_id,pe.zone_id) AS zone_id,
-    COALESCE(a.ward_id,pe.ward_id) AS ward_id,(to_jsonb(a)->>'kothi_id')::int AS kothi_id) geo
+   CROSS JOIN LATERAL(SELECT pe.city_id,pe.zone_id,pe.ward_id,pe.kothi_id) geo
    LEFT JOIN wards aw ON aw.ward_id=geo.kothi_id LEFT JOIN zones az ON az.zone_id=geo.zone_id LEFT JOIN cities ac ON ac.city_id=geo.city_id
    WHERE a.professional_id=pe.id AND a.date BETWEEN ${from} AND ${to}
    AND ${allowed('geo.city_id','geo.kothi_id','geo.zone_id','geo.ward_id')} AND (${visibility.whereClause})
