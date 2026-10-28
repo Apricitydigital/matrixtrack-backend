@@ -1,0 +1,141 @@
+{
+  "info": {
+    "name": "MatrixTrack Complete External Attendance API",
+    "description": "Set apiKey locally. Attendance uses attendance:read; directories use employees:read. Photo links expire in 900 seconds. Fetch all pagination pages.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://api.matrixtrack.in/api/v1/external",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "date",
+      "value": "2026-10-28",
+      "type": "string"
+    },
+    {
+      "key": "from",
+      "value": "2026-10-01",
+      "type": "string"
+    },
+    {
+      "key": "to",
+      "value": "2026-10-28",
+      "type": "string"
+    },
+    {
+      "key": "empId",
+      "value": "123",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "x-api-key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{apiKey}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Full attendance - daily",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/attendance/full?date={{date}}&employee_type=all&page=1&limit=200"
+      }
+    },
+    {
+      "name": "Full attendance - range",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/attendance/full?from={{from}}&to={{to}}&employee_type=all&page=1&limit=200"
+      }
+    },
+    {
+      "name": "Supervisor-marked attendance",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/attendance/full?date={{date}}&employee_type=regular&source=supervisor&page=1&limit=200"
+      }
+    },
+    {
+      "name": "Register attendance",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/attendance/full?date={{date}}&employee_type=regular&source=register&page=1&limit=200"
+      }
+    },
+    {
+      "name": "Registered employee roster",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/employees?page=1&limit=200"
+      }
+    },
+    {
+      "name": "Registered employee detail",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/employees/{{empId}}"
+      }
+    },
+    {
+      "name": "Supervisors and project heads",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/supervisors?page=1&limit=200"
+      }
+    },
+    {
+      "name": "Regular employee history",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/attendance/employee/{{empId}}?from={{from}}&to={{to}}&page=1&limit=200"
+      }
+    },
+    {
+      "name": "Professional attendance",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/professional/attendance/daily?date={{date}}&page=1&limit=200"
+      }
+    },
+    {
+      "name": "Daily summary",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/attendance/summary?date={{date}}"
+      }
+    }
+  ]
+}

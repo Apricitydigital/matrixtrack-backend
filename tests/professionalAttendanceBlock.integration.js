@@ -34,6 +34,9 @@ async function main() {
       CREATE TABLE wards(ward_id INT PRIMARY KEY,ward_name TEXT);
       CREATE TABLE professional_employees(id UUID PRIMARY KEY,full_name TEXT,emp_code TEXT,mobile TEXT,city_id INT,zone_id INT,ward_id INT,kothi_id INT,is_active BOOLEAN DEFAULT TRUE,selfie_url TEXT);
       CREATE TABLE professional_attendance(id SERIAL PRIMARY KEY,professional_id UUID,date DATE,punch_in TIMESTAMPTZ,punch_out TIMESTAMPTZ,attempted_punch_in TIMESTAMPTZ,punch_approval_status TEXT DEFAULT 'accepted',punch_cutoff TIME,ward_id INT,zone_id INT,city_id INT,UNIQUE(professional_id,date));
+      ALTER TABLE professional_attendance ADD COLUMN punch_in_latitude FLOAT,ADD COLUMN punch_in_longitude FLOAT,
+       ADD COLUMN punch_out_latitude FLOAT,ADD COLUMN punch_out_longitude FLOAT,ADD COLUMN punch_in_photo_url TEXT,
+       ADD COLUMN punch_out_photo_url TEXT,ADD COLUMN auto_punched_out BOOLEAN,ADD COLUMN out_address TEXT;
       CREATE TABLE professional_punch_cutoffs(professional_id UUID,cutoff_time TIME);
       CREATE TABLE professional_punch_settings(id INT,enabled BOOLEAN);
       CREATE TABLE professional_leave_requests(professional_id UUID,requested_date DATE,status TEXT,leave_type TEXT);
@@ -121,6 +124,7 @@ async function main() {
     let faceCalls = 0, afterFace;
     const controller = load('../controllers/professionalAttendanceController.js', {
       '../config/db': pool, '../utils/professionalAttendanceIdentity': identity, '../utils/professionalAttendanceBlock': blocks,
+      '../utils/professionalAttendanceSite': { hasAttendanceSite: async () => false },
       '../utils/professionalPunchCutoff': { ensurePunchCutoffSchema: async () => {}, getPunchSettings: async () => ({ enabled: false }), loadPunchApprovals: async () => new Map(), approvalProgress: () => null },
       '../utils/logger': { info() {}, warn() {}, error: console.error }, '../utils/faceService': { verifyFaceMatch: async () => { faceCalls++; if (afterFace) await afterFace(); return { isMatch: true }; } },
       '../config/awsConfig': {}, '../utils/s3SelfPunch': { uploadToS3: async () => null }, '../utils/professionalLeaveSchema': { ensureProfessionalLeaveSchema: async () => {} },
@@ -138,7 +142,7 @@ async function main() {
     assert.equal(accessReads.length, 2, 'profile, block and cutoff checks fit the original two DB round trips');
     assert.equal(queryLog.some(sql => /CREATE TABLE/i.test(sql)), false, 'warm punches never repeat block schema DDL');
     queryLog = null;
-    const integrations = load('../controllers/externalApiController.js', { '../config/db': pool, '../utils/professionalAttendanceBlock': blocks });
+    const integrations = load('../controllers/externalApiController.js', { '../config/db': pool, '../utils/professionalAttendanceBlock': blocks, './externalAttendanceReadController': {} });
     const snapshot = (await query('SELECT * FROM professional_attendance ORDER BY id')).rows;
     assert.equal((await change(2, person, true)).code, 200);
     assert.deepEqual((await query('SELECT * FROM professional_attendance ORDER BY id')).rows, snapshot, 'blocking never rewrites punches');

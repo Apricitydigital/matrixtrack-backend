@@ -50,6 +50,7 @@ router.get("/health", (req, res) => {
 
 // Read
 router.get("/attendance/daily",            requireScope("attendance:read"),  ctrl.getDailyAttendance);
+router.get("/attendance/full",             requireScope("attendance:read"),  ctrl.getFullAttendance);
 router.get("/attendance/range",             requireScope("attendance:read"),  ctrl.getAttendanceRange);
 router.get("/attendance/summary",           requireScope("attendance:read"),  ctrl.getAttendanceSummary);
 router.get("/attendance/employee/:empId",   requireScope("attendance:read"),  ctrl.getEmployeeAttendance);
@@ -80,6 +81,7 @@ router.delete("/professional/attendance/:id",      requireScope("attendance:writ
 
 // Read
 router.get("/employees",                    requireScope("employees:read"),   ctrl.getEmployees);
+router.get("/supervisors",                  requireScope("employees:read"),   ctrl.getSupervisors);
 router.get("/employees/:empId",             requireScope("employees:read"),   ctrl.getEmployeeById);
 
 // Write
