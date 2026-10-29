@@ -515,6 +515,9 @@ const getActionDescription = (req, body, context = null) => {
 
   // ── Employee Management Page ──
   if (url.includes("/api/employees")) {
+    if (url.includes('/api/employees/import') && method === 'POST') {
+      return `Employee Management: ${req.body?.preview === true ? 'Previewed' : 'Completed'} bulk employee import (${req.body?.rows?.length || 0} rows)`;
+    }
     const empName = req.body?.name || req.body?.emp_code || "";
     const deletedEmployee = context?.employee;
     if (url.includes("/aadhar") && method === "POST") {
@@ -742,7 +745,9 @@ async function logRequest(req, res, responseBody) {
       }
     }
 
-    const rawPayload = maskPayload(req.body);
+    const rawPayload = (req.originalUrl || req.url || '').split('?')[0] === '/api/employees/import'
+      ? { preview:req.body?.preview, row_count:req.body?.rows?.length || 0, employee_codes:(req.body?.rows || []).map(row=>row?.emp_code).filter(Boolean) }
+      : maskPayload(req.body);
     const deleteContext = req._deleteContext || null;
     const contextPayload =
       deleteContext?.employee

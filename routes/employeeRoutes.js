@@ -25,6 +25,11 @@ const { isBackblazeUrl } = require("../utils/backblaze");
 const authenticate = require("../middleware/authMiddleware");
 const { attachCityScope, requireCityScope, buildCityFilterClause } = require("../middleware/cityScope");
 const { attachKothiScope, buildKothiFilterClause } = require("../middleware/kothiScope");
+const { authorize } = require('../middleware/permissionMiddleware');
+const bulkImport = require('../controllers/employeeBulkImportController');
+const importAccess = [authenticate, authorize('employees','write'), attachCityScope, attachKothiScope];
+router.get('/import/options', ...importAccess, bulkImport.getOptions);
+router.post('/import', ...importAccess, bulkImport.importEmployees);
 
 const resolveFaceImageUrl = (faceEmbedding, empId) => {
   if (!faceEmbedding) {
