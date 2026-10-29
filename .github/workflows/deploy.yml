@@ -31,6 +31,7 @@ jobs:
 
             # Upgrade the database configured on this server before restarting.
             npm run migrate:workforce -- --apply
+            node scripts/migrate-professional-assignment.js --apply
             
             # Restart the service (Assuming PM2 is used and process name is 'matrixtrack-api')
             # CHANGE 'matrixtrack-api' to your actual PM2 process name

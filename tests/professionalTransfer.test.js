@@ -58,6 +58,27 @@ test('professional transfer preserves history and identity, validates scope and 
    try {const result=await transferProfessional(client,id,input,9,scope);await db.query('COMMIT');return result;}
    catch(e){await db.query('ROLLBACK');throw e;}
   }
+  // Reproduce production's original foreign keys: valid destination sector
+  // 200 is absent from wards, and destination kothi 2000 is absent from the
+  // obsolete kothi_assignments table. Neither should block a modern transfer.
+  await db.exec(`INSERT INTO wards VALUES(100,100,10,'Legacy ward');
+   CREATE TABLE kothi_assignments(id INT PRIMARY KEY);
+   INSERT INTO kothi_assignments VALUES(1000);
+   ALTER TABLE self_punch_requests ADD CONSTRAINT self_punch_requests_ward_id_fkey FOREIGN KEY(ward_id) REFERENCES wards(ward_id);
+   ALTER TABLE self_punch_requests ADD CONSTRAINT self_punch_requests_kothi_id_fkey FOREIGN KEY(kothi_id) REFERENCES kothi_assignments(id);
+   ALTER TABLE professional_employees ADD CONSTRAINT professional_employees_ward_id_fkey FOREIGN KEY(ward_id) REFERENCES wards(ward_id);
+   ALTER TABLE professional_employees ADD CONSTRAINT professional_employees_kothi_id_fkey FOREIGN KEY(kothi_id) REFERENCES kothi_assignments(id);`);
+  await assert.rejects(run(),{code:'23503'});
+  const migration=require('node:fs').readFileSync(require('node:path').join(__dirname,'../db/migrations/20261029_professional_assignment_references.sql'),'utf8');
+  // Include a legacy reference that cannot yet be validated against sectors.
+  await db.exec(`INSERT INTO wards VALUES(999,100,10,'Historical ward');
+   INSERT INTO self_punch_requests(id,status,ward_id) VALUES('10000000-0000-4000-8000-000000000002','pending',999);`);
+  for(let i=0;i<2;i++)await db.exec(`BEGIN;${migration}COMMIT;`);
+  assert.equal((await db.query("SELECT ward_id FROM self_punch_requests WHERE id='10000000-0000-4000-8000-000000000002'")).rows[0].ward_id,999);
+  // New invalid keys remain rejected even though legacy rows are preserved.
+  await assert.rejects(db.query("UPDATE self_punch_requests SET ward_id=998 WHERE id=$1",[id]),{code:'23503'});
+  await assert.rejects(db.query("UPDATE professional_employees SET kothi_id=998 WHERE id=$1",[id]),{code:'23503'});
+  await db.exec("DELETE FROM self_punch_requests WHERE id='10000000-0000-4000-8000-000000000002'");
   for(const [change,status] of [[{zone_id:10},400],[{kothi_id:1000},400],[{ward_id:''},400],[{reason:''},400],[{updated_at:'2026-10-25'},409]]) {
    await assert.rejects(run({...body,...change}),{status});
   }
