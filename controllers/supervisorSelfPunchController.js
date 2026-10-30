@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { requestLocationJoins } = require('../utils/professionalRequestLocation');
 const logger = require('../utils/logger');
 const { getSignedS3Url } = require('../utils/s3SelfPunch');
 const socketio = require('../utils/socket');
@@ -177,9 +178,7 @@ const getRequests = async (req, res) => {
       FROM self_punch_requests spr
       LEFT JOIN cities c ON spr.city_id = c.city_id
       LEFT JOIN zones z ON spr.zone_id = z.zone_id
-      LEFT JOIN wards w ON spr.kothi_id = w.ward_id
-      LEFT JOIN wards w_from_ward ON spr.ward_id = w_from_ward.ward_id
-      LEFT JOIN sectors s ON (s.sector_id = spr.ward_id OR s.sector_id = w.sector_id OR s.sector_id = w_from_ward.sector_id)
+      ${requestLocationJoins}
       LEFT JOIN LATERAL (
         SELECT
           pa.punch_in,
@@ -196,7 +195,7 @@ const getRequests = async (req, res) => {
         LIMIT 1
       ) att ON spr.status = 'approved'
       WHERE ${isAdmin ? 'TRUE' : visibilityWhereClause} ${listStatusFilter}
-      ORDER BY spr.created_at DESC
+      ORDER BY spr.created_at DESC, spr.id DESC
       LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
     `;
 
@@ -265,9 +264,7 @@ const getRequestDetails = async (req, res) => {
       FROM self_punch_requests spr
       LEFT JOIN cities c ON spr.city_id = c.city_id
       LEFT JOIN zones z ON spr.zone_id = z.zone_id
-      LEFT JOIN wards w ON spr.kothi_id = w.ward_id
-      LEFT JOIN wards w_from_ward ON spr.ward_id = w_from_ward.ward_id
-      LEFT JOIN sectors s ON (s.sector_id = spr.ward_id OR s.sector_id = w.sector_id OR s.sector_id = w_from_ward.sector_id)
+      ${requestLocationJoins}
       WHERE spr.id = $${idParamIndex} AND ${isAdmin ? 'TRUE' : visibilityWhereClause}
     `;
 

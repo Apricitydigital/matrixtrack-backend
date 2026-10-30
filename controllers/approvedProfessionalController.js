@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { requestLocationJoins, requestSectorId } = require('../utils/professionalRequestLocation');
 const { encryptAadhar, decryptAadhar } = require('../utils/encryption');
 const { getVisibilityCTE, visibilityWhereClause } = require('./supervisorSelfPunchController');
 const { getSignedS3Url } = require('../utils/s3SelfPunch');
@@ -30,7 +31,8 @@ const getApprovedList = async (req, res) => {
       SELECT spr.id, spr.full_name, spr.mobile, spr.email, spr.emp_code, spr.aadhar_number,
         spr.city_id, spr.zone_id, spr.ward_id, spr.kothi_id, spr.created_at, spr.updated_at,
         spr.status, c.city_name, z.zone_name,
-        COALESCE(s.sector_name, w0.ward_name) AS ward_name, w.ward_name AS kothi_name,
+        COALESCE(${requestSectorId}, spr.ward_id) AS resolved_ward_id,
+        COALESCE(s.sector_name, w_from_ward.ward_name) AS ward_name, w.ward_name AS kothi_name,
         COALESCE(e.designation_id, (SELECT designation_id FROM designation pd
           JOIN department pdep ON pdep.department_id = pd.department_id
           WHERE pd.designation_name = 'Professional' AND pdep.department_name = 'Professional'
@@ -40,16 +42,14 @@ const getApprovedList = async (req, res) => {
       FROM self_punch_requests spr
       LEFT JOIN cities c ON c.city_id = spr.city_id
       LEFT JOIN zones z ON z.zone_id = spr.zone_id
-      LEFT JOIN sectors s ON s.sector_id = spr.ward_id
-      LEFT JOIN wards w0 ON w0.ward_id = spr.ward_id
-      LEFT JOIN wards w ON w.ward_id = spr.kothi_id
+      ${requestLocationJoins}
       LEFT JOIN employee e ON e.emp_code = COALESCE(NULLIF(spr.emp_code, ''),
         'EMP-' || CASE WHEN NULLIF(spr.mobile, '') IS NOT NULL THEN RIGHT(spr.mobile, 6) ELSE LEFT(spr.id::text, 8) END)
       WHERE spr.status = 'approved' AND ${admin ? 'TRUE' : visibilityWhereClause} ${filter}
       ORDER BY spr.created_at DESC`, params);
     res.set?.('Cache-Control', 'no-store');
     if (req.query.facets === 'true') return res.json({ data: rows.map(row => Object.fromEntries(
-      ['city_id', 'city_name', 'zone_id', 'zone_name', 'ward_id', 'ward_name', 'kothi_id', 'kothi_name', 'emp_code'].map(key => [key, row[key]])
+      ['city_id', 'city_name', 'zone_id', 'zone_name', 'ward_id', 'ward_name', 'kothi_id', 'kothi_name', 'emp_code'].map(key => [key, key === 'ward_id' ? row.resolved_ward_id : row[key]])
     )) });
     for (const row of rows) {
       try { row.aadhar_number = decryptAadhar(row.aadhar_number); }

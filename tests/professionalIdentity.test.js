@@ -55,7 +55,7 @@ function loadController(file, client, identityConflict) {
     '../utils/socket': {}, '../utils/cityTrafficCost': {}, './consentController': {},
     '../utils/professionalIdentity': { findProfessionalIdentityConflict: async () => identityConflict },
     '../utils/professionalLocation': require('../utils/professionalLocation'),
-    '../utils/professionalDesignation': {}, '../utils/professionalRequestFilters': {}, bcryptjs: {}, '../utils/smsNotifier': {},
+    '../utils/professionalDesignation': {}, '../utils/professionalRequestLocation': require('../utils/professionalRequestLocation'), '../utils/professionalRequestFilters': {}, bcryptjs: {}, '../utils/smsNotifier': {},
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../controllers', file), 'utf8'), { module, require: name => dependencies[name] });
   return module.exports;

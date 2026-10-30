@@ -5,10 +5,19 @@ const contains = value => `%${String(value).trim().replace(/[\\%_]/g, '\\$&')}%`
 // Shared by paginated results, counts and Excel download so they always match.
 function buildProfessionalRequestFilters(query, params) {
   let sql = '';
-  for (const field of ['city_id', 'zone_id', 'ward_id', 'kothi_id', 'emp_code']) {
+  for (const field of ['city_id', 'zone_id', 'kothi_id']) {
     if (!query[field]) continue;
     params.push(String(query[field]).trim());
     sql += ` AND spr.${field}::text = $${params.length}`;
+  }
+  if (String(query.ward_id || '').trim()) {
+    const { requestSectorId } = require('./professionalRequestLocation');
+    params.push(String(query.ward_id).trim());
+    sql += ` AND COALESCE(${requestSectorId}, spr.ward_id)::text = $${params.length}`;
+  }
+  if (String(query.emp_code || '').trim()) {
+    params.push(contains(query.emp_code));
+    sql += ` AND spr.emp_code ILIKE $${params.length}`;
   }
   if (String(query.employee_name || '').trim()) {
     params.push(contains(query.employee_name));

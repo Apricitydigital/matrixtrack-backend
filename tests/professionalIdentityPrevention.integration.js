@@ -47,7 +47,7 @@ const deps={
   '../config/db':pool,'../utils/logger':log,'../utils/encryption':encryption,'../utils/professionalIdentity':identity,
   multer,uuid:{v4:randomUUID},'../utils/s3SelfPunch':{uploadToS3:async()=>{uploads++;return 'fixture-photo';},deleteFromS3:async()=>{},getSignedS3Url:async x=>x},
   '../utils/socket':{},'../utils/cityTrafficCost':{},'./consentController':{logUserConsent:async()=>{}},
-  '../utils/professionalDesignation':{},'../utils/professionalRequestFilters':require('../utils/professionalRequestFilters'),
+  '../utils/professionalDesignation':{},'../utils/professionalRequestLocation': require('../utils/professionalRequestLocation'), '../utils/professionalRequestFilters':require('../utils/professionalRequestFilters'),
   '../utils/professionalLocation':require('../utils/professionalLocation'),
   bcryptjs:{},'../utils/smsNotifier':{},
 };

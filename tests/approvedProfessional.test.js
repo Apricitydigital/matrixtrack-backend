@@ -38,7 +38,7 @@ function harness(options = {}) {
     '../controllers/supervisorSelfPunchController': {},
     './supervisorSelfPunchController': { getVisibilityCTE: () => '', visibilityWhereClause: 'TRUE' },
     '../utils/s3SelfPunch': { getSignedS3Url: async value => value },
-    '../utils/professionalRequestFilters': require('../utils/professionalRequestFilters'),
+    '../utils/professionalRequestLocation': require('../utils/professionalRequestLocation'), '../utils/professionalRequestFilters': require('../utils/professionalRequestFilters'),
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../controllers/approvedProfessionalController.js'), 'utf8'), {
     module, require: name => dependencies[name], console,
@@ -232,9 +232,11 @@ test('server authorizes exact admin using database identity', async () => {
 test('existing professional token receives current geography', async () => {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../middleware/professionalAuth.js'), 'utf8'), {
-    module, process: { env: { JWT_SECRET: 'test' } }, require: name => name === 'jsonwebtoken'
-      ? { verify: () => ({ professional_id: id, city_id: 1, zone_id: 2, ward_id: 3 }) }
-      : { query: async () => ({ rows: [{ city_id: 10, zone_id: 20, ward_id: 30, kothi_id: 40, is_active: true }] }) },
+    module, process: { env: { JWT_SECRET: 'test' } }, require: name => {
+      if (name === 'jsonwebtoken') return { verify: () => ({ professional_id: id, city_id: 1, zone_id: 2, ward_id: 3 }) };
+      if (name === '../utils/employeeAliases') return { resolveEmployeeAlias: async (_, employeeId) => employeeId };
+      return { query: async () => ({ rows: [{ city_id: 10, zone_id: 20, ward_id: 30, kothi_id: 40, is_active: true }] }) };
+    },
   });
   const req = { header: () => 'Bearer test', cookies: {} };
   let called = false;
