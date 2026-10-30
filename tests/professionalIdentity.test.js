@@ -54,6 +54,7 @@ function loadController(file, client, identityConflict) {
     '../utils/s3SelfPunch': { uploadToS3: () => { throw new Error('Duplicate must be rejected before file upload'); } },
     '../utils/socket': {}, '../utils/cityTrafficCost': {}, './consentController': {},
     '../utils/professionalIdentity': { findProfessionalIdentityConflict: async () => identityConflict },
+    '../utils/professionalLocation': require('../utils/professionalLocation'),
     '../utils/professionalDesignation': {}, '../utils/professionalRequestFilters': {}, bcryptjs: {}, '../utils/smsNotifier': {},
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../controllers', file), 'utf8'), { module, require: name => dependencies[name] });

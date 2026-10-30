@@ -8,6 +8,7 @@ const socketio = require('../utils/socket');
 const { trackCityTraffic, getIstDateKey } = require('../utils/cityTrafficCost');
 const { logUserConsent } = require('./consentController');
 const { findProfessionalIdentityConflict } = require('../utils/professionalIdentity');
+const { resolveProfessionalLocation } = require('../utils/professionalLocation');
 
 // Multer memory storage to hold files before uploading to S3
 const storage = multer.memoryStorage();
@@ -278,8 +279,14 @@ const submitRequest = async (req, res) => {
       });
     }
 
-    const safeKothiId = await resolveValidKothiId(client, kothi_id);
-    const safeWardId = await resolveValidWardId(client, ward_id, safeKothiId ?? kothi_id);
+    const resolvedLoc = await resolveProfessionalLocation(client, {
+      city_id,
+      zone_id,
+      ward_id,
+      kothi_id
+    });
+    const safeWardId = resolvedLoc.ward_id;
+    const safeKothiId = resolvedLoc.kothi_id;
     if (!safeWardId) {
       await client.query('ROLLBACK');
       logger.warn('[SelfPunch] Invalid ward mapping for request', {

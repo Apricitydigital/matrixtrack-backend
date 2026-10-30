@@ -6,6 +6,7 @@ const { decryptAadhar } = require('../utils/encryption');
 const bcrypt = require('bcryptjs');
 const { sendSms } = require('../utils/smsNotifier');
 const { ensureProfessionalDesignation } = require('../utils/professionalDesignation');
+const { resolveProfessionalLocation } = require('../utils/professionalLocation');
 const { buildScopedProfessionalRequestFilters, employeeMasterCode } = require('../utils/professionalRequestFilters');
 const { findProfessionalIdentityConflict } = require('../utils/professionalIdentity');
 let professionalEmployeeColumnsCache = null;
@@ -176,9 +177,9 @@ const getRequests = async (req, res) => {
       FROM self_punch_requests spr
       LEFT JOIN cities c ON spr.city_id = c.city_id
       LEFT JOIN zones z ON spr.zone_id = z.zone_id
-      LEFT JOIN sectors s ON spr.ward_id = s.sector_id
-      LEFT JOIN wards w_from_ward ON spr.ward_id = w_from_ward.ward_id
       LEFT JOIN wards w ON spr.kothi_id = w.ward_id
+      LEFT JOIN wards w_from_ward ON spr.ward_id = w_from_ward.ward_id
+      LEFT JOIN sectors s ON (s.sector_id = spr.ward_id OR s.sector_id = w.sector_id OR s.sector_id = w_from_ward.sector_id)
       LEFT JOIN LATERAL (
         SELECT
           pa.punch_in,
@@ -264,9 +265,9 @@ const getRequestDetails = async (req, res) => {
       FROM self_punch_requests spr
       LEFT JOIN cities c ON spr.city_id = c.city_id
       LEFT JOIN zones z ON spr.zone_id = z.zone_id
-      LEFT JOIN sectors s ON spr.ward_id = s.sector_id
-      LEFT JOIN wards w_from_ward ON spr.ward_id = w_from_ward.ward_id
       LEFT JOIN wards w ON spr.kothi_id = w.ward_id
+      LEFT JOIN wards w_from_ward ON spr.ward_id = w_from_ward.ward_id
+      LEFT JOIN sectors s ON (s.sector_id = spr.ward_id OR s.sector_id = w.sector_id OR s.sector_id = w_from_ward.sector_id)
       WHERE spr.id = $${idParamIndex} AND ${isAdmin ? 'TRUE' : visibilityWhereClause}
     `;
 
@@ -373,10 +374,33 @@ const approveRequest = async (req, res) => {
       });
     }
 
-    // 1. Update Status
+    // 0. Canonical geography resolution (supports modern sector assignments and legacy ward references)
+    const resolvedLoc = await resolveProfessionalLocation(client, {
+      city_id: request.city_id,
+      zone_id: request.zone_id,
+      ward_id: request.ward_id,
+      kothi_id: request.kothi_id
+    });
+
+    if (!resolvedLoc.ward_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot approve request: unable to resolve valid sector/ward assignment for this location.'
+      });
+    }
+
+    // 1. Update Status & canonicalize locations in self_punch_requests
     await client.query(`
-      UPDATE self_punch_requests SET status = 'approved', updated_at = NOW() WHERE id = $1
-    `, [id]);
+      UPDATE self_punch_requests
+      SET status = 'approved',
+          ward_id = $1,
+          kothi_id = $2,
+          zone_id = COALESCE($3, zone_id),
+          city_id = COALESCE($4, city_id),
+          updated_at = NOW()
+      WHERE id = $5
+    `, [resolvedLoc.ward_id, resolvedLoc.kothi_id, resolvedLoc.zone_id, resolvedLoc.city_id, id]);
 
     // 2. Generate and Hash Password (name@last4mobile)
     const last4 = mobileDigits.slice(-4);
@@ -423,10 +447,10 @@ const approveRequest = async (req, res) => {
     pushCol('aadhar_number', request.aadhar_number);
     pushCol('aadhar_doc_url', request.aadhar_doc_url);
     pushCol('selfie_url', request.selfie_url);
-    pushCol('city_id', request.city_id);
-    pushCol('zone_id', request.zone_id);
-    pushCol('ward_id', request.ward_id);
-    pushCol('kothi_id', request.kothi_id);
+    pushCol('city_id', resolvedLoc.city_id || request.city_id);
+    pushCol('zone_id', resolvedLoc.zone_id || request.zone_id);
+    pushCol('ward_id', resolvedLoc.ward_id);
+    pushCol('kothi_id', resolvedLoc.kothi_id);
     pushCol('face_locked', true);
     pushCol('is_active', true);
 
@@ -507,7 +531,10 @@ const approveRequest = async (req, res) => {
       }
 
       const empCodeVal = String(request.emp_code || '').trim() || `EMP-${request.mobile ? request.mobile.slice(-6) : request.id.slice(0, 8)}`;
-      const targetWardId = request.kothi_id || request.ward_id || null;
+      const targetWardId = resolvedLoc.employee_ward_id;
+      if (!targetWardId) {
+        throw new Error(`Cannot sync to employee master: no valid ward found for location (zone: ${request.zone_id}, sector: ${resolvedLoc.ward_id})`);
+      }
 
       const { designationId: defaultDesignationId } = await ensureProfessionalDesignation(client);
 
@@ -545,8 +572,8 @@ const approveRequest = async (req, res) => {
     // 4. Log the action
     await client.query(`
       INSERT INTO self_punch_request_logs (request_id, action, performed_by_type, performed_by_id, note)
-      VALUES ($1, 'approved', 'supervisor', $2, $3)
-    `, [id, supervisorId, note || 'Approved by Supervisor']);
+      VALUES ($1, 'approved', $2, $3, $4)
+    `, [id, isAdmin ? 'admin' : 'supervisor', supervisorId, note || (isAdmin ? 'Approved by Admin' : 'Approved by Supervisor')]);
 
     await client.query('COMMIT');
 
@@ -673,8 +700,8 @@ const rejectRequest = async (req, res) => {
     // 2. Log the action
     await client.query(`
       INSERT INTO self_punch_request_logs (request_id, action, performed_by_type, performed_by_id, note)
-      VALUES ($1, 'rejected', 'supervisor', $2, $3)
-    `, [id, supervisorId, note]);
+      VALUES ($1, 'rejected', $2, $3, $4)
+    `, [id, isAdmin ? 'admin' : 'supervisor', supervisorId, note]);
 
     await client.query('COMMIT');
 
