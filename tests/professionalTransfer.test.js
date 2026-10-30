@@ -45,8 +45,8 @@ test('professional transfer preserves history and identity, validates scope and 
    CREATE TABLE professional_employees AS SELECT *, 'password-hash'::text AS password_hash FROM self_punch_requests;
    CREATE TABLE employee(emp_id INT PRIMARY KEY,emp_code TEXT,ward_id INT,name TEXT,face_embedding TEXT);
    INSERT INTO employee VALUES(7,'P1',1000,'Professional','enrolled-face'),(8,'OTHER',1000,'Other','other-face');
-   CREATE TABLE professional_attendance(id INT PRIMARY KEY,professional_id UUID,date DATE,city_id INT,kothi_id INT,punch_in TIMESTAMPTZ);
-   INSERT INTO professional_attendance VALUES(1,'${id}','2026-10-25',1,1000,'2026-10-25 09:00+05:30');
+   CREATE TABLE professional_attendance(id INT PRIMARY KEY,professional_id UUID,date DATE,city_id INT,kothi_id INT,punch_in TIMESTAMPTZ,ward_id INT,zone_id INT,punch_out TIMESTAMPTZ);
+   INSERT INTO professional_attendance VALUES(1,'${id}','2026-10-25',1,1000,'2026-10-25 09:00+05:30',100,10,NULL);
    CREATE TABLE professional_settings(professional_id UUID,week_off_days INT[],leave_count INT,geofence TEXT);
    INSERT INTO professional_settings VALUES('${id}',ARRAY[0],3,'old-geofence');
    CREATE TABLE self_punch_request_logs(id SERIAL PRIMARY KEY,request_id UUID,action TEXT,performed_by_type TEXT,performed_by_id INT,note TEXT);`);
@@ -67,7 +67,8 @@ test('professional transfer preserves history and identity, validates scope and 
    ALTER TABLE self_punch_requests ADD CONSTRAINT self_punch_requests_ward_id_fkey FOREIGN KEY(ward_id) REFERENCES wards(ward_id);
    ALTER TABLE self_punch_requests ADD CONSTRAINT self_punch_requests_kothi_id_fkey FOREIGN KEY(kothi_id) REFERENCES kothi_assignments(id);
    ALTER TABLE professional_employees ADD CONSTRAINT professional_employees_ward_id_fkey FOREIGN KEY(ward_id) REFERENCES wards(ward_id);
-   ALTER TABLE professional_employees ADD CONSTRAINT professional_employees_kothi_id_fkey FOREIGN KEY(kothi_id) REFERENCES kothi_assignments(id);`);
+   ALTER TABLE professional_employees ADD CONSTRAINT professional_employees_kothi_id_fkey FOREIGN KEY(kothi_id) REFERENCES kothi_assignments(id);
+   ALTER TABLE professional_attendance ADD CONSTRAINT professional_attendance_ward_id_fkey FOREIGN KEY(ward_id) REFERENCES wards(ward_id);`);
   await assert.rejects(run(),{code:'23503'});
   const migration=require('node:fs').readFileSync(require('node:path').join(__dirname,'../db/migrations/20261029_professional_assignment_references.sql'),'utf8');
   // Include a legacy reference that cannot yet be validated against sectors.
@@ -100,7 +101,40 @@ test('professional transfer preserves history and identity, validates scope and 
   await assert.rejects(run(),{status:409});
   const fresh=(await snapshot('self_punch_requests'))[0];
   await assert.rejects(run({...body,updated_at:fresh.updated_at}),/different assignment/);
+
+  // A transfer could succeed after the profile repair, then fail only when a
+  // matching face reached attendance INSERT. Sector 200 is absent from wards.
+  const punch=async(recordId,date)=>db.query(`INSERT INTO professional_attendance
+    (id,professional_id,date,city_id,zone_id,ward_id,kothi_id,punch_in)
+    SELECT $2,id,$3,city_id,zone_id,ward_id,kothi_id,NOW()
+    FROM professional_employees WHERE id=$1 RETURNING *`,[id,recordId,date]);
+  await assert.rejects(punch(2,'2026-10-26'),error=>error.code==='23503' && error.constraint==='professional_attendance_ward_id_fkey');
+  const attendanceMigration=require('node:fs').readFileSync(require('node:path').join(__dirname,'../db/migrations/20261030_professional_attendance_references.sql'),'utf8');
+  const historyBefore=await snapshot('professional_attendance');
+  for(let i=0;i<2;i++)await db.exec(`BEGIN;${attendanceMigration}COMMIT;`);
+  assert.deepEqual(await snapshot('professional_attendance'),historyBefore,'repeated deployment preserves all historical punches');
+  const newPunch=(await punch(2,'2026-10-26')).rows[0];
+  assert.equal(newPunch.ward_id,200);assert.equal(newPunch.kothi_id,2000);
+  await db.query('UPDATE professional_attendance SET punch_out=NOW() WHERE id=2');
+
+  // Existing legacy profiles may have ward IDs absent from sectors. They must
+  // still punch; replacing the old FK with a sectors FK would break them.
+  await db.query('ALTER TABLE professional_employees DROP CONSTRAINT professional_employees_ward_id_fkey');
+  await db.query('UPDATE professional_employees SET ward_id=999 WHERE id=$1',[id]);
+  await db.exec(`BEGIN;${migration}${attendanceMigration}COMMIT;`);
+  const legacyPunch=(await punch(3,'2026-10-27')).rows[0];
+  assert.equal(legacyPunch.ward_id,999);
+  await db.query('UPDATE professional_attendance SET punch_out=NOW() WHERE id=3');
+  const punchesBeforeNextTransfer=await snapshot('professional_attendance');
+  await run({...body,city_id:1,zone_id:10,ward_id:100,kothi_id:1000,updated_at:fresh.updated_at});
+  assert.deepEqual(await snapshot('professional_attendance'),punchesBeforeNextTransfer,'a later transfer preserves each earlier posting snapshot');
+  const nextPunch=(await punch(4,'2026-10-28')).rows[0];
+  assert.equal(nextPunch.ward_id,100);assert.equal(nextPunch.kothi_id,1000);
+  assert.deepEqual((await snapshot('professional_attendance'))[0],historyBefore[0]);
+  await assert.rejects(db.query('UPDATE professional_employees SET ward_id=998 WHERE id=$1',[id]),{code:'23503'});
+
   await db.query("UPDATE self_punch_requests SET status='pending' WHERE id=$1",[id]);
-  await assert.rejects(run({...body,updated_at:fresh.updated_at}),{status:409});
+  const finalRequest=(await snapshot('self_punch_requests'))[0];
+  await assert.rejects(run({...body,updated_at:finalRequest.updated_at}),{status:409});
  } finally {await db.close();}
 });
