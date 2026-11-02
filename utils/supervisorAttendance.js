@@ -1,5 +1,5 @@
 const crypto=require('node:crypto');
-const {capabilities}=require('./professionalPunchCutoff');
+const {capabilities}=require('./selfAttendancePunchCutoff');
 const faces=require('./supervisorFaceIndex');
 const {modeJoin,modeFields,regularEmployee}=require('./employeeAttendanceMode');
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
@@ -8,9 +8,9 @@ const positive=value=>/^[1-9]\d*$/.test(String(value))&&Number.isSafeInteger(Num
 async function context(db,actor,site){
  if(!positive(site))fail('Select a kothi.');
  if(!(await capabilities(db,actor)).pm)fail('Project Head access required.',403);
- const row=(await db.query(`SELECT w.ward_id,w.ward_name,z.city_id,p.full_name AS actor_name FROM professional_site_access s
-  JOIN professional_employees p ON p.id=s.professional_id AND p.is_active=TRUE JOIN wards w ON w.ward_id=s.kothi_id
-  LEFT JOIN zones z ON z.zone_id=w.zone_id WHERE s.professional_id=$1 AND s.kothi_id=$2`,[actor,site])).rows[0];
+ const row=(await db.query(`SELECT w.ward_id,w.ward_name,z.city_id,p.full_name AS actor_name FROM self_attendance_site_access s
+  JOIN self_attendance_employees p ON p.id=s.self_attendance_id AND p.is_active=TRUE JOIN wards w ON w.ward_id=s.kothi_id
+  LEFT JOIN zones z ON z.zone_id=w.zone_id WHERE s.self_attendance_id=$1 AND s.kothi_id=$2`,[actor,site])).rows[0];
  if(!row)fail('Kothi is outside your assigned access.',403);return row;
 }
 async function roster(db,site){

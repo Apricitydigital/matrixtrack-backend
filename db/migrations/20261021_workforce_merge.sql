@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS workforce_employee_aliases (
- employee_kind TEXT NOT NULL CHECK(employee_kind IN ('regular','professional')),
+ employee_kind TEXT NOT NULL CHECK(employee_kind IN ('regular','self_attendance')),
  source_id TEXT NOT NULL, target_id TEXT NOT NULL, emp_code TEXT, face_id TEXT,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(employee_kind,source_id),
  CHECK(source_id<>target_id)
@@ -8,14 +8,14 @@ CREATE INDEX IF NOT EXISTS workforce_alias_target ON workforce_employee_aliases(
 -- Kept separate from public employee-ID redirects. Only authentication reads
 -- these hashes; admin previews never return them. Main-password rotation makes
 -- retired passwords invalid without changing the main account's credentials.
-CREATE TABLE IF NOT EXISTS workforce_professional_login_aliases (
- source_id TEXT PRIMARY KEY,target_id UUID NOT NULL REFERENCES professional_employees(id) ON DELETE RESTRICT,
+CREATE TABLE IF NOT EXISTS workforce_self_attendance_login_aliases (
+ source_id TEXT PRIMARY KEY,target_id UUID NOT NULL REFERENCES self_attendance_employees(id) ON DELETE RESTRICT,
  email TEXT,mobile TEXT,mobile_normalized TEXT,password_hash TEXT,main_password_hash TEXT,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS workforce_login_alias_target ON workforce_professional_login_aliases(target_id);
-CREATE INDEX IF NOT EXISTS workforce_login_alias_email ON workforce_professional_login_aliases(email);
-CREATE INDEX IF NOT EXISTS workforce_login_alias_mobile ON workforce_professional_login_aliases(mobile_normalized);
+CREATE INDEX IF NOT EXISTS workforce_login_alias_target ON workforce_self_attendance_login_aliases(target_id);
+CREATE INDEX IF NOT EXISTS workforce_login_alias_email ON workforce_self_attendance_login_aliases(email);
+CREATE INDEX IF NOT EXISTS workforce_login_alias_mobile ON workforce_self_attendance_login_aliases(mobile_normalized);
 CREATE TABLE IF NOT EXISTS workforce_merge_audit (
  id BIGSERIAL PRIMARY KEY, employee_kind TEXT NOT NULL, target_id TEXT NOT NULL,
  source_ids TEXT[] NOT NULL, actor_user_id INTEGER NOT NULL, reason TEXT NOT NULL,

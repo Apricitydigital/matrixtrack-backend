@@ -15,14 +15,14 @@ router.get("/", authenticate, async (req, res) => {
         u.emp_code,
         u.name,
         w.ward_name as kothi_name,
-        s.sector_name as ward_name,
-        z.zone_name,
-        c.city_name
+        w.ward_name as ward_name,
+        z.zone_id, z.zone_name,
+        c.city_id, c.city_name
        FROM supervisor_kothi sk
        JOIN users u ON sk.supervisor_id = u.user_id
        JOIN wards w ON sk.ward_id = w.ward_id
-       JOIN sectors s ON s.sector_id = w.sector_id
-       JOIN zones z ON z.zone_id = s.zone_id
+       LEFT JOIN sectors s ON s.sector_id = w.sector_id
+       JOIN zones z ON z.zone_id = COALESCE(w.zone_id,s.zone_id)
        JOIN cities c ON c.city_id = z.city_id
        ORDER BY u.name ASC, w.ward_name ASC`
     );

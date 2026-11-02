@@ -73,14 +73,14 @@ const recordConsentApi = async (req, res) => {
         }
 
         const logId = await logUserConsent({
-            // The professional route uses the verified, alias-resolved account.
+            // The self_attendance route uses the verified, alias-resolved account.
             // A stale mobile profile must not save consent under a retired ID.
-            userId: req.professional ? req.professional.professional_id : userId,
-            mobile: req.professional ? null : mobile,
-            empCode: req.professional ? null : empCode,
+            userId: req.self_attendance ? req.self_attendance.self_attendance_id : userId,
+            mobile: req.self_attendance ? null : mobile,
+            empCode: req.self_attendance ? null : empCode,
             consentType,
-            actorType: req.professional ? 'SELF' : actorType,
-            supervisorId: req.professional ? 0 : supervisorId,
+            actorType: req.self_attendance ? 'SELF' : actorType,
+            supervisorId: req.self_attendance ? 0 : supervisorId,
             consentGiven,
             languageUsed: language,
             ipAddress: req.ip,
@@ -101,17 +101,17 @@ const recordConsentApi = async (req, res) => {
 // Identity comes from the verified login token, never from a supplied account ID.
 const getConsentStatusApi = async (req, res) => {
     try {
-        const isProfessional = Boolean(req.professional);
-        const id = isProfessional ? req.professional.professional_id : req.user.user_id;
+        const isSelfAttendance = Boolean(req.self_attendance);
+        const id = isSelfAttendance ? req.self_attendance.self_attendance_id : req.user.user_id;
         if (!id) return res.status(400).json({ success: false, message: 'Account identity is required.' });
-        let identityPredicate = isProfessional ? 'user_id = $1' : 'supervisor_id = $1';
-        if (isProfessional) {
+        let identityPredicate = isSelfAttendance ? 'user_id = $1' : 'supervisor_id = $1';
+        if (isSelfAttendance) {
             const { rows: schema } = await pool.query(`SELECT
                 to_regclass('workforce_employee_aliases') IS NOT NULL AS aliases,
                 to_regclass('self_punch_requests') IS NOT NULL AS registration`);
             // Only reviewed permanent merge aliases count; shared names/mobile alone do not.
             const aliases = schema[0]?.aliases
-                ? "SELECT source_id FROM workforce_employee_aliases WHERE employee_kind='professional' AND target_id=$1"
+                ? "SELECT source_id FROM workforce_employee_aliases WHERE employee_kind='self_attendance' AND target_id=$1"
                 : null;
             if (aliases) identityPredicate += ` OR user_id IN (${aliases})`;
             if (schema[0]?.registration) {
@@ -130,7 +130,7 @@ const getConsentStatusApi = async (req, res) => {
             WHERE (${identityPredicate})
               AND actor_type = $2 AND consent_type = $3 AND consent_version = $4
             ORDER BY created_at DESC, id DESC LIMIT 1
-        `, [id, isProfessional ? 'SELF' : 'SUPERVISOR_PROXY', 'BIOMETRIC_FACE_AND_AADHAR', 'v1.0']);
+        `, [id, isSelfAttendance ? 'SELF' : 'SUPERVISOR_PROXY', 'BIOMETRIC_FACE_AND_AADHAR', 'v1.0']);
         return res.json({ success: true, consentGiven: rows[0]?.consent_given === true });
     } catch (error) {
         logger.error('[Consent] Failed to check consent:', error);

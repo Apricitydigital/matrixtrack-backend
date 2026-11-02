@@ -21,8 +21,8 @@ Available permissions:
 
 | Permission | Allows |
 |---|---|
-| `attendance:read` | Read regular and professional attendance |
-| `attendance:write` | Create, update, and delete regular or professional attendance |
+| `attendance:read` | Read regular and self_attendance attendance |
+| `attendance:write` | Create, update, and delete regular or self_attendance attendance |
 | `employees:read` | List and view regular employees |
 | `employees:write` | Create, update, and delete regular employees |
 
@@ -85,23 +85,23 @@ curl -X POST "https://<your-backend-host>/api/v1/external/attendance/punch-in" \
   -d '{"emp_id":123,"ward_id":9,"date":"2026-09-02","punch_in_time":"10:00:00"}'
 ```
 
-### Professional attendance
+### SelfAttendance attendance
 
 | Method | Path | Permission | Input |
 |---|---|---|---|
-| GET | `/professional/attendance/daily` | `attendance:read` | Query: `date` (required), `page`, `limit` |
-| POST | `/professional/attendance/punch-in` | `attendance:write` | Body: `professional_id` required; optional `date`, `latitude`, `longitude` |
-| POST | `/professional/attendance/punch-out` | `attendance:write` | Body: `professional_id` required; optional `date`, `latitude`, `longitude` |
-| PUT | `/professional/attendance/:id` | `attendance:write` | Body: `punch_in` and/or `punch_out` as ISO-8601 timestamps |
-| DELETE | `/professional/attendance/:id` | `attendance:write` | No body |
+| GET | `/self-attendance/attendance/daily` | `attendance:read` | Query: `date` (required), `page`, `limit` |
+| POST | `/self-attendance/attendance/punch-in` | `attendance:write` | Body: `self_attendance_id` required; optional `date`, `latitude`, `longitude` |
+| POST | `/self-attendance/attendance/punch-out` | `attendance:write` | Body: `self_attendance_id` required; optional `date`, `latitude`, `longitude` |
+| PUT | `/self-attendance/attendance/:id` | `attendance:write` | Body: `punch_in` and/or `punch_out` as ISO-8601 timestamps |
+| DELETE | `/self-attendance/attendance/:id` | `attendance:write` | No body |
 
-Professional punch-in example:
+SelfAttendance punch-in example:
 
 ```bash
-curl -X POST "https://<your-backend-host>/api/v1/external/professional/attendance/punch-in" \
+curl -X POST "https://<your-backend-host>/api/v1/external/self-attendance/attendance/punch-in" \
   -H "x-api-key: hms_live_your_key_here" \
   -H "Content-Type: application/json" \
-  -d '{"professional_id":456,"date":"2026-09-02","latitude":26.9124,"longitude":75.7873}'
+  -d '{"self_attendance_id":456,"date":"2026-09-02","latitude":26.9124,"longitude":75.7873}'
 ```
 
 ### Regular employees
@@ -127,7 +127,7 @@ curl -X POST "https://<your-backend-host>/api/v1/external/employees" \
 
 - Dates: `YYYY-MM-DD`.
 - Regular attendance times: `HH:mm:ss` in India time. If omitted on punch endpoints, the server uses the current India date/time.
-- Professional edit timestamps: ISO-8601 with an explicit offset, for example `2026-09-02T10:00:00+05:30`.
+- SelfAttendance edit timestamps: ISO-8601 with an explicit offset, for example `2026-09-02T10:00:00+05:30`.
 - Paginated endpoints accept `page` and `limit`. Defaults are page `1`, limit `50`; maximum limit is `200`.
 - The attendance range endpoint accepts at most 31 days per request.
 - Current route limit is 120 requests per minute per source IP. A `429` response means the caller must wait and retry with backoff.

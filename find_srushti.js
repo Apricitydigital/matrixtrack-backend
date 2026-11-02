@@ -29,7 +29,7 @@ async function main() {
     `);
         console.log("Self Punch Requests found:", selfPunchRes.rows);
 
-        console.log("\n--- 3. Checking all tables in public schema containing 'professional', 'punch', 'attendance', 'self', 'employee' ---");
+        console.log("\n--- 3. Checking all tables in public schema containing 'self_attendance', 'punch', 'attendance', 'self', 'employee' ---");
         const tablesRes = await pool.query(`
       SELECT table_name 
       FROM information_schema.tables 

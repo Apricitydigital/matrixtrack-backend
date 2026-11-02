@@ -87,7 +87,7 @@ router.get("/", requireCityScope(), async (req, res) => {
         LEFT JOIN all_assignments aa ON u.user_id = aa.user_id
         LEFT JOIN wards w ON aa.ward_id = w.ward_id
         LEFT JOIN sectors s ON w.sector_id = s.sector_id
-        LEFT JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
+        LEFT JOIN zones z ON COALESCE(w.zone_id, s.zone_id) = z.zone_id
         LEFT JOIN cities c ON z.city_id = c.city_id
         WHERE
 u.role='supervisor'
@@ -120,8 +120,8 @@ AND COALESCE(u.is_deleted,false)=false
         FROM users u
         INNER JOIN all_assignments aa ON u.user_id = aa.user_id
         INNER JOIN wards w ON aa.ward_id = w.ward_id
-        INNER JOIN sectors s ON w.sector_id = s.sector_id
-        INNER JOIN zones z ON COALESCE(s.zone_id, w.zone_id) = z.zone_id
+        LEFT JOIN sectors s ON w.sector_id = s.sector_id
+        INNER JOIN zones z ON COALESCE(w.zone_id, s.zone_id) = z.zone_id
         INNER JOIN cities c ON z.city_id = c.city_id
         WHERE
 u.role='supervisor'

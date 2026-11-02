@@ -58,9 +58,9 @@ const regularSelect = `SELECT a.attendance_id::text AS attendance_id,'regular' A
   to_jsonb(a)->>'register_status' AS register_status,to_jsonb(a)->>'register_request_id' AS register_request_id,
   to_jsonb(a)->>'register_marked_by' AS register_marked_by,to_jsonb(a)->>'register_marked_by_name' AS register_marked_by_name,
   to_jsonb(a)->>'register_marked_at' AS register_marked_at,
-  COALESCE(${actor('pi', 'professional', 'pi.full_name', 'pi.selfie_url')},${actor('ui', 'user')}) AS punched_in_by,
-  COALESCE(${actor('po', 'professional', 'po.full_name', 'po.selfie_url')},${actor('uo', 'user')}) AS punched_out_by,
-  ${actor('um', 'user')} AS mid_shift_punched_in_by,${actor('pr', 'professional', 'pr.full_name', 'pr.selfie_url')} AS register_actor,
+  COALESCE(${actor('pi', 'self_attendance', 'pi.full_name', 'pi.selfie_url')},${actor('ui', 'user')}) AS punched_in_by,
+  COALESCE(${actor('po', 'self_attendance', 'po.full_name', 'po.selfie_url')},${actor('uo', 'user')}) AS punched_out_by,
+  ${actor('um', 'user')} AS mid_shift_punched_in_by,${actor('pr', 'self_attendance', 'pr.full_name', 'pr.selfie_url')} AS register_actor,
   CASE WHEN to_jsonb(a)->>'register_status' IS NOT NULL THEN 'register'
    WHEN to_jsonb(a)->>'supervisor_in_by' IS NOT NULL OR to_jsonb(a)->>'supervisor_out_by' IS NOT NULL THEN 'supervisor' ELSE 'punch' END AS attendance_source,
   CASE WHEN to_jsonb(a)->>'register_status'='present' THEN 'Present' WHEN to_jsonb(a)->>'register_status'='absent' THEN 'Absent'
@@ -70,11 +70,11 @@ const regularSelect = `SELECT a.attendance_id::text AS attendance_id,'regular' A
   FROM attendance a JOIN employee e ON e.emp_id=a.emp_id ${geography}
   LEFT JOIN designation des ON des.designation_id=e.designation_id LEFT JOIN department dept ON dept.department_id=des.department_id
   LEFT JOIN users ui ON ui.user_id=a.punched_in_by LEFT JOIN users uo ON uo.user_id=a.punched_out_by LEFT JOIN users um ON um.user_id=a.mid_shift_punched_in_by
-  LEFT JOIN professional_employees pi ON pi.id=(to_jsonb(a)->>'supervisor_in_by')::uuid
-  LEFT JOIN professional_employees po ON po.id=(to_jsonb(a)->>'supervisor_out_by')::uuid
-  LEFT JOIN professional_employees pr ON pr.id=(to_jsonb(a)->>'register_marked_by')::uuid`;
-const professionalSelect = `SELECT pa.id::text AS attendance_id,'professional' AS employee_kind,pe.id::text AS employee_id,
-  pe.id AS professional_id,pe.full_name,pe.full_name AS name,pe.emp_code,pe.mobile,pe.mobile AS phone,pe.email,
+  LEFT JOIN self_attendance_employees pi ON pi.id=(to_jsonb(a)->>'supervisor_in_by')::uuid
+  LEFT JOIN self_attendance_employees po ON po.id=(to_jsonb(a)->>'supervisor_out_by')::uuid
+  LEFT JOIN self_attendance_employees pr ON pr.id=(to_jsonb(a)->>'register_marked_by')::uuid`;
+const selfAttendanceSelect = `SELECT pa.id::text AS attendance_id,'self_attendance' AS employee_kind,pe.id::text AS employee_id,
+  pe.id AS self_attendance_id,pe.full_name,pe.full_name AS name,pe.emp_code,pe.mobile,pe.mobile AS phone,pe.email,
   pe.city_id,pe.zone_id,pe.ward_id AS sector_id,pe.kothi_id AS ward_id,pe.kothi_id,w.ward_name AS ward,w.ward_name AS kothi,
   c.city_name AS city,c.city_name,z.zone_name AS zone,z.zone_name,
   roles.designation,roles.department,roles.designation_ids,roles.department_ids,
@@ -85,18 +85,18 @@ const professionalSelect = `SELECT pa.id::text AS attendance_id,'professional' A
   pa.punch_in_latitude AS latitude_in,pa.punch_in_longitude AS longitude_in,pa.punch_out_latitude AS latitude_out,pa.punch_out_longitude AS longitude_out,
   to_jsonb(pa)->>'in_address' AS in_address,pa.out_address,pa.punch_in_photo_url AS punch_in_image,pa.punch_out_photo_url AS punch_out_image,
   pa.city_id AS original_city_id,pa.zone_id AS original_zone_id,pa.ward_id AS original_sector_id,(to_jsonb(pa)->>'kothi_id')::int AS original_kothi_id,
-  CASE WHEN pa.punch_in IS NOT NULL THEN ${actor('pe','professional','pe.full_name','pe.selfie_url')} END AS punched_in_by,
-  CASE WHEN pa.punch_out IS NOT NULL THEN ${actor('pe','professional','pe.full_name','pe.selfie_url')} END AS punched_out_by,
+  CASE WHEN pa.punch_in IS NOT NULL THEN ${actor('pe','self_attendance','pe.full_name','pe.selfie_url')} END AS punched_in_by,
+  CASE WHEN pa.punch_out IS NOT NULL THEN ${actor('pe','self_attendance','pe.full_name','pe.selfie_url')} END AS punched_out_by,
   'punch' AS attendance_source,CASE WHEN pa.punch_approval_status='rejected' THEN 'Punch rejected'
    WHEN pa.punch_approval_status LIKE 'pending_%' THEN 'Pending approval'
    WHEN pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL THEN 'Completed' WHEN pa.punch_in IS NOT NULL THEN 'In Progress' ELSE 'Absent' END AS status
-  FROM professional_attendance pa JOIN professional_employees pe ON pe.id=pa.professional_id
+  FROM self_attendance_records pa JOIN self_attendance_employees pe ON pe.id=pa.self_attendance_id
   LEFT JOIN wards w ON w.ward_id=pe.kothi_id LEFT JOIN zones z ON z.zone_id=pe.zone_id LEFT JOIN cities c ON c.city_id=pe.city_id
   LEFT JOIN LATERAL(SELECT string_agg(DISTINCT d.designation_name,', ' ORDER BY d.designation_name) AS designation,
    string_agg(DISTINCT dep.department_name,', ' ORDER BY dep.department_name) AS department,
    array_agg(DISTINCT d.designation_id) AS designation_ids,array_agg(DISTINCT dep.department_id) AS department_ids
-   FROM professional_designation_assignments da JOIN designation d ON d.designation_id=da.designation_id
-   LEFT JOIN department dep ON dep.department_id=d.department_id WHERE da.professional_id=pe.id) roles ON true`;
+   FROM self_attendance_designation_assignments da JOIN designation d ON d.designation_id=da.designation_id
+   LEFT JOIN department dep ON dep.department_id=d.department_id WHERE da.self_attendance_id=pe.id) roles ON true`;
 
 async function signedPhoto(reference) {
   if (!reference) return null;
@@ -145,14 +145,14 @@ const endpoint = handler => async (req, res) => {
 function attendanceParts(req, kind, range, params) {
   params.push(range.from, range.to);
   const start = params.length - 1, end = params.length;
-  if (kind === 'professional') {
+  if (kind === 'self_attendance') {
     let where = ` WHERE pa.date BETWEEN $${start}::date AND $${end}::date AND pe.is_active=true`;
     where += scope(req, params, {city:'pe.city_id',zone:'pe.zone_id',site:'pe.kothi_id',sector:'pe.ward_id'});
-    if (req.query.professional_id) {
-      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(req.query.professional_id)) fail('INVALID_FILTER','Invalid professional_id.');
-      params.push(req.query.professional_id); where += ` AND pe.id=$${params.length}::uuid`;
+    if (req.query.self_attendance_id) {
+      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(req.query.self_attendance_id)) fail('INVALID_FILTER','Invalid self_attendance_id.');
+      params.push(req.query.self_attendance_id); where += ` AND pe.id=$${params.length}::uuid`;
     }
-    return `${professionalSelect}${where}`;
+    return `${selfAttendanceSelect}${where}`;
   }
   let where = ` WHERE a.date::date BETWEEN $${start}::date AND $${end}::date${scope(req, params, siteColumns)}`;
   const employeeId = req.params?.empId || req.query.emp_id;
@@ -167,10 +167,10 @@ function attendanceHandler({ daily=false, kind='regular', full=false, employee=f
     const range = dates(req.query, daily), params=[];
     const page = pagination(req.query);
     const type = full ? req.query.employee_type || 'all' : kind;
-    if (!['all','regular','professional'].includes(type)) fail('INVALID_FILTER','employee_type must be all, regular or professional.');
+    if (!['all','regular','self_attendance'].includes(type)) fail('INVALID_FILTER','employee_type must be all, regular or self_attendance.');
     const source = req.query.source || 'all';
     if (!['all','punch','supervisor','register'].includes(source)) fail('INVALID_FILTER','source must be all, punch, supervisor or register.');
-    const parts = (type === 'all' ? ['regular','professional'] : [type]).map(part => `SELECT to_jsonb(r) AS record FROM (${attendanceParts(req,part,range,params)}) r`);
+    const parts = (type === 'all' ? ['regular','self_attendance'] : [type]).map(part => `SELECT to_jsonb(r) AS record FROM (${attendanceParts(req,part,range,params)}) r`);
     let sourceFilter='true';
     if(source!=='all'){params.push(source);sourceFilter=`(record->>'attendance_source')=$${params.length}`;}
     const sql = `WITH records AS (${parts.join(' UNION ALL ')}) SELECT record FROM records WHERE ${sourceFilter}`;
@@ -208,20 +208,20 @@ const assignments = `WITH supervisor_sites AS (
  UNION SELECT 'user',uz.user_id::text,w.ward_id FROM user_zone_access uz JOIN wards w ON w.zone_id=uz.zone_id
  UNION SELECT 'user',uc.user_id::text,w.ward_id FROM user_city_access uc JOIN zones z ON z.city_id=uc.city_id JOIN wards w ON w.zone_id=z.zone_id
   WHERE NOT EXISTS(SELECT 1 FROM user_zone_access uz JOIN zones limited ON limited.zone_id=uz.zone_id WHERE uz.user_id=uc.user_id AND limited.city_id=uc.city_id)
- UNION SELECT 'professional',professional_id::text,kothi_id FROM professional_site_access
+ UNION SELECT 'self_attendance',self_attendance_id::text,kothi_id FROM self_attendance_site_access
  ), supervisors AS (
  SELECT 'user'::text AS type,u.user_id::text AS id,u.name,u.emp_code,u.phone,u.email,to_jsonb(u)->>'profile_photo_url' AS _photo FROM users u
  WHERE u.role='supervisor' AND NOT COALESCE(u.is_deleted,false)
- UNION ALL SELECT 'professional',p.id::text,p.full_name,p.emp_code,p.mobile,p.email,p.selfie_url FROM professional_employees p
- WHERE p.is_active=true AND EXISTS(SELECT 1 FROM professional_designation_assignments da JOIN designation d ON d.designation_id=da.designation_id
-  WHERE da.professional_id=p.id AND d.designation_name IN ('Project Manager','Project Head / Site Head'))
+ UNION ALL SELECT 'self_attendance',p.id::text,p.full_name,p.emp_code,p.mobile,p.email,p.selfie_url FROM self_attendance_employees p
+ WHERE p.is_active=true AND EXISTS(SELECT 1 FROM self_attendance_designation_assignments da JOIN designation d ON d.designation_id=da.designation_id
+  WHERE da.self_attendance_id=p.id AND d.designation_name IN ('Project Manager','Project Head / Site Head'))
  )`;
 const supervisorList = `COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.type,s.id) FROM supervisors s
  WHERE EXISTS(SELECT 1 FROM supervisor_sites ss WHERE ss.type=s.type AND ss.id=s.id AND ss.site_id=w.ward_id)),'[]'::jsonb)`;
 async function decoratePeople(rows, supervisors=false) {
   for (let i=0;i<rows.length;i+=10) await Promise.all(rows.slice(i,i+10).map(async row=>{
     row[supervisors?'photo_url':'face_image_url']=await signedPhoto(row._photo);delete row._photo;
-    if(!supervisors){row.employee_kind=row.attendance_mode==='professional'?'professional':'regular';row.employee_type=row.employee_kind==='professional'?'Professional':'Regular';}
+    if(!supervisors){row.employee_kind=row.attendance_mode==='self_attendance'?'self_attendance':'regular';row.employee_type=row.employee_kind==='self_attendance'?'Self Attendance':'Regular';}
     for(const person of row.supervisors || []){person.photo_url=await signedPhoto(person._photo);delete person._photo;}
   }));
 }
@@ -258,5 +258,5 @@ const getSupervisors=endpoint(async(req,res)=>{
   res.json({success:true,data:result.rows,pagination:{page:page.page,limit:page.limit,total,total_pages:Math.ceil(total/page.limit)},meta:meta()});
 });
 module.exports={getDailyAttendance:attendanceHandler({daily:true}),getAttendanceRange:attendanceHandler(),
- getEmployeeAttendance:attendanceHandler({employee:true}),getProfessionalDailyAttendance:attendanceHandler({daily:true,kind:'professional'}),
+ getEmployeeAttendance:attendanceHandler({employee:true}),getSelfAttendanceDailyAttendance:attendanceHandler({daily:true,kind:'self_attendance'}),
  getFullAttendance:attendanceHandler({full:true}),getAttendanceSummary,getEmployees:employeesHandler(false),getEmployeeById:employeesHandler(true),getSupervisors};

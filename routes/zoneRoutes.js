@@ -208,31 +208,31 @@ router.delete(
       const supRes = await client.query(supervisorQuery, supervisorParams);
       const supervisorIds = supRes.rows.map((r) => r.user_id);
 
-      // 3. Clean professional dependencies (logs, requests, notifications, tokens)
+      // 3. Clean self_attendance dependencies (logs, requests, notifications, tokens)
       await safeExec(
-        "DELETE FROM professional_leave_request_logs WHERE actor_professional_id IN (SELECT id FROM professional_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
+        "DELETE FROM self_attendance_leave_request_logs WHERE actor_self_attendance_id IN (SELECT id FROM self_attendance_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
         [id, wardIds.length > 0 ? wardIds : [-1]]
       );
       await safeExec(
-        "DELETE FROM professional_leave_requests WHERE professional_id IN (SELECT id FROM professional_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
+        "DELETE FROM self_attendance_leave_requests WHERE self_attendance_id IN (SELECT id FROM self_attendance_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
         [id, wardIds.length > 0 ? wardIds : [-1]]
       );
       await safeExec(
-        "DELETE FROM professional_notifications WHERE professional_id IN (SELECT id FROM professional_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
+        "DELETE FROM self_attendance_notifications WHERE self_attendance_id IN (SELECT id FROM self_attendance_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
         [id, wardIds.length > 0 ? wardIds : [-1]]
       );
       await safeExec(
-        "DELETE FROM professional_push_tokens WHERE professional_id IN (SELECT id FROM professional_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
+        "DELETE FROM self_attendance_push_tokens WHERE self_attendance_id IN (SELECT id FROM self_attendance_employees WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])))",
         [id, wardIds.length > 0 ? wardIds : [-1]]
       );
 
-      // Clean professional attendance and employees
+      // Clean self_attendance attendance and employees
       if (wardIds.length > 0) {
-        await safeExec("DELETE FROM professional_attendance WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
-        await safeExec("DELETE FROM professional_employees WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
+        await safeExec("DELETE FROM self_attendance_records WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
+        await safeExec("DELETE FROM self_attendance_employees WHERE zone_id = $1 OR ward_id = ANY($2::int[])", [id, wardIds]);
       } else {
-        await safeExec("DELETE FROM professional_attendance WHERE zone_id = $1", [id]);
-        await safeExec("DELETE FROM professional_employees WHERE zone_id = $1", [id]);
+        await safeExec("DELETE FROM self_attendance_records WHERE zone_id = $1", [id]);
+        await safeExec("DELETE FROM self_attendance_employees WHERE zone_id = $1", [id]);
       }
 
       // Clean self-punch requests & standard attendance
@@ -246,11 +246,11 @@ router.delete(
 
       if (wardIds.length > 0 || sectorIds.length > 0) {
         await safeExec(
-          "DELETE FROM professional_holidays WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])) OR (kothi_id IS NOT NULL AND kothi_id = ANY($3::int[]))",
+          "DELETE FROM self_attendance_holidays WHERE zone_id = $1 OR (ward_id IS NOT NULL AND ward_id = ANY($2::int[])) OR (kothi_id IS NOT NULL AND kothi_id = ANY($3::int[]))",
           [id, sectorIds.length > 0 ? sectorIds : [-1], wardIds.length > 0 ? wardIds : [-1]]
         );
       } else {
-        await safeExec("DELETE FROM professional_holidays WHERE zone_id = $1", [id]);
+        await safeExec("DELETE FROM self_attendance_holidays WHERE zone_id = $1", [id]);
       }
 
       // 4. Soft-delete supervisors linked to this zone

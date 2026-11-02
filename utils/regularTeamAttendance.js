@@ -1,9 +1,9 @@
 const {modeFields,modeJoin}=require('./employeeAttendanceMode');
 function regularTeamAttendanceQuery(params){
  const cte=`WITH scoped AS (
-  SELECT e.* FROM employee e WHERE EXISTS(SELECT 1 FROM professional_site_access s WHERE s.professional_id=$1 AND s.kothi_id=e.ward_id)
+  SELECT e.* FROM employee e WHERE EXISTS(SELECT 1 FROM self_attendance_site_access s WHERE s.self_attendance_id=$1 AND s.kothi_id=e.ward_id)
    AND ($3::int IS NULL OR e.ward_id=$3) AND ($5::text='' OR strpos(lower(COALESCE(e.name,'')||' '||COALESCE(e.emp_code,'')),lower($5))>0)
-   AND NOT COALESCE(e.self_attendance_enabled,FALSE) AND NOT EXISTS(SELECT 1 FROM professional_employees p WHERE p.emp_code=e.emp_code)
+   AND NOT COALESCE(e.self_attendance_enabled,FALSE) AND NOT EXISTS(SELECT 1 FROM self_attendance_employees p WHERE p.emp_code=e.emp_code)
  ), records AS (
   SELECT 'regular'::text AS employee_kind,e.emp_id::text AS employee_id,e.name AS full_name,e.emp_code,w.ward_id AS site_id,w.ward_name AS site_name,d::date::text AS date,
    to_char(a.punch_in_time,'HH24:MI:SS') AS punch_in,to_char(a.punch_out_time,'HH24:MI:SS') AS punch_out,NULL::numeric AS hours_worked,

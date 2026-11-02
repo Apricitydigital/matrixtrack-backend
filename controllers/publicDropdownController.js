@@ -115,11 +115,14 @@ const getWards = async (req, res) => {
       return res.status(400).json({ success: false, message: 'zone_id query parameter is required' });
     }
 
-    const cacheKey = `dropdown:wards:${zone_id}`;
+    const flat = req.query.hierarchy === 'city_zone_ward';
+    const cacheKey = `dropdown:wards:${flat ? 'direct:' : ''}${zone_id}`;
     
     // UI "Wards" map to DB "sectors"
     const data = await fetchWithCache(cacheKey, async () => {
-      const result = await pool.query(`
+      const result = await pool.query(flat ? `
+        SELECT ward_id, ward_name FROM wards WHERE zone_id = $1 ORDER BY ward_name ASC
+      ` : `
         SELECT sector_id AS ward_id, sector_name AS ward_name 
         FROM sectors 
         WHERE zone_id = $1 
@@ -128,7 +131,7 @@ const getWards = async (req, res) => {
       return result.rows;
     });
 
-    res.json({ success: true, data });
+    res.json({ success: true, data, ...(flat ? { hierarchy: 'city_zone_ward' } : {}) });
   } catch (error) {
     console.error('Error fetching wards:', error);
     res.status(500).json({ success: false, message: 'Internal server error' });
@@ -142,6 +145,7 @@ const getWards = async (req, res) => {
  */
 const getKothis = async (req, res) => {
   try {
+    const zoneId = parseDropdownId(req.query.zone_id, req.query.zoneId);
     const wardId = parseDropdownId(
       req.query.ward_id,
       req.query.wardId,
@@ -149,20 +153,20 @@ const getKothis = async (req, res) => {
       req.query.sectorId
     );
     
-    if (!wardId) {
+    if (!wardId && !zoneId) {
       return res.status(400).json({ success: false, message: 'ward_id query parameter is required' });
     }
 
-    const cacheKey = `dropdown:kothis:${wardId}`;
+    const cacheKey = `dropdown:kothis:v2:${zoneId ? `zone:${zoneId}` : `legacy:${wardId}`}`;
     
     // UI "Kothis" map to DB "wards"
     const data = await fetchWithCache(cacheKey, async () => {
       const result = await pool.query(`
-        SELECT ward_id AS kothi_id, ward_name AS kothi_name 
-        FROM wards 
-        WHERE sector_id = $1 
-        ORDER BY ward_name ASC
-      `, [wardId]);
+        SELECT w.ward_id AS kothi_id, w.ward_name AS kothi_name
+        FROM wards w
+        WHERE ${zoneId ? 'w.zone_id = $1' : `(w.sector_id = $1 OR (w.sector_id IS NULL AND w.zone_id = (SELECT s.zone_id FROM sectors s WHERE s.sector_id = $1)))`}
+        ORDER BY w.ward_name ASC
+      `, [zoneId || wardId]);
       return result.rows;
     });
 

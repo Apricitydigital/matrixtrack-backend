@@ -2,11 +2,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { PGlite } = require('@electric-sql/pglite');
 const bcrypt = require('bcryptjs');
-const { resolveProfessionalLocation } = require('../utils/professionalLocation');
-const { ensureProfessionalDesignation } = require('../utils/professionalDesignation');
+const { resolveSelfAttendanceLocation } = require('../utils/selfAttendanceLocation');
+const { ensureSelfAttendanceDesignation } = require('../utils/selfAttendanceDesignation');
 
 test('Self-punch approval handles legacy and canonical location mappings without foreign key violations', async (t) => {
   const db = new PGlite();
+  t.after(()=>db.close());
 
   await db.exec(`
     CREATE TABLE cities (city_id INT PRIMARY KEY, city_name TEXT);
@@ -38,7 +39,7 @@ test('Self-punch approval handles legacy and canonical location mappings without
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
-    CREATE TABLE professional_employees (
+    CREATE TABLE self_attendance_employees (
       id UUID PRIMARY KEY,
       request_id UUID REFERENCES self_punch_requests(id),
       full_name TEXT,
@@ -72,8 +73,8 @@ test('Self-punch approval handles legacy and canonical location mappings without
       self_attendance_enabled BOOLEAN DEFAULT TRUE
     );
 
-    CREATE TABLE professional_week_off (
-      professional_id UUID PRIMARY KEY,
+    CREATE TABLE self_attendance_week_off (
+      self_attendance_id UUID PRIMARY KEY,
       week_off_days INT[],
       created_by INT,
       updated_by INT,
@@ -81,19 +82,19 @@ test('Self-punch approval handles legacy and canonical location mappings without
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
-    CREATE TABLE professional_leave_allocations (
-      professional_id UUID,
+    CREATE TABLE self_attendance_leave_allocations (
+      self_attendance_id UUID,
       leave_type TEXT,
       period TEXT,
       allocated_count INT,
       created_by INT,
       updated_by INT,
-      PRIMARY KEY (professional_id, leave_type, period)
+      PRIMARY KEY (self_attendance_id, leave_type, period)
     );
 
-    CREATE TABLE professional_leave_allocation_logs (
+    CREATE TABLE self_attendance_leave_allocation_logs (
       id SERIAL PRIMARY KEY,
-      professional_id UUID,
+      self_attendance_id UUID,
       actor_user_id INT,
       actor_name TEXT,
       change_summary TEXT,
@@ -131,7 +132,7 @@ test('Self-punch approval handles legacy and canonical location mappings without
     `);
 
     // Run resolution
-    const loc = await resolveProfessionalLocation(db, {
+    const loc = await resolveSelfAttendanceLocation(db, {
       city_id: 1,
       zone_id: 114,
       ward_id: 1590,
@@ -157,10 +158,10 @@ test('Self-punch approval handles legacy and canonical location mappings without
       WHERE id = $5
     `, [loc.ward_id, loc.kothi_id, loc.zone_id, loc.city_id, requestId]);
 
-    // 2. Insert into professional_employees
+    // 2. Insert into self_attendance_employees
     const passwordHash = await bcrypt.hash('amar@5177', 10);
     await db.query(`
-      INSERT INTO professional_employees (
+      INSERT INTO self_attendance_employees (
         id, request_id, full_name, mobile, email, emp_code, password_hash,
         city_id, zone_id, ward_id, kothi_id, face_locked, is_active
       ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, true)
@@ -169,12 +170,12 @@ test('Self-punch approval handles legacy and canonical location mappings without
 
     // 3. Week off
     await db.query(`
-      INSERT INTO professional_week_off (professional_id, week_off_days, created_by, updated_by)
+      INSERT INTO self_attendance_week_off (self_attendance_id, week_off_days, created_by, updated_by)
       VALUES ($1, $2, $3, $3)
     `, [requestId, [0], 4]);
 
     // 4. Employee master sync
-    const { designationId } = await ensureProfessionalDesignation(db);
+    const { designationId } = await ensureSelfAttendanceDesignation(db);
     await db.query(`
       INSERT INTO employee (emp_code, name, phone, ward_id, designation_id, aadhar_no, self_attendance_enabled)
       VALUES ($1, $2, $3, $4, $5, $6, true)
@@ -192,7 +193,7 @@ test('Self-punch approval handles legacy and canonical location mappings without
     await db.query('COMMIT');
 
     // Verify database state
-    const peRow = (await db.query('SELECT * FROM professional_employees WHERE id = $1', [requestId])).rows[0];
+    const peRow = (await db.query('SELECT * FROM self_attendance_employees WHERE id = $1', [requestId])).rows[0];
     assert.equal(peRow.ward_id, 145);
     assert.equal(peRow.kothi_id, 1590);
     assert.equal(peRow.is_active, true);
@@ -209,5 +210,35 @@ test('Self-punch approval handles legacy and canonical location mappings without
     const logRow = (await db.query('SELECT * FROM self_punch_request_logs WHERE request_id = $1', [requestId])).rows[0];
     assert.equal(logRow.action, 'approved');
     assert.equal(logRow.performed_by_type, 'admin');
+  });
+
+  await t.test('actual approval handler accepts a NULL Sector and links Employee Master to the selected physical Ward',async()=>{
+    const id='2292f9ea-0ec5-4a1e-8b9d-e49a1a1507d5';
+    await db.query('UPDATE wards SET sector_id=NULL WHERE ward_id=1590');
+    await db.query(`INSERT INTO self_punch_requests(id,full_name,mobile,email,aadhar_number,city_id,zone_id,ward_id,kothi_id,emp_code,status)
+      VALUES($1,'New Person','9888888888','new@example.test','555555555555',1,114,NULL,1590,'FLAT-NEW','pending')`,[id]);
+    const pool={query:(sql,params)=>db.query(sql,params),connect:async()=>({query:(sql,params)=>db.query(sql,params),release(){}})};
+    const quiet={info(){},warn(){},error(){}};let smsCalls=0;
+    const deps={
+      '../config/db':pool,'../utils/selfAttendanceRequestLocation':require('../utils/selfAttendanceRequestLocation'),
+      '../utils/logger':quiet,'../utils/s3SelfPunch':{},'../utils/socket':{getIO:()=>({emit(){}})},
+      '../utils/encryption':{decryptAadhar:value=>value},bcryptjs:bcrypt,
+      '../utils/smsNotifier':{sendSms:async()=>{smsCalls++;}},
+      '../utils/selfAttendanceDesignation':{ensureSelfAttendanceDesignation},
+      '../utils/selfAttendanceLocation':{resolveSelfAttendanceLocation},
+      '../utils/selfAttendanceRequestFilters':require('../utils/selfAttendanceRequestFilters'),
+      '../utils/selfAttendanceIdentity':{findSelfAttendanceIdentityConflict:async()=>null},
+    };
+    const module={exports:{}};
+    require('node:vm').runInNewContext(require('node:fs').readFileSync(require('node:path').join(__dirname,'../controllers/supervisorSelfPunchController.js'),'utf8'),{
+      module,require:name=>{assert.ok(name in deps,name);return deps[name];},console,
+    });
+    const res={code:200,status(code){this.code=code;return this;},json(body){this.body=body;return this;}};
+    await module.exports.approveRequest({params:{id},body:{},supervisorId:4,user:{role:'admin'}},res);
+    assert.equal(res.code,200);assert.equal(res.body.success,true);
+    const profile=(await db.query('SELECT ward_id,kothi_id,password_hash FROM self_attendance_employees WHERE id=$1',[id])).rows[0];
+    assert.equal(profile.ward_id,null);assert.equal(profile.kothi_id,1590);assert.ok(profile.password_hash);
+    assert.equal((await db.query("SELECT ward_id FROM employee WHERE emp_code='FLAT-NEW'")).rows[0].ward_id,1590);
+    assert.equal(smsCalls,1,'Only the isolated provider stub was invoked');
   });
 });

@@ -3,7 +3,7 @@ const {policy,androidAppVersionGate:gate,platformOf}=require('../utils/androidAp
 const originalForceUpdate=process.env.ANDROID_FORCE_UPDATE;
 test.beforeEach(()=>{process.env.ANDROID_FORCE_UPDATE='true';});
 test.afterEach(()=>{if(originalForceUpdate===undefined)delete process.env.ANDROID_FORCE_UPDATE;else process.env.ANDROID_FORCE_UPDATE=originalForceUpdate;});
-function request(headers={},path='/professional/supervisor-attendance/punch'){
+function request(headers={},path='/self-attendance/supervisor-attendance/punch'){
  let passed=false;const res={status(n){this.statusCode=n;return this;},json(data){this.body=data;return this;}};gate({headers,path},res,()=>{passed=true;});return {passed,...res};
 }
 const headers=(version,build)=>({'x-app-platform':'android','x-app-version':version,'x-app-build':build});

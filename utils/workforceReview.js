@@ -10,9 +10,9 @@ const recordsSql = `WITH records AS (
  FROM employee e LEFT JOIN wards w ON w.ward_id=e.ward_id
  LEFT JOIN zones z ON z.zone_id=w.zone_id LEFT JOIN cities c ON c.city_id=z.city_id
  UNION ALL
- SELECT 'professional',p.id::text,p.full_name,p.emp_code,p.mobile,p.city_id,c.city_name,w.ward_name,p.kothi_id,
+ SELECT 'self_attendance',p.id::text,p.full_name,p.emp_code,p.mobile,p.city_id,c.city_name,w.ward_name,p.kothi_id,
  p.is_active::text,to_jsonb(p)->>'is_deleted',p.selfie_url IS NOT NULL,to_jsonb(p)->>'aadhar_number'
- FROM professional_employees p LEFT JOIN cities c ON c.city_id=p.city_id
+ FROM self_attendance_employees p LEFT JOIN cities c ON c.city_id=p.city_id
  LEFT JOIN wards w ON w.ward_id=p.kothi_id
 ), scoped AS (
  SELECT * FROM records WHERE ($1::int[] IS NULL OR city_id=ANY($1))
@@ -37,7 +37,7 @@ const quote = value => '"' + value.replace(/"/g, '""') + '"';
 // Traverse real FK relationships so preview and deletion use the same dependency plan.
 // No wildcard deletes, disabled constraints, or deletion of identity-linked profiles.
 async function deletionPlan(client, kind, id) {
- const root = kind === 'regular' ? 'employee' : 'professional_employees';
+ const root = kind === 'regular' ? 'employee' : 'self_attendance_employees';
  const key = kind === 'regular' ? 'emp_id' : 'id';
  const plan = [];
  async function visit(table, predicate, path) {

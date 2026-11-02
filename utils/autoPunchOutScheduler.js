@@ -74,12 +74,12 @@ async function runAutoPunchOut() {
 
     const updatedRecords = updateResult.rows;
 
-    // Professional field workers use a separate attendance table. The old
-    // scheduler only processed regular employees, leaving professional rows
+    // Self Attendance field workers use a separate attendance table. The old
+    // scheduler only processed regular employees, leaving self_attendance rows
     // open forever.
-    const professionalUpdateResult = await client.query(
+    const selfAttendanceUpdateResult = await client.query(
       `WITH updated AS (
-        UPDATE professional_attendance pa
+        UPDATE self_attendance_records pa
         SET
           punch_out = NOW(),
           auto_punched_out = true,
@@ -88,23 +88,23 @@ async function runAutoPunchOut() {
           AND pa.punch_in IS NOT NULL
           AND pa.punch_out IS NULL
           AND (NOW() - pa.punch_in) >= make_interval(hours => $2)
-        RETURNING pa.id, pa.professional_id, pa.punch_in, pa.punch_out
+        RETURNING pa.id, pa.self_attendance_id, pa.punch_in, pa.punch_out
       )
       SELECT
         u.id,
-        u.professional_id,
+        u.self_attendance_id,
         u.punch_in,
         u.punch_out,
         pe.full_name,
         pe.emp_code
       FROM updated u
-      JOIN professional_employees pe ON pe.id = u.professional_id`,
+      JOIN self_attendance_employees pe ON pe.id = u.self_attendance_id`,
       [today, AUTO_PUNCHOUT_HOURS]
     );
 
-    const updatedProfessionals = professionalUpdateResult.rows;
+    const updatedSelfAttendances = selfAttendanceUpdateResult.rows;
 
-    if (updatedRecords.length === 0 && updatedProfessionals.length === 0) {
+    if (updatedRecords.length === 0 && updatedSelfAttendances.length === 0) {
       console.log(`[AutoPunchOut] ✅ No employees need auto punch-out.`);
       return { processed: 0, failed: 0 };
     }
@@ -118,15 +118,15 @@ async function runAutoPunchOut() {
     }
 
     console.log(
-      `[AutoPunchOut] 🏁 Done | Success: ${updatedRecords.length + updatedProfessionals.length} | Failed: 0`
+      `[AutoPunchOut] 🏁 Done | Success: ${updatedRecords.length + updatedSelfAttendances.length} | Failed: 0`
     );
-    if (updatedProfessionals.length > 0) {
-      console.log(`[AutoPunchOut] Batch updated ${updatedProfessionals.length} professional(s).`);
+    if (updatedSelfAttendances.length > 0) {
+      console.log(`[AutoPunchOut] Batch updated ${updatedSelfAttendances.length} self_attendance(s).`);
     }
     return {
-      processed: updatedRecords.length + updatedProfessionals.length,
+      processed: updatedRecords.length + updatedSelfAttendances.length,
       regularProcessed: updatedRecords.length,
-      professionalProcessed: updatedProfessionals.length,
+      selfAttendanceProcessed: updatedSelfAttendances.length,
       failed: 0,
     };
   } catch (err) {

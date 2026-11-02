@@ -15,8 +15,8 @@ async function ensureRecoverySchema(client) {
 // Include descendants because consolidating attendance may move their FKs.
 async function recoveryTables(client) {
  const {references}=require('./workforceMerge');
- const roots=new Set(['employee','professional_employees','workforce_employee_aliases','workforce_professional_login_aliases','workforce_review_issues']);
- for(const kind of ['regular','professional'])for(const link of await references(client,kind))roots.add(link.table);
+ const roots=new Set(['employee','self_attendance_employees','workforce_employee_aliases','workforce_self_attendance_login_aliases','workforce_review_issues']);
+ for(const kind of ['regular','self_attendance'])for(const link of await references(client,kind))roots.add(link.table);
  const {rows}=await client.query(`WITH RECURSIVE dependencies AS (
  SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname=current_schema() AND c.relkind IN ('r','p') AND c.relname=ANY($1::text[])
@@ -26,7 +26,7 @@ async function recoveryTables(client) {
  UNION SELECT c.table_name FROM information_schema.columns c JOIN information_schema.tables t
  ON t.table_schema=c.table_schema AND t.table_name=c.table_name
  WHERE c.table_schema=current_schema() AND t.table_type='BASE TABLE'
- AND c.column_name IN ('professional_attendance_id','attendance_id') ORDER BY name`,[[...roots]]);
+ AND c.column_name IN ('self_attendance_records_id','attendance_id') ORDER BY name`,[[...roots]]);
  return rows.map(row=>row.name).filter(name=>!['workforce_merge_audit','workforce_merge_changes','workforce_deletion_audit'].includes(name));
 }
 async function installRecoveryTriggers(client) {
@@ -38,8 +38,8 @@ async function installRecoveryTriggers(client) {
 }
 async function assertRecoveryReady(client,plan) {
  await ensureRecoverySchema(client);
- const tables=new Set([plan.kind==='regular'?'employee':'professional_employees',
- 'workforce_employee_aliases','workforce_professional_login_aliases','workforce_review_issues',
+ const tables=new Set([plan.kind==='regular'?'employee':'self_attendance_employees',
+ 'workforce_employee_aliases','workforce_self_attendance_login_aliases','workforce_review_issues',
  ...plan.links.map(link=>link.table),...(plan.attendance?.links || []).map(link=>link.table)]);
  const missing=[];
  for(const table of tables)if(!(await client.query(`SELECT 1 FROM pg_trigger WHERE tgname=$1 AND tgrelid=to_regclass($2)

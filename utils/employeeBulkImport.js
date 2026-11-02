@@ -1,18 +1,20 @@
 const MAX_ROWS = 500;
+const {attachWardImportAliases}=require('./wardNameMigration');
 const text = value => value == null ? '' : String(value).trim();
 const key = value => text(value).toLowerCase();
 const allowed = (ids, id) => ids === null || ids.includes(Number(id));
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 
 async function importOptions(client, cityIds = [], kothiIds = []) {
-  const locations = (await client.query(`SELECT c.city_id,c.city_name AS city,z.zone_id,z.zone_name AS zone,
+  let locations = (await client.query(`SELECT c.city_id,c.city_name AS city,z.zone_id,z.zone_name AS zone,
     s.sector_id AS ward_id,s.sector_name AS ward,w.ward_id AS kothi_id,w.ward_name AS kothi
-    FROM wards w JOIN sectors s ON s.sector_id=w.sector_id
-    JOIN zones z ON z.zone_id=s.zone_id JOIN cities c ON c.city_id=z.city_id
+    FROM wards w LEFT JOIN sectors s ON s.sector_id=w.sector_id
+    JOIN zones z ON z.zone_id=COALESCE(w.zone_id,s.zone_id) JOIN cities c ON c.city_id=z.city_id
     WHERE (w.zone_id IS NULL OR w.zone_id=z.zone_id)
     AND ($1::int[] IS NULL OR c.city_id=ANY($1))
     AND ($2::int[] IS NULL OR w.ward_id=ANY($2))
     ORDER BY c.city_name,z.zone_name,s.sector_name,w.ward_name,w.ward_id`, [cityIds, kothiIds])).rows;
+  locations=await attachWardImportAliases(client,locations);
   const designations = (await client.query(`SELECT d.department_id,d.department_name AS department,
     ds.designation_id,ds.designation_name AS designation FROM designation ds
     JOIN department d ON d.department_id=ds.department_id
@@ -21,7 +23,8 @@ async function importOptions(client, cityIds = [], kothiIds = []) {
 }
 
 // Accept exact names (case-insensitive) or the IDs from the reference sheets.
-const matches = (value, row, field, idField) => key(value) === key(row[field]) || text(value) === String(row[idField]);
+const matches = (value, row, field, idField) => key(value) === key(row[field]) || text(value) === String(row[idField]) ||
+  (row[field+'_aliases']||[]).some(alias=>key(value)===key(alias));
 
 async function validateImport(client, input, options, cityIds = [], kothiIds = []) {
   if (!Array.isArray(input) || input.length < 1 || input.length > MAX_ROWS) fail(`Upload between 1 and ${MAX_ROWS} employee rows.`);
@@ -50,8 +53,11 @@ async function validateImport(client, input, options, cityIds = [], kothiIds = [
     if (!row.no_personal_phone && !/^\d{10}$/.test(row.phone)) addError(row, 'Enter a 10-digit phone number, or set No Personal Phone to Yes.');
     if (row.no_personal_phone) row.phone = null;
     const locations = options.locations.filter(location =>
-      [['city','city_id'],['zone','zone_id'],['ward','ward_id'],['kothi','kothi_id']].every(([field,idField]) => row[field] && matches(row[field],location,field,idField)));
-    if (locations.length !== 1) addError(row, 'City / Zone / Ward / Kothi must match one location in the Locations sheet. Use IDs if names are ambiguous.');
+      [['city','city_id'],['zone','zone_id'],['kothi','kothi_id']].every(([field,idField]) => row[field] && matches(row[field],location,field,idField)) &&
+      // New templates contain the physical Ward only. An optional legacy parent
+      // may constrain an old workbook while Sector assignments still exist.
+      (!row.ward || location.ward_id == null || matches(row.ward,location,'ward','ward_id')));
+    if (locations.length !== 1) addError(row, 'City / Zone / Ward must match one location in the Locations sheet. Use IDs if names are ambiguous.');
     else {
       Object.assign(row, locations[0]);
       if (!allowed(cityIds,row.city_id) || !allowed(kothiIds,row.kothi_id)) addError(row, 'This location is outside your access.');
@@ -81,7 +87,7 @@ async function validateImport(client, input, options, cityIds = [], kothiIds = [
   const conflicts = (await client.query(`SELECT lower(trim(emp_code)) AS code,
     right(regexp_replace(phone,'[^0-9]','','g'),10) AS phone,trim(aadhar_no) AS aadhaar FROM employee
     WHERE lower(trim(emp_code))=ANY($1::text[]) OR right(regexp_replace(phone,'[^0-9]','','g'),10)=ANY($2::text[]) OR trim(aadhar_no)=ANY($3::text[])
-    UNION ALL SELECT lower(trim(emp_code)),right(regexp_replace(mobile,'[^0-9]','','g'),10),NULL FROM professional_employees
+    UNION ALL SELECT lower(trim(emp_code)),right(regexp_replace(mobile,'[^0-9]','','g'),10),NULL FROM self_attendance_employees
     WHERE lower(trim(emp_code))=ANY($1::text[]) OR right(regexp_replace(mobile,'[^0-9]','','g'),10)=ANY($2::text[])
     UNION ALL SELECT lower(trim(emp_code)),right(regexp_replace(mobile,'[^0-9]','','g'),10),NULL FROM self_punch_requests
     WHERE status IN ('pending','approved') AND (lower(trim(emp_code))=ANY($1::text[]) OR right(regexp_replace(mobile,'[^0-9]','','g'),10)=ANY($2::text[]))`, [codes,phones,aadhaars])).rows;

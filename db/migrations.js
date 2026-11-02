@@ -6,10 +6,10 @@
 const pool = require("../config/db");
 const fs = require("fs");
 const path = require("path");
-const { ensureProfessionalLeaveSchema } = require("../utils/professionalLeaveSchema");
-const { ensureProfessionalPushSchema } = require("../utils/professionalPushService");
-const { markAttendanceBlockSchemaReady } = require('../utils/professionalAttendanceBlock');
-const { markPunchCutoffSchemaReady } = require('../utils/professionalPunchCutoff');
+const { ensureSelfAttendanceLeaveSchema } = require("../utils/selfAttendanceLeaveSchema");
+const { ensureSelfAttendancePushSchema } = require("../utils/selfAttendancePushService");
+const { markAttendanceBlockSchemaReady } = require('../utils/selfAttendanceRecordsBlock');
+const { markPunchCutoffSchemaReady } = require('../utils/selfAttendancePunchCutoff');
 const { migrationConnection } = require('../utils/migrationConnection');
 
 async function runMigrations() {
@@ -96,12 +96,12 @@ async function runMigrations() {
       console.warn("[Migration] Designation City linkage SQL file not found at:", desigCitySqlPath);
     }
 
-    client.setStep('professional leave schema');
-    await ensureProfessionalLeaveSchema({expirePending:false});
-    console.log("[Migration] Professional leave schema ready.");
-    client.setStep('professional push schema');
-    await ensureProfessionalPushSchema(client);
-    console.log("[Migration] Professional push schema ready.");
+    client.setStep('self_attendance leave schema');
+    await ensureSelfAttendanceLeaveSchema({expirePending:false});
+    console.log("[Migration] Self Attendance leave schema ready.");
+    client.setStep('self_attendance push schema');
+    await ensureSelfAttendancePushSchema(client);
+    console.log("[Migration] Self Attendance push schema ready.");
     client.setStep('startup account and reporting schema');
 
     // ── emp_code columns ────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ async function runMigrations() {
         ADD COLUMN IF NOT EXISTS emp_code VARCHAR(50)
     `);
     await client.query(`
-      ALTER TABLE professional_employees
+      ALTER TABLE self_attendance_employees
         ADD COLUMN IF NOT EXISTS emp_code VARCHAR(50)
     `);
     console.log("[Migration] emp_code columns ready.");
@@ -119,9 +119,9 @@ async function runMigrations() {
     await client.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS professional_leave_allocations (
+      CREATE TABLE IF NOT EXISTS self_attendance_leave_allocations (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        professional_id UUID NOT NULL REFERENCES professional_employees(id) ON DELETE CASCADE,
+        self_attendance_id UUID NOT NULL REFERENCES self_attendance_employees(id) ON DELETE CASCADE,
         leave_type VARCHAR(24) NOT NULL CHECK (leave_type IN ('MEDICAL','CASUAL','PAID')),
         period VARCHAR(16) NOT NULL CHECK (period IN ('monthly','quarterly','half_yearly','yearly')),
         allocated_count INTEGER NOT NULL DEFAULT 0 CHECK (allocated_count >= 0),
@@ -129,14 +129,14 @@ async function runMigrations() {
         updated_by INTEGER REFERENCES users(user_id),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (professional_id, leave_type, period)
+        UNIQUE (self_attendance_id, leave_type, period)
       )
     `);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS professional_week_off (
+      CREATE TABLE IF NOT EXISTS self_attendance_week_off (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        professional_id UUID UNIQUE NOT NULL REFERENCES professional_employees(id) ON DELETE CASCADE,
+        self_attendance_id UUID UNIQUE NOT NULL REFERENCES self_attendance_employees(id) ON DELETE CASCADE,
         week_off_days INTEGER[] NOT NULL DEFAULT '{}',
         created_by INTEGER REFERENCES users(user_id),
         updated_by INTEGER REFERENCES users(user_id),
@@ -145,9 +145,9 @@ async function runMigrations() {
     `);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS professional_leave_allocation_logs (
+      CREATE TABLE IF NOT EXISTS self_attendance_leave_allocation_logs (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        professional_id UUID NOT NULL REFERENCES professional_employees(id) ON DELETE CASCADE,
+        self_attendance_id UUID NOT NULL REFERENCES self_attendance_employees(id) ON DELETE CASCADE,
         actor_user_id INTEGER REFERENCES users(user_id),
         actor_name TEXT,
         change_summary TEXT NOT NULL,
@@ -159,11 +159,11 @@ async function runMigrations() {
 
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_prof_leave_alloc_prof
-      ON professional_leave_allocations (professional_id)
+      ON self_attendance_leave_allocations (self_attendance_id)
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_prof_leave_alloc_logs_prof
-      ON professional_leave_allocation_logs (professional_id, created_at DESC)
+      ON self_attendance_leave_allocation_logs (self_attendance_id, created_at DESC)
     `);
     console.log("[Migration] Leave allocation tables ready.");
 
@@ -269,23 +269,23 @@ async function runMigrations() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_api_key_logs_key ON api_key_usage_logs (api_key_id)`);
     console.log("[Migration] ✅ api_key_usage_logs table ready.");
 
-    client.setStep('professional weekly-off schema');
+    client.setStep('self_attendance weekly-off schema');
     await client.query('BEGIN');
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-weekly-off-schema'))");
-    await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261016_professional_hod.sql'),'utf8'));
-    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261009_professional_weekly_off.sql'), 'utf8'));
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('self-attendance-weekly-off-schema'))");
+    await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261016_self_attendance_hod.sql'),'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261009_self_attendance_weekly_off.sql'), 'utf8'));
     // The legacy weekly-off migration recreates its function on every boot.
     // Reapply the recovery guard in the same transaction, after that definition.
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261022_merge_weeklyoff_recovery.sql'), 'utf8'));
     await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261023_non_duplicate_pairs.sql'), 'utf8'));
-    client.setStep('professional punch-cutoff schema');
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-punch-cutoff-schema'))");
-    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_professional_punch_cutoff.sql'), 'utf8'));
-    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_professional_punch_cutoff_bulk.sql'), 'utf8'));
-    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261016_professional_hod_punch_approval.sql'), 'utf8'));
-    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261016_professional_holiday_permissions.sql'), 'utf8'));
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('professional-attendance-block-schema'))");
-    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261021_professional_attendance_blocks.sql'), 'utf8'));
+    client.setStep('self_attendance punch-cutoff schema');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('self-attendance-punch-cutoff-schema'))");
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_self_attendance_punch_cutoff.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261014_self_attendance_punch_cutoff_bulk.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261016_self_attendance_hod_punch_approval.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261016_self_attendance_holiday_permissions.sql'), 'utf8'));
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('self-attendance-records-block-schema'))");
+    await client.query(fs.readFileSync(path.join(__dirname, 'migrations', '20261021_self_attendance_records_blocks.sql'), 'utf8'));
     client.setStep('Register Attendance schema');
     await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261026_register_attendance.sql'),'utf8'));
     await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261026_supervisor_attendance.sql'),'utf8'));

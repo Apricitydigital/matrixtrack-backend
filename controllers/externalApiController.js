@@ -4,7 +4,7 @@
  */
 
 const pool = require("../config/db");
-const { withUnblockedAttendance } = require('../utils/professionalAttendanceBlock');
+const { withUnblockedAttendance } = require('../utils/selfAttendanceRecordsBlock');
 
 const isIsoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
 
@@ -30,11 +30,11 @@ const verifyCityOwnership = async (tableName, idColumn, idValue, cityId, zoneId 
   } else if (tableName === "employee") {
     query = `SELECT 1 FROM employee e JOIN wards w ON e.ward_id = w.ward_id JOIN zones z ON w.zone_id = z.zone_id JOIN cities c ON z.city_id = c.city_id WHERE e.emp_id = $1`;
     scopeColumns = { city: "c.city_id", zone: "z.zone_id", ward: "w.ward_id" };
-  } else if (tableName === "professional_attendance") {
-    query = `SELECT 1 FROM professional_attendance pa JOIN professional_employees pe ON pa.professional_id = pe.id WHERE pa.${idColumn} = $1`;
+  } else if (tableName === "self_attendance_records") {
+    query = `SELECT 1 FROM self_attendance_records pa JOIN self_attendance_employees pe ON pa.self_attendance_id = pe.id WHERE pa.${idColumn} = $1`;
     scopeColumns = { city: "pe.city_id", zone: "pe.zone_id", ward: "pe.ward_id" };
-  } else if (tableName === "professional_employees") {
-    query = `SELECT 1 FROM professional_employees pe WHERE pe.id = $1`;
+  } else if (tableName === "self_attendance_employees") {
+    query = `SELECT 1 FROM self_attendance_employees pe WHERE pe.id = $1`;
     scopeColumns = { city: "pe.city_id", zone: "pe.zone_id", ward: "pe.ward_id" };
   } else {
     throw new Error(`Unsupported ownership table: ${tableName}`);
@@ -243,80 +243,80 @@ const markLeave = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════
-//  PROFESSIONAL ATTENDANCE — WRITE OPERATIONS
+//  SELF_ATTENDANCE ATTENDANCE — WRITE OPERATIONS
 // ═══════════════════════════════════════════════════════════
 
 /**
- * POST /api/v1/external/professional/attendance/punch-in
+ * POST /api/v1/external/self-attendance/attendance/punch-in
  */
-const markProfessionalPunchIn = async (req, res) => {
+const markSelfAttendancePunchIn = async (req, res) => {
   try {
-    const { professional_id, date, latitude, longitude } = req.body;
-    if (!professional_id) return res.status(400).json({ success: false, error: { code: "MISSING_FIELDS", message: "professional_id is required." } });
+    const { self_attendance_id, date, latitude, longitude } = req.body;
+    if (!self_attendance_id) return res.status(400).json({ success: false, error: { code: "MISSING_FIELDS", message: "self_attendance_id is required." } });
     const targetDate = date && isIsoDate(date) ? date : new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
-    const blocked = await verifyCityOwnership("professional_employees", "id", professional_id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
-    if (blocked) return res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "Professional does not belong to your assigned city." } });
+    const blocked = await verifyCityOwnership("self_attendance_employees", "id", self_attendance_id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
+    if (blocked) return res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "Self Attendance does not belong to your assigned city." } });
 
     // Get employee's ward/zone/city for the record
-    const emp = await pool.query(`SELECT ward_id, zone_id, city_id FROM professional_employees WHERE id = $1 AND is_active = true`, [professional_id]);
-    if (emp.rows.length === 0) return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Professional not found or inactive." } });
+    const emp = await pool.query(`SELECT ward_id, zone_id, city_id FROM self_attendance_employees WHERE id = $1 AND is_active = true`, [self_attendance_id]);
+    if (emp.rows.length === 0) return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Self Attendance not found or inactive." } });
     const { ward_id, zone_id, city_id } = emp.rows[0];
 
-    const { rows } = await withUnblockedAttendance(professional_id, async client => {
-      const dup = await client.query('SELECT id FROM professional_attendance WHERE professional_id=$1 AND date=$2', [professional_id, targetDate]);
+    const { rows } = await withUnblockedAttendance(self_attendance_id, async client => {
+      const dup = await client.query('SELECT id FROM self_attendance_records WHERE self_attendance_id=$1 AND date=$2', [self_attendance_id, targetDate]);
       if (dup.rows.length) throw Object.assign(new Error('Already punched in for this date.'), { status: 409, code: 'DUPLICATE' });
-      return client.query(`INSERT INTO professional_attendance (professional_id, date, punch_in, ward_id, zone_id, city_id, punch_in_latitude, punch_in_longitude)
+      return client.query(`INSERT INTO self_attendance_records (self_attendance_id, date, punch_in, ward_id, zone_id, city_id, punch_in_latitude, punch_in_longitude)
        VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7)
-       RETURNING id, professional_id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(punch_in, 'HH24:MI:SS') AS punch_in`,
-      [professional_id, targetDate, ward_id, zone_id, city_id, latitude || null, longitude || null]
+       RETURNING id, self_attendance_id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(punch_in, 'HH24:MI:SS') AS punch_in`,
+      [self_attendance_id, targetDate, ward_id, zone_id, city_id, latitude || null, longitude || null]
       );
     });
     res.status(201).json({ success: true, data: rows[0], meta: meta() });
   } catch (error) {
     if (error.status) return res.status(error.status).json({ success: false, error: { code: error.code, message: error.message } });
-    console.error("[ExternalAPI] markProfessionalPunchIn error:", error.message);
+    console.error("[ExternalAPI] markSelfAttendancePunchIn error:", error.message);
     res.status(500).json({ success: false, error: { code: "SERVER_ERROR", message: "Internal server error." } });
   }
 };
 
 /**
- * POST /api/v1/external/professional/attendance/punch-out
+ * POST /api/v1/external/self-attendance/attendance/punch-out
  */
-const markProfessionalPunchOut = async (req, res) => {
+const markSelfAttendancePunchOut = async (req, res) => {
   try {
-    const { professional_id, date, latitude, longitude } = req.body;
-    if (!professional_id) return res.status(400).json({ success: false, error: { code: "MISSING_FIELDS", message: "professional_id is required." } });
+    const { self_attendance_id, date, latitude, longitude } = req.body;
+    if (!self_attendance_id) return res.status(400).json({ success: false, error: { code: "MISSING_FIELDS", message: "self_attendance_id is required." } });
     const targetDate = date && isIsoDate(date) ? date : new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
-    const blocked = await verifyCityOwnership("professional_employees", "id", professional_id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
-    if (blocked) return res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "Professional does not belong to your assigned city." } });
+    const blocked = await verifyCityOwnership("self_attendance_employees", "id", self_attendance_id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
+    if (blocked) return res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "Self Attendance does not belong to your assigned city." } });
 
-    const { rows } = await withUnblockedAttendance(professional_id, client => client.query(
-      `UPDATE professional_attendance SET punch_out = NOW(), punch_out_latitude = $1, punch_out_longitude = $2
-       WHERE professional_id = $3 AND date = $4 AND punch_out IS NULL
-       RETURNING id, professional_id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(punch_in, 'HH24:MI:SS') AS punch_in, TO_CHAR(punch_out, 'HH24:MI:SS') AS punch_out,
+    const { rows } = await withUnblockedAttendance(self_attendance_id, client => client.query(
+      `UPDATE self_attendance_records SET punch_out = NOW(), punch_out_latitude = $1, punch_out_longitude = $2
+       WHERE self_attendance_id = $3 AND date = $4 AND punch_out IS NULL
+       RETURNING id, self_attendance_id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(punch_in, 'HH24:MI:SS') AS punch_in, TO_CHAR(punch_out, 'HH24:MI:SS') AS punch_out,
        ROUND(EXTRACT(EPOCH FROM (punch_out - punch_in)) / 3600, 2) AS hours_worked`,
-      [latitude || null, longitude || null, professional_id, targetDate]
+      [latitude || null, longitude || null, self_attendance_id, targetDate]
     ));
-    if (rows.length === 0) return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "No open punch-in found for this professional on this date." } });
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "No open punch-in found for this self_attendance on this date." } });
     res.json({ success: true, data: rows[0], meta: meta() });
   } catch (error) {
     if (error.status) return res.status(error.status).json({ success: false, error: { code: error.code, message: error.message } });
-    console.error("[ExternalAPI] markProfessionalPunchOut error:", error.message);
+    console.error("[ExternalAPI] markSelfAttendancePunchOut error:", error.message);
     res.status(500).json({ success: false, error: { code: "SERVER_ERROR", message: "Internal server error." } });
   }
 };
 
 /**
- * PUT /api/v1/external/professional/attendance/:id
+ * PUT /api/v1/external/self-attendance/attendance/:id
  */
-const editProfessionalAttendance = async (req, res) => {
+const editSelfAttendanceRecords = async (req, res) => {
   try {
     const { id } = req.params;
     const { punch_in, punch_out } = req.body;
 
-    const blocked = await verifyCityOwnership("professional_attendance", "id", id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
+    const blocked = await verifyCityOwnership("self_attendance_records", "id", id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
     if (blocked) return res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "This record does not belong to your assigned city." } });
 
     const sets = [];
@@ -328,32 +328,32 @@ const editProfessionalAttendance = async (req, res) => {
 
     idx++; params.push(id);
     const { rows } = await pool.query(
-      `UPDATE professional_attendance SET ${sets.join(", ")} WHERE id = $${idx}
-       RETURNING id, professional_id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(punch_in, 'HH24:MI:SS') AS punch_in, TO_CHAR(punch_out, 'HH24:MI:SS') AS punch_out`,
+      `UPDATE self_attendance_records SET ${sets.join(", ")} WHERE id = $${idx}
+       RETURNING id, self_attendance_id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(punch_in, 'HH24:MI:SS') AS punch_in, TO_CHAR(punch_out, 'HH24:MI:SS') AS punch_out`,
       params
     );
     if (rows.length === 0) return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Record not found." } });
     res.json({ success: true, data: rows[0], meta: meta() });
   } catch (error) {
-    console.error("[ExternalAPI] editProfessionalAttendance error:", error.message);
+    console.error("[ExternalAPI] editSelfAttendanceRecords error:", error.message);
     res.status(500).json({ success: false, error: { code: "SERVER_ERROR", message: "Internal server error." } });
   }
 };
 
 /**
- * DELETE /api/v1/external/professional/attendance/:id
+ * DELETE /api/v1/external/self-attendance/attendance/:id
  */
-const deleteProfessionalAttendance = async (req, res) => {
+const deleteSelfAttendanceRecords = async (req, res) => {
   try {
     const { id } = req.params;
-    const blocked = await verifyCityOwnership("professional_attendance", "id", id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
+    const blocked = await verifyCityOwnership("self_attendance_records", "id", id, req.apiKey.cityId, req.apiKey.zoneId, req.apiKey.wardId);
     if (blocked) return res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "This record does not belong to your assigned city." } });
 
-    const { rowCount } = await pool.query(`DELETE FROM professional_attendance WHERE id = $1`, [id]);
+    const { rowCount } = await pool.query(`DELETE FROM self_attendance_records WHERE id = $1`, [id]);
     if (rowCount === 0) return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Record not found." } });
-    res.json({ success: true, message: "Professional attendance record deleted.", meta: meta() });
+    res.json({ success: true, message: "Self Attendance record deleted.", meta: meta() });
   } catch (error) {
-    console.error("[ExternalAPI] deleteProfessionalAttendance error:", error.message);
+    console.error("[ExternalAPI] deleteSelfAttendanceRecords error:", error.message);
     res.status(500).json({ success: false, error: { code: "SERVER_ERROR", message: "Internal server error." } });
   }
 };
@@ -489,9 +489,9 @@ module.exports = {
   editAttendance,
   deleteAttendance,
   markLeave,
-  // Write — Professional
-  markProfessionalPunchIn,
-  markProfessionalPunchOut,
-  editProfessionalAttendance,
-  deleteProfessionalAttendance,
+  // Write — SelfAttendance
+  markSelfAttendancePunchIn,
+  markSelfAttendancePunchOut,
+  editSelfAttendanceRecords,
+  deleteSelfAttendanceRecords,
 };

@@ -10,7 +10,7 @@ BEGIN;
 ALTER TABLE IF EXISTS self_punch_requests
   ADD COLUMN IF NOT EXISTS emp_code VARCHAR(50);
 
-ALTER TABLE IF EXISTS professional_employees
+ALTER TABLE IF EXISTS self_attendance_employees
   ADD COLUMN IF NOT EXISTS emp_code VARCHAR(50);
 
 -- 2) Ensure one active pending request per mobile (matches API behavior).

@@ -13,7 +13,7 @@ function controller(query) {
 }
 const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
 
-test('professional status uses token identity and latest versioned self consent', async () => {
+test('self_attendance status uses token identity and latest versioned self consent', async () => {
   const handler = controller(async (sql, args) => {
     if (sql.includes('to_regclass')) return { rows: [{ aliases: false, registration: false }] };
     assert.equal(args[0], 17);
@@ -24,7 +24,7 @@ test('professional status uses token identity and latest versioned self consent'
     return { rows: [{ consent_given: true }] };
   });
   const res = response();
-  await handler({ professional: { professional_id: 17 }, query: { userId: 99 } }, res);
+  await handler({ self_attendance: { self_attendance_id: 17 }, query: { userId: 99 } }, res);
   assert.equal(res.body.consentGiven, true);
 });
 
@@ -43,14 +43,14 @@ test('supervisor status cannot reuse another actor type or worker account identi
 test('latest negative consent is not treated as granted', async () => {
   const handler = controller(async () => ({ rows: [{ consent_given: false }] }));
   const res = response();
-  await handler({ professional: { professional_id: 17 } }, res);
+  await handler({ self_attendance: { self_attendance_id: 17 } }, res);
   assert.equal(res.body.consentGiven, false);
 });
 
 test('database failure returns failure instead of an unrecorded-consent result', async () => {
   const handler = controller(async () => { throw Error('Database unavailable'); });
   const res = response();
-  await handler({ professional: { professional_id: 17 } }, res);
+  await handler({ self_attendance: { self_attendance_id: 17 } }, res);
   assert.equal(res.statusCode, 500);
   assert.equal(res.body.success, false);
 });

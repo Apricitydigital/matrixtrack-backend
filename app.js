@@ -1,4 +1,5 @@
 require("dotenv").config();
+require('./utils/selfAttendanceNaming').loadLegacyEnvironment();
 const http = require("http");
 const express = require("express");
 const cors = require("cors");
@@ -75,6 +76,7 @@ app.use((req, res, next) => {
 // multer's file-size cap by encoding images as base64 in JSON body.
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+app.use(require('./middleware/selfAttendanceCompatibility'));
 const defaultOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
@@ -110,7 +112,7 @@ const isPrimaryCronInstance =
 
 if (isPrimaryCronInstance) {
   cron.schedule('* * * * *', async () => {
-    try { await require('./utils/professionalLeaveSchema').ensureProfessionalLeaveSchema(); }
+    try { await require('./utils/selfAttendanceLeaveSchema').ensureSelfAttendanceLeaveSchema(); }
     catch (error) { console.error('[LeaveExpiry Cron]', error.message); }
   }, { timezone: 'Asia/Kolkata' });
 }
@@ -404,55 +406,55 @@ if (WHATSAPP_CRON_ENABLED && isPrimaryCronInstance) {
 }
 
 // =============================================
-// ⏰ PROFESSIONAL PUNCH-IN REMINDER CRON
-// Runs every minute; each professional is due at their assigned punch-in time (IST).
-// Duplicate guard inside the query ensures a professional gets only one reminder per day.
+// ⏰ SELF_ATTENDANCE PUNCH-IN REMINDER CRON
+// Runs every minute; each self_attendance is due at their assigned punch-in time (IST).
+// Duplicate guard inside the query ensures a self_attendance gets only one reminder per day.
 // =============================================
 const {
   DEFAULT_REMINDER_TIME,
   REMINDER_CATCH_UP_MINUTES,
-  runProfessionalPunchInReminder,
-} = require("./utils/professionalPunchInReminder");
-const PROFESSIONAL_REMINDER_CRON_ENABLED =
-  process.env.PROFESSIONAL_REMINDER_CRON_ENABLED !== "false";
-const PROFESSIONAL_REMINDER_CRON_VERBOSE =
-  process.env.PROFESSIONAL_REMINDER_CRON_VERBOSE === "true";
-let professionalReminderCronRunning = false;
+  runSelfAttendancePunchInReminder,
+} = require("./utils/selfAttendancePunchInReminder");
+const SELF_ATTENDANCE_REMINDER_CRON_ENABLED =
+  process.env.SELF_ATTENDANCE_REMINDER_CRON_ENABLED !== "false";
+const SELF_ATTENDANCE_REMINDER_CRON_VERBOSE =
+  process.env.SELF_ATTENDANCE_REMINDER_CRON_VERBOSE === "true";
+let selfAttendanceReminderCronRunning = false;
 
-if (PROFESSIONAL_REMINDER_CRON_ENABLED && isPrimaryCronInstance) {
+if (SELF_ATTENDANCE_REMINDER_CRON_ENABLED && isPrimaryCronInstance) {
   cron.schedule(
     "* * * * *",
     async () => {
-      if (professionalReminderCronRunning) {
-        if (PROFESSIONAL_REMINDER_CRON_VERBOSE) {
-          console.log("[ProfessionalReminderCron] Previous run still active, skipping this minute.");
+      if (selfAttendanceReminderCronRunning) {
+        if (SELF_ATTENDANCE_REMINDER_CRON_VERBOSE) {
+          console.log("[SelfAttendanceReminderCron] Previous run still active, skipping this minute.");
         }
         return;
       }
 
-      professionalReminderCronRunning = true;
-      if (PROFESSIONAL_REMINDER_CRON_VERBOSE) {
-        console.log(`[ProfessionalReminderCron] Checking punch-in reminders for assigned times (IST)`);
+      selfAttendanceReminderCronRunning = true;
+      if (SELF_ATTENDANCE_REMINDER_CRON_VERBOSE) {
+        console.log(`[SelfAttendanceReminderCron] Checking punch-in reminders for assigned times (IST)`);
       }
       try {
-        await runProfessionalPunchInReminder({
-          verbose: PROFESSIONAL_REMINDER_CRON_VERBOSE,
+        await runSelfAttendancePunchInReminder({
+          verbose: SELF_ATTENDANCE_REMINDER_CRON_VERBOSE,
         });
       } catch (err) {
-        console.error("[ProfessionalReminderCron] Error:", err.message);
+        console.error("[SelfAttendanceReminderCron] Error:", err.message);
       } finally {
-        professionalReminderCronRunning = false;
+        selfAttendanceReminderCronRunning = false;
       }
     },
     { timezone: "Asia/Kolkata" }
   );
   console.log(
-    `[ProfessionalReminderCron] Registered - assigned punch-in times (IST), fallback ${DEFAULT_REMINDER_TIME}; ` +
+    `[SelfAttendanceReminderCron] Registered - assigned punch-in times (IST), fallback ${DEFAULT_REMINDER_TIME}; ` +
     `${REMINDER_CATCH_UP_MINUTES}-minute restart recovery window.`
   );
 } else {
   console.log(
-    `[ProfessionalReminderCron] Disabled or non-primary instance - skipping registration (enabled: ${process.env.PROFESSIONAL_REMINDER_CRON_ENABLED}, instance: ${process.env.NODE_APP_INSTANCE || "0"})`
+    `[SelfAttendanceReminderCron] Disabled or non-primary instance - skipping registration (enabled: ${process.env.SELF_ATTENDANCE_REMINDER_CRON_ENABLED}, instance: ${process.env.NODE_APP_INSTANCE || "0"})`
   );
 }
 

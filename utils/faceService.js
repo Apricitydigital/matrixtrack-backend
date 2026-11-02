@@ -89,7 +89,7 @@ async function verifyFaceMatch(sourceS3Key, targetBase64, threshold = 80, tracki
       client: rekognition,
       command: compareCommand,
       cityId: tracking.cityId || null,
-      source: tracking.source || 'professional_punch_in',
+      source: tracking.source || 'self_attendance_punch_in',
       metricDate: tracking.metricDate || getIstDateKey(),
     });
 

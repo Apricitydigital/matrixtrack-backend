@@ -3,7 +3,7 @@
 -- Version   : 20260505_self_punch_in_down.sql
 --
 -- ⚠️  WARNING: THIS IS DESTRUCTIVE.
---     All self-punch request, log, professional employee, and attendance data
+--     All self-punch request, log, self_attendance employee, and attendance data
 --     will be permanently dropped. Run ONLY after a verified database backup
 --     and only on non-production environments unless you are certain.
 --
@@ -17,7 +17,7 @@
 BEGIN;
 
 -- ---------------------------------------------------------------------------
--- 5. professional_attendance  (depends on professional_employees)
+-- 5. self_attendance_records  (depends on self_attendance_employees)
 -- ---------------------------------------------------------------------------
 DROP INDEX IF EXISTS idx_pa_open_punches;
 DROP INDEX IF EXISTS idx_pa_ward_date;
@@ -25,15 +25,15 @@ DROP INDEX IF EXISTS idx_pa_city_id;
 DROP INDEX IF EXISTS idx_pa_zone_id;
 DROP INDEX IF EXISTS idx_pa_ward_id;
 DROP INDEX IF EXISTS idx_pa_date;
-DROP INDEX IF EXISTS idx_pa_professional_id;
+DROP INDEX IF EXISTS idx_pa_self_attendance_id;
 
-DROP TABLE IF EXISTS professional_attendance;
+DROP TABLE IF EXISTS self_attendance_records;
 
 
 -- ---------------------------------------------------------------------------
--- 4. professional_employees  (depends on self_punch_requests + kothi_assignments)
+-- 4. self_attendance_employees  (depends on self_punch_requests + kothi_assignments)
 -- ---------------------------------------------------------------------------
-DROP TRIGGER IF EXISTS trg_pe_lock_selfie ON professional_employees;
+DROP TRIGGER IF EXISTS trg_pe_lock_selfie ON self_attendance_employees;
 DROP FUNCTION IF EXISTS prevent_selfie_update();
 
 DROP INDEX IF EXISTS idx_pe_is_active;
@@ -42,7 +42,7 @@ DROP INDEX IF EXISTS idx_pe_city_id;
 DROP INDEX IF EXISTS idx_pe_zone_id;
 DROP INDEX IF EXISTS idx_pe_ward_id;
 
-DROP TABLE IF EXISTS professional_employees;
+DROP TABLE IF EXISTS self_attendance_employees;
 
 
 -- ---------------------------------------------------------------------------

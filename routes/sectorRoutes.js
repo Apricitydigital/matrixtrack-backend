@@ -10,6 +10,11 @@ const {
 } = require("../middleware/cityScope");
 const { attachKothiScope, buildKothiFilterClause } = require("../middleware/kothiScope");
 
+// Read compatibility remains for installed clients. New geography is managed
+// through /wards; retired parent assignments cannot be recreated through this API.
+router.use((req, res, next) => req.method === 'GET' ? next() :
+    res.status(410).json({error:'Sector setup is retired. Manage Wards directly under a Zone.'}));
+
 // Get all sectors (Wards) with associated Kothis, filtered by city scope
 router.get(
     "/",
@@ -31,12 +36,12 @@ router.get(
             z.zone_id, z.zone_name,
             c.city_id, c.city_name,
             w.ward_id, w.ward_name
-         FROM sectors s
-         JOIN zones z ON s.zone_id = z.zone_id
+         FROM wards w
+         LEFT JOIN sectors s ON s.sector_id = w.sector_id
+         JOIN zones z ON z.zone_id = COALESCE(w.zone_id,s.zone_id)
          JOIN cities c ON z.city_id = c.city_id
-         LEFT JOIN wards w ON w.sector_id = s.sector_id
          ${cityFilter.clause} ${kothiFilter.clause}
-         ORDER BY c.city_name, z.zone_name, s.sector_name, w.ward_name`,
+         ORDER BY city_name,zone_name,sector_name,ward_name`,
                 kothiFilter.params
             );
 
@@ -48,9 +53,10 @@ router.get(
                     groupedData[city_id] = { cityId: city_id, city: city_name, zones: {} };
                 }
                 if (!groupedData[city_id].zones[zone_id]) {
-                    groupedData[city_id].zones[zone_id] = { zoneId: zone_id, zone: zone_name, sectors: {} };
+                    groupedData[city_id].zones[zone_id] = { zoneId: zone_id, zone: zone_name, sectors: {}, wards: [] };
                 }
-                if (!groupedData[city_id].zones[zone_id].sectors[sector_id]) {
+                if (ward_id) groupedData[city_id].zones[zone_id].wards.push({wardId:ward_id,wardName:ward_name,sectorId:sector_id});
+                if (sector_id != null && !groupedData[city_id].zones[zone_id].sectors[sector_id]) {
                     groupedData[city_id].zones[zone_id].sectors[sector_id] = {
                         sectorId: sector_id,
                         sectorName: sector_name,
@@ -58,7 +64,7 @@ router.get(
                     };
                 }
 
-                if (ward_id) {
+                if (ward_id && sector_id != null) {
                     groupedData[city_id].zones[zone_id].sectors[sector_id].kothis.push({
                         wardId: ward_id,
                         wardName: ward_name,
@@ -71,6 +77,7 @@ router.get(
                 zones: Object.values(city.zones).map((zone) => ({
                     ...zone,
                     sectors: Object.values(zone.sectors),
+                    hierarchy: 'city_zone_ward',
                 })),
             }));
 

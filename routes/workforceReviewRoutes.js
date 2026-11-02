@@ -9,7 +9,7 @@ const { fetchUserKothiAccess } = require('../utils/userKothiAccess');
 const { recordsSql, summarize, deletionPlan, fingerprint, quote } = require('../utils/workforceReview');
 const {duplicateIndex,matchingSignals,mergePlan,moveReferences,validateMove,assertAliasTriggers}=require('../utils/workforceMerge');
 const {ensureMergeSchema}=require('../utils/employeeAliases');
-const {retainMergedLogins}=require('../utils/professionalMergeLogin');
+const {retainMergedLogins}=require('../utils/selfAttendanceMergeLogin');
 const recovery=require('../utils/workforceMergeRecovery');
 const fail = (message, status=400) => { throw Object.assign(new Error(message), { status }); };
 const wrap = fn => async (req,res,next) => { try { await fn(req,res,next); } catch(e) {
@@ -74,13 +74,13 @@ async function records(req, client=pool) {
  bool_or(a.leave_type IS NOT NULL) AS on_leave FROM attendance a
  WHERE a.emp_id=(CASE WHEN s.kind='regular' THEN s.id END)::integer AND a.date::date BETWEEN $3::date AND $4::date) r ON true
  LEFT JOIN LATERAL (SELECT bool_or(a.punch_in IS NOT NULL) AS present,bool_or(a.punch_out IS NOT NULL) AS punched_out
- FROM professional_attendance a WHERE a.professional_id=(CASE WHEN s.kind='professional' THEN s.id END)::uuid AND a.date BETWEEN $3::date AND $4::date) p ON true
- LEFT JOIN LATERAL (SELECT bool_or(status='approved') AS on_leave FROM professional_leave_requests
- WHERE professional_id=(CASE WHEN s.kind='professional' THEN s.id END)::uuid AND requested_date BETWEEN $3::date AND $4::date) l ON true
+ FROM self_attendance_records a WHERE a.self_attendance_id=(CASE WHEN s.kind='self_attendance' THEN s.id END)::uuid AND a.date BETWEEN $3::date AND $4::date) p ON true
+ LEFT JOIN LATERAL (SELECT bool_or(status='approved') AS on_leave FROM self_attendance_leave_requests
+ WHERE self_attendance_id=(CASE WHEN s.kind='self_attendance' THEN s.id END)::uuid AND requested_date BETWEEN $3::date AND $4::date) l ON true
  ORDER BY s.name,s.kind,s.id`,[...params,start,end])).rows.map(reviewIdentity);
 }
 async function employee(req,client=pool) {
- if(!['regular','professional'].includes(req.params.kind)) fail('Invalid employee type.');
+ if(!['regular','self_attendance'].includes(req.params.kind)) fail('Invalid employee type.');
  const params=await filters(req);
  const row=(await client.query(`${recordsSql} SELECT * FROM scoped WHERE kind=$3 AND id=$4`,[...params,req.params.kind,req.params.id])).rows[0];
  if(!row) fail('Employee not found or outside your access.',404);
@@ -89,8 +89,8 @@ async function employee(req,client=pool) {
 router.post('/summary',permission('view'),wrap(async(req,res)=>{
  const rows=await records(req);
  const regular=summarize(rows.filter(r=>r.kind==='regular'));
- const professional=summarize(rows.filter(r=>r.kind==='professional'));
- res.json({data:{...summarize(rows),breakdown:{regular,professional},change:{}}});
+ const self_attendance=summarize(rows.filter(r=>r.kind==='self_attendance'));
+ res.json({data:{...summarize(rows),breakdown:{regular,self_attendance},change:{}}});
 }));
 router.get('/',permission('view'),wrap(async(req,res)=>{
  await schema();
@@ -175,14 +175,14 @@ router.post('/:kind/:id/merge',ownerOnly,wrap(async(req,res)=>{
  try {
   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
   await client.query("SET LOCAL lock_timeout='2s'");
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
   const plan=await prepareMerge(req,client);
   if(plan.fingerprint!==req.body.fingerprint) fail('Employee or attendance data changed. Preview this merge again.',409);
   await assertAliasTriggers(client,plan);await recovery.assertRecoveryReady(client,plan);await validateMove(client,plan);
   const audit=await recovery.beginRecovery(client,plan,req.reviewActor.user_id,reason);
   await moveReferences(client,plan);
   await retainMergedLogins(client,plan);
-  const key=plan.kind==='regular'?'emp_id':'id',table=plan.kind==='regular'?'employee':'professional_employees';
+  const key=plan.kind==='regular'?'emp_id':'id',table=plan.kind==='regular'?'employee':'self_attendance_employees';
   for(const source of plan.profiles.filter(row=>String(row[key])!==plan.targetId)) {
    const id=String(source[key]);
    await client.query('UPDATE workforce_employee_aliases SET target_id=$1 WHERE employee_kind=$2 AND target_id=$3',[plan.targetId,plan.kind,id]);
@@ -207,7 +207,7 @@ router.post('/merges/:mergeId/revert-preview',ownerOnly,wrap(async(req,res)=>{
  try {
   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
   await client.query("SET LOCAL lock_timeout='2s'");
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
   const audit=await recovery.auditForRestore(client,req.params.mergeId);
   const preview=await recovery.previewRestore(client,audit);
   await client.query('ROLLBACK');
@@ -221,7 +221,7 @@ router.post('/merges/:mergeId/revert',ownerOnly,wrap(async(req,res)=>{
  try {
   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
   await client.query("SET LOCAL lock_timeout='2s'");
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
   const audit=await recovery.auditForRestore(client,req.params.mergeId);
   if(req.body.confirmation!==audit.target_id)fail('Type the main employee ID to confirm reverting this merge.');
   const preview=await recovery.previewRestore(client,audit);
@@ -249,10 +249,10 @@ router.delete('/:kind/:id',ownerOnly,wrap(async(req,res)=>{
  await schema(); await ensureMergeSchema(); const client=await pool.connect();
  try {
  await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
- await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
+ await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
  const row=await employee(req,client);
  if((await client.query('SELECT 1 FROM workforce_employee_aliases WHERE employee_kind=$1 AND target_id=$2 LIMIT 1',[row.kind,row.id])).rows.length) fail('This main employee has merged IDs. Hard deletion is blocked to preserve their attendance and login links.',409);
- const table=row.kind==='regular'?'employee':'professional_employees',key=row.kind==='regular'?'emp_id':'id';
+ const table=row.kind==='regular'?'employee':'self_attendance_employees',key=row.kind==='regular'?'emp_id':'id';
  await client.query(`SELECT ${quote(key)} FROM ${quote(table)} WHERE ${quote(key)}::text=$1 FOR UPDATE`,[row.id]);
  const plan=await deletionPlan(client,row.kind,row.id);
  if(req.body.fingerprint!==fingerprint(plan)) fail('Related records changed. Preview this deletion again.',409);

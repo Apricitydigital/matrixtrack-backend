@@ -42,9 +42,9 @@ ALTER TABLE city_daily_traffic_cost
   CHECK (source IN (
     'group_attendance',
     'individual_attendance',
-    'professional_punch_in',
-    'professional_punch_out',
-    'professional_access_request',
+    'self_attendance_punch_in',
+    'self_attendance_punch_out',
+    'self_attendance_access_request',
     'face_enrollment'
   ));
 

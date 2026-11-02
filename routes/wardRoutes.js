@@ -124,6 +124,7 @@ router.post(
   authorize("master", "manage"),
   async (req, res) => {
     const { ward_name, zone_id, sector_id } = req.body;
+    if (sector_id != null && sector_id !== '') return res.status(400).json({error:'Select a Zone directly; Sector assignments are retired.'});
     if (!ward_name || !zone_id) {
       return res
         .status(400)
@@ -136,7 +137,7 @@ router.post(
        VALUES ($1, $2, $3) 
        ON CONFLICT ON CONSTRAINT unique_ward_per_zone DO NOTHING
        RETURNING *`,
-        [ward_name, zone_id, sector_id]
+        [ward_name, zone_id, null]
       );
 
       if (result.rowCount === 0) {
@@ -166,13 +167,14 @@ router.put(
   async (req, res) => {
     const { id } = req.params;
     const { ward_name, zone_id, sector_id } = req.body;
+    if (sector_id != null && sector_id !== '') return res.status(400).json({error:'Select a Zone directly; Sector assignments are retired.'});
 
     try {
       const result = await pool.query(
         `UPDATE wards SET ward_name = $1, zone_id = $2, sector_id = $3 
        WHERE ward_id = $4 
        RETURNING *`,
-        [ward_name, zone_id, sector_id, id]
+        [ward_name, zone_id, null, id]
       );
       if (result.rows.length === 0) {
         return res.status(404).json({ error: "Ward not found" });

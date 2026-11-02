@@ -1,6 +1,6 @@
 // Explicit deployment step only. Never imported by login, punch or startup.
 const fs=require('fs'),path=require('path');
-const files=['20261023_non_duplicate_pairs.sql','20261021_workforce_review.sql','20261021_workforce_merge.sql','20261022_professional_attendance_site.sql','20261022_workforce_merge_recovery.sql','20261022_merge_weeklyoff_recovery.sql'];
+const files=['20261023_non_duplicate_pairs.sql','20261021_workforce_review.sql','20261021_workforce_merge.sql','20261022_self_attendance_records_site.sql','20261022_workforce_merge_recovery.sql','20261022_merge_weeklyoff_recovery.sql'];
 if(!process.argv.includes('--apply')) {
  console.log('No database changes made. Review these migrations, then run with --apply:');
  for(const file of files)console.log(file);
@@ -15,7 +15,7 @@ if(!process.argv.includes('--apply')) {
    for(const file of files){client.setStep(file);await client.query(fs.readFileSync(path.join(__dirname,'../db/migrations',file),'utf8'));}
    const {references,installAliasTriggers,assertAliasTriggers}=require('../utils/workforceMerge');
    client.setStep('employee reference redirect triggers');
-   for(const kind of ['regular','professional']){
+   for(const kind of ['regular','self_attendance']){
     const plan={kind,links:await references(client,kind)};
     await installAliasTriggers(client,plan);await assertAliasTriggers(client,plan);
    }

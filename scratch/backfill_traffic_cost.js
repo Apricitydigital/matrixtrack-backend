@@ -19,15 +19,15 @@ async function backfill() {
     );
     console.log(`Found ${empRes.rows.length} employee attendance records for ${targetDate}`);
 
-    // Fetch professional attendance
+    // Fetch self_attendance attendance
     const profRes = await pool.query(
       `SELECT pa.id, pa.punch_in, pa.punch_out, pa.city_id, c.city_name
-       FROM professional_attendance pa
+       FROM self_attendance_records pa
        JOIN cities c ON c.city_id = pa.city_id
        WHERE pa.date = $1::date`,
       [targetDate]
     );
-    console.log(`Found ${profRes.rows.length} professional attendance records for ${targetDate}`);
+    console.log(`Found ${profRes.rows.length} self_attendance attendance records for ${targetDate}`);
 
     // Clear existing daily traffic cost rows for today to rebuild cleanly
     await pool.query(
@@ -78,19 +78,19 @@ async function backfill() {
       }
     }
 
-    // Process professional attendance
+    // Process self_attendance attendance
     for (const r of profRes.rows) {
       const cityId = r.city_id;
       if (!cityId) continue;
 
       if (r.punch_in) {
-        const metric = getOrCreateMetric(cityId, 'professional_punch_in');
+        const metric = getOrCreateMetric(cityId, 'self_attendance_punch_in');
         metric.request_count += 1;
         metric.attendance_count += 1;
         metric.success_count += 1;
       }
       if (r.punch_out) {
-        const metric = getOrCreateMetric(cityId, 'professional_punch_out');
+        const metric = getOrCreateMetric(cityId, 'self_attendance_punch_out');
         metric.request_count += 1;
         metric.attendance_count += 1;
         metric.success_count += 1;

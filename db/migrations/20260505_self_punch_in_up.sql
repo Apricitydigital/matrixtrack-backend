@@ -2,7 +2,7 @@
 -- MIGRATION: Self Punch-In Feature (UP)
 -- Version   : 20260505_self_punch_in_up.sql
 -- Feature   : Unregistered field workers can request access, get approved by
---             supervisors, then punch in/out daily as "professional employees".
+--             supervisors, then punch in/out daily as "self_attendance employees".
 -- Run with  : psql -h <host> -U <user> -d <db> -f 20260505_self_punch_in_up.sql
 -- Rollback  : 20260505_self_punch_in_down.sql
 -- =============================================================================
@@ -222,7 +222,7 @@ COMMENT ON COLUMN self_punch_request_logs.performed_by_id  IS 'supervisors.super
 
 
 -- ---------------------------------------------------------------------------
--- 4. TABLE: professional_employees
+-- 4. TABLE: self_attendance_employees
 --    Created exactly once per approved self_punch_request.
 --    selfie_url is biometrically locked — a DB trigger rejects any attempt to
 --    overwrite it when face_locked = TRUE.
@@ -230,7 +230,7 @@ COMMENT ON COLUMN self_punch_request_logs.performed_by_id  IS 'supervisors.super
 --    Personal details are snapshotted from the request at approval time so the
 --    audit record remains stable even if the source request data were changed.
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS professional_employees (
+CREATE TABLE IF NOT EXISTS self_attendance_employees (
   id               UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
 
   -- 1-to-1 back-reference; ON DELETE RESTRICT prevents orphaning a pro_employee
@@ -261,11 +261,11 @@ CREATE TABLE IF NOT EXISTS professional_employees (
 );
 
 -- Dashboard filters: by geography and active status
-CREATE INDEX IF NOT EXISTS idx_pe_ward_id   ON professional_employees (ward_id);
-CREATE INDEX IF NOT EXISTS idx_pe_zone_id   ON professional_employees (zone_id);
-CREATE INDEX IF NOT EXISTS idx_pe_city_id   ON professional_employees (city_id);
-CREATE INDEX IF NOT EXISTS idx_pe_mobile    ON professional_employees (mobile);
-CREATE INDEX IF NOT EXISTS idx_pe_is_active ON professional_employees (is_active);
+CREATE INDEX IF NOT EXISTS idx_pe_ward_id   ON self_attendance_employees (ward_id);
+CREATE INDEX IF NOT EXISTS idx_pe_zone_id   ON self_attendance_employees (zone_id);
+CREATE INDEX IF NOT EXISTS idx_pe_city_id   ON self_attendance_employees (city_id);
+CREATE INDEX IF NOT EXISTS idx_pe_mobile    ON self_attendance_employees (mobile);
+CREATE INDEX IF NOT EXISTS idx_pe_is_active ON self_attendance_employees (is_active);
 
 -- DB-level enforcement: block selfie_url overwrites when face is locked
 CREATE OR REPLACE FUNCTION prevent_selfie_update()
@@ -273,7 +273,7 @@ RETURNS TRIGGER AS $$
 BEGIN
   IF OLD.face_locked = TRUE AND NEW.selfie_url IS DISTINCT FROM OLD.selfie_url THEN
     RAISE EXCEPTION
-      'selfie_url is locked for professional_employee id=%. Biometric update rejected. '
+      'selfie_url is locked for self_attendance_employee id=%. Biometric update rejected. '
       'Unlock face_locked first via a supervisor-approved re-verification workflow.',
       OLD.id
       USING ERRCODE = 'integrity_constraint_violation';
@@ -282,64 +282,64 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_pe_lock_selfie ON professional_employees;
+DROP TRIGGER IF EXISTS trg_pe_lock_selfie ON self_attendance_employees;
 CREATE TRIGGER trg_pe_lock_selfie
-BEFORE UPDATE ON professional_employees
+BEFORE UPDATE ON self_attendance_employees
 FOR EACH ROW EXECUTE FUNCTION prevent_selfie_update();
 
-COMMENT ON TABLE  professional_employees             IS 'Approved field workers eligible for self punch-in. One row per approved self_punch_request.';
-COMMENT ON COLUMN professional_employees.face_locked IS 'TRUE = selfie_url immutable. Enforced by trg_pe_lock_selfie trigger AND application layer.';
-COMMENT ON COLUMN professional_employees.selfie_url  IS 'Locked S3/B2 object key for biometric selfie. Used for daily face-match during punch-in.';
-COMMENT ON COLUMN professional_employees.request_id  IS 'UNIQUE FK back to self_punch_requests. ON DELETE RESTRICT prevents orphan records.';
+COMMENT ON TABLE  self_attendance_employees             IS 'Approved field workers eligible for self punch-in. One row per approved self_punch_request.';
+COMMENT ON COLUMN self_attendance_employees.face_locked IS 'TRUE = selfie_url immutable. Enforced by trg_pe_lock_selfie trigger AND application layer.';
+COMMENT ON COLUMN self_attendance_employees.selfie_url  IS 'Locked S3/B2 object key for biometric selfie. Used for daily face-match during punch-in.';
+COMMENT ON COLUMN self_attendance_employees.request_id  IS 'UNIQUE FK back to self_punch_requests. ON DELETE RESTRICT prevents orphan records.';
 
 
 -- ---------------------------------------------------------------------------
--- 5. TABLE: professional_attendance
---    One row per (professional_employee, calendar date).
+-- 5. TABLE: self_attendance_records
+--    One row per (self_attendance_employee, calendar date).
 --    Geographic columns are denormalized for fast dashboard aggregation without
---    joining professional_employees on every query.
+--    joining self_attendance_employees on every query.
 --
 --    Punch-out starts as NULL and is populated by:
 --      a) The worker's own manual punch-out via the app.
 --      b) The existing auto-punchout scheduler (adapted for this table).
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS professional_attendance (
+CREATE TABLE IF NOT EXISTS self_attendance_records (
   id               UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-  professional_id  UUID          NOT NULL REFERENCES professional_employees(id) ON DELETE RESTRICT,
+  self_attendance_id  UUID          NOT NULL REFERENCES self_attendance_employees(id) ON DELETE RESTRICT,
 
   date             DATE          NOT NULL,
   punch_in         TIMESTAMPTZ   NOT NULL,
   punch_out        TIMESTAMPTZ,             -- NULL while still punched in
 
-  -- Denormalized geography — eliminates join on professional_employees for reports
+  -- Denormalized geography — eliminates join on self_attendance_employees for reports
   ward_id          INTEGER       NOT NULL REFERENCES wards(ward_id)  ON DELETE RESTRICT,
   zone_id          INTEGER       NOT NULL REFERENCES zones(zone_id)  ON DELETE RESTRICT,
   city_id          INTEGER       NOT NULL REFERENCES cities(city_id) ON DELETE RESTRICT,
 
   created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
 
-  -- One record per professional per calendar day
-  CONSTRAINT uq_pa_professional_date UNIQUE (professional_id, date),
+  -- One record per self_attendance per calendar day
+  CONSTRAINT uq_pa_self_attendance_date UNIQUE (self_attendance_id, date),
   -- Punch-out must be after punch-in (or NULL)
   CONSTRAINT chk_pa_punch_order      CHECK  (punch_out IS NULL OR punch_out >= punch_in)
 );
 
--- Full history for one professional (profile page, monthly report)
-CREATE INDEX IF NOT EXISTS idx_pa_professional_id ON professional_attendance (professional_id);
+-- Full history for one self_attendance (profile page, monthly report)
+CREATE INDEX IF NOT EXISTS idx_pa_self_attendance_id ON self_attendance_records (self_attendance_id);
 -- Date-range scans for daily/weekly/monthly dashboards
-CREATE INDEX IF NOT EXISTS idx_pa_date            ON professional_attendance (date DESC);
+CREATE INDEX IF NOT EXISTS idx_pa_date            ON self_attendance_records (date DESC);
 -- Geography filters for supervisor ward/zone dashboards
-CREATE INDEX IF NOT EXISTS idx_pa_ward_id         ON professional_attendance (ward_id);
-CREATE INDEX IF NOT EXISTS idx_pa_zone_id         ON professional_attendance (zone_id);
-CREATE INDEX IF NOT EXISTS idx_pa_city_id         ON professional_attendance (city_id);
+CREATE INDEX IF NOT EXISTS idx_pa_ward_id         ON self_attendance_records (ward_id);
+CREATE INDEX IF NOT EXISTS idx_pa_zone_id         ON self_attendance_records (zone_id);
+CREATE INDEX IF NOT EXISTS idx_pa_city_id         ON self_attendance_records (city_id);
 -- "Who is present today in ward X?" — compound index for this exact pattern
-CREATE INDEX IF NOT EXISTS idx_pa_ward_date       ON professional_attendance (ward_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_pa_ward_date       ON self_attendance_records (ward_id, date DESC);
 -- Auto-punchout scheduler: fast scan of open (still punched in) records
-CREATE INDEX IF NOT EXISTS idx_pa_open_punches    ON professional_attendance (date) WHERE punch_out IS NULL;
+CREATE INDEX IF NOT EXISTS idx_pa_open_punches    ON self_attendance_records (date) WHERE punch_out IS NULL;
 
-COMMENT ON TABLE  professional_attendance              IS 'Daily punch-in/out records for approved professional field workers.';
-COMMENT ON COLUMN professional_attendance.punch_out    IS 'NULL while worker is active. Filled by manual punch-out or the auto-punchout scheduler.';
-COMMENT ON COLUMN professional_attendance.ward_id      IS 'Denormalized from professional_employees. Avoids join overhead on dashboard queries.';
+COMMENT ON TABLE  self_attendance_records              IS 'Daily punch-in/out records for approved self_attendance field workers.';
+COMMENT ON COLUMN self_attendance_records.punch_out    IS 'NULL while worker is active. Filled by manual punch-out or the auto-punchout scheduler.';
+COMMENT ON COLUMN self_attendance_records.ward_id      IS 'Denormalized from self_attendance_employees. Avoids join overhead on dashboard queries.';
 
 
 COMMIT;

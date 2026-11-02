@@ -21,7 +21,7 @@ const mocks={express:{Router:()=>router},'../config/db':pool,
  '../utils/s3SelfPunch':{getSignedS3Url:async key=>{assert.equal(checkedOut,0,'Photo signing must not hold a database connection');return `https://signed.example.test/${key}`;}}};
 vm.runInNewContext(fs.readFileSync(file,'utf8'),{module:moduleRef,console,require:name=>mocks[name] || require(require.resolve(name,{paths:[path.dirname(file)]}))});
 async function call(query={},options={}) {
- const req={query,body:{},user:{role:'admin',user_id:1},cityScope:{all:true,ids:[]},kothiScope:{all:true,ids:[]},cities:{attendance_reports:null,'professional-attendance':null},...options};
+ const req={query,body:{},user:{role:'admin',user_id:1},cityScope:{all:true,ids:[]},kothiScope:{all:true,ids:[]},cities:{attendance_reports:null,'self-attendance-records':null},...options};
  const res={code:200,status(code){this.code=code;return this;},json(body){this.body=body;return this;}};
  for(const handler of [...middleware,...routes.find(route=>route.verb==='post').handlers]){
   let next=false;await handler(req,res,()=>{next=true;});if(!next)break;
@@ -34,50 +34,50 @@ const id=n=>`d0000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
  CREATE TABLE sectors(sector_id INT PRIMARY KEY,zone_id INT,sector_name TEXT);INSERT INTO sectors VALUES(100,1,'Sector One'),(200,2,'Sector Two');
  CREATE TABLE wards(ward_id INT PRIMARY KEY,zone_id INT,sector_id INT,ward_name TEXT);INSERT INTO wards VALUES(10,1,100,'Site One'),(20,2,200,'Site Two');
  CREATE TABLE users(user_id INT PRIMARY KEY,name TEXT);INSERT INTO users VALUES(1,'Admin'),(9,'Supervisor');
- CREATE TABLE department(department_id INT PRIMARY KEY,department_name TEXT);INSERT INTO department VALUES(1,'Regular'),(2,'Professional');
+ CREATE TABLE department(department_id INT PRIMARY KEY,department_name TEXT);INSERT INTO department VALUES(1,'Regular'),(2,'Self Attendance');
  CREATE TABLE designation(designation_id INT PRIMARY KEY,department_id INT,designation_name TEXT);INSERT INTO designation VALUES(1,1,'Guard'),(2,2,'Manager'),(3,2,'Coordinator');
  CREATE TABLE employee(emp_id INT PRIMARY KEY,name TEXT,emp_code TEXT,phone TEXT,ward_id INT,designation_id INT,face_embedding TEXT);
  INSERT INTO employee VALUES(1,'Same Person','SAME','9999999999',10,1,'face'),(2,'Absent Regular','REG2','9000000002',10,1,NULL),(3,'Elsewhere','REG3','9000000003',20,1,'face');
  CREATE TABLE attendance(attendance_id SERIAL PRIMARY KEY,emp_id INT,ward_id INT,date DATE,punch_in_time TIMESTAMP,punch_out_time TIMESTAMP,
  mid_shift_punch_in_time TIMESTAMPTZ,leave_type TEXT,punched_in_by INT,punched_out_by INT,mid_shift_punched_in_by INT,auto_punched_out BOOLEAN);
  INSERT INTO attendance(emp_id,ward_id,date,punch_in_time,punch_out_time,punched_in_by,punched_out_by) VALUES(1,10,'2026-10-21','2026-10-21 09:00','2026-10-21 18:00',9,9);
- CREATE TABLE professional_employees(id UUID PRIMARY KEY,full_name TEXT,emp_code TEXT,mobile TEXT,city_id INT,zone_id INT,ward_id INT,kothi_id INT,is_active BOOLEAN,selfie_url TEXT);
- CREATE TABLE professional_designation_assignments(professional_id UUID,designation_id INT);
- CREATE TABLE professional_attendance(id UUID PRIMARY KEY,professional_id UUID,date DATE,punch_in TIMESTAMPTZ,punch_out TIMESTAMPTZ,attempted_punch_in TIMESTAMPTZ,punch_approval_status TEXT,
+ CREATE TABLE self_attendance_employees(id UUID PRIMARY KEY,full_name TEXT,emp_code TEXT,mobile TEXT,city_id INT,zone_id INT,ward_id INT,kothi_id INT,is_active BOOLEAN,selfie_url TEXT);
+ CREATE TABLE self_attendance_designation_assignments(self_attendance_id UUID,designation_id INT);
+ CREATE TABLE self_attendance_records(id UUID PRIMARY KEY,self_attendance_id UUID,date DATE,punch_in TIMESTAMPTZ,punch_out TIMESTAMPTZ,attempted_punch_in TIMESTAMPTZ,punch_approval_status TEXT,
  auto_punched_out BOOLEAN,out_address TEXT,punch_in_latitude DOUBLE PRECISION,punch_in_longitude DOUBLE PRECISION,punch_out_latitude DOUBLE PRECISION,punch_out_longitude DOUBLE PRECISION,
  punch_in_photo_url TEXT,punch_out_photo_url TEXT,ward_id INT,city_id INT,zone_id INT,kothi_id INT);
- CREATE TABLE professional_leave_requests(id UUID PRIMARY KEY,professional_id UUID,requested_date DATE,leave_type TEXT,status TEXT,requested_at TIMESTAMPTZ,reviewed_at TIMESTAMPTZ,review_note TEXT,reviewed_by INT,pm_reviewer_id UUID,ho_reviewer_id UUID,hod_reviewer_id UUID);
+ CREATE TABLE self_attendance_leave_requests(id UUID PRIMARY KEY,self_attendance_id UUID,requested_date DATE,leave_type TEXT,status TEXT,requested_at TIMESTAMPTZ,reviewed_at TIMESTAMPTZ,review_note TEXT,reviewed_by INT,pm_reviewer_id UUID,ho_reviewer_id UUID,hod_reviewer_id UUID);
  CREATE TABLE user_city_access(user_id INT,city_id INT);CREATE TABLE user_zone_access(user_id INT,zone_id INT);CREATE TABLE user_kothi_access(user_id INT,ward_id INT);
  CREATE TABLE supervisor_kothi(supervisor_id INT,ward_id INT);CREATE TABLE supervisor_ward(supervisor_id INT,ward_id INT);
  INSERT INTO user_kothi_access VALUES(9,10);`);
- for(let n=1;n<=8;n++)await db.query(`INSERT INTO professional_employees VALUES($1,$2,$3,$4,$5,$5,$6,$7,$8,'face')`,[id(n),n===1?'Same Person':`Professional ${n}`,n===1?'SAME':`PRO${n}`,n===1?'9999999999':`988888888${n}`,n===2?2:1,n===2?200:100,n===2?20:10,n<7]);
- await db.query('INSERT INTO professional_designation_assignments VALUES($1,2),($1,3)',[id(1)]);
- for(const n of [1,2,3,4,7])await db.query(`INSERT INTO professional_attendance(id,professional_id,date,punch_in,punch_out,attempted_punch_in,punch_approval_status,auto_punched_out,punch_in_photo_url,city_id,ward_id,zone_id,kothi_id)
- VALUES($1,$2,'2026-10-21',$3,$4,$5,$6,$7,$8,$9,$10,$9,$11)`,[id(100+n),id(n),[3,4].includes(n)?null:'2026-10-21T09:00:00+05:30',[3,4].includes(n)?null:'2026-10-21T18:00:00+05:30',[3,4].includes(n)?'2026-10-21T10:00:00+05:30':null,n===3?'pending_pm':n===4?'rejected':'accepted',n===1,n===1?'professional-photo.jpg':null,n===2?2:1,n===2?200:100,n===2?20:10]);
- await db.query("INSERT INTO professional_leave_requests(id,professional_id,requested_date,leave_type,status) VALUES($1,$2,'2026-10-21','CASUAL','approved')",[id(200),id(5)]);
+ for(let n=1;n<=8;n++)await db.query(`INSERT INTO self_attendance_employees VALUES($1,$2,$3,$4,$5,$5,$6,$7,$8,'face')`,[id(n),n===1?'Same Person':`SelfAttendance ${n}`,n===1?'SAME':`PRO${n}`,n===1?'9999999999':`988888888${n}`,n===2?2:1,n===2?200:100,n===2?20:10,n<7]);
+ await db.query('INSERT INTO self_attendance_designation_assignments VALUES($1,2),($1,3)',[id(1)]);
+ for(const n of [1,2,3,4,7])await db.query(`INSERT INTO self_attendance_records(id,self_attendance_id,date,punch_in,punch_out,attempted_punch_in,punch_approval_status,auto_punched_out,punch_in_photo_url,city_id,ward_id,zone_id,kothi_id)
+ VALUES($1,$2,'2026-10-21',$3,$4,$5,$6,$7,$8,$9,$10,$9,$11)`,[id(100+n),id(n),[3,4].includes(n)?null:'2026-10-21T09:00:00+05:30',[3,4].includes(n)?null:'2026-10-21T18:00:00+05:30',[3,4].includes(n)?'2026-10-21T10:00:00+05:30':null,n===3?'pending_pm':n===4?'rejected':'accepted',n===1,n===1?'self-attendance-photo.jpg':null,n===2?2:1,n===2?200:100,n===2?20:10]);
+ await db.query("INSERT INTO self_attendance_leave_requests(id,self_attendance_id,requested_date,leave_type,status) VALUES($1,$2,'2026-10-21','CASUAL','approved')",[id(200),id(5)]);
  const query={date:'2026-10-21'};
  let r=await call(query);assert.equal(r.code,200,JSON.stringify(r.body));
- assert.equal(r.body.employees.length,10,'3 regular + 7 professional active/historical employees');
- assert.equal(r.body.records.length,7,'regular attendance + professional punches/attempts + approved leave');
+ assert.equal(r.body.employees.length,10,'3 regular + 7 self_attendance active/historical employees');
+ assert.equal(r.body.records.length,7,'regular attendance + self_attendance punches/attempts + approved leave');
  assert.equal(r.body.employees.filter(e=>e.emp_code==='SAME').length,2,'Same code/mobile do not silently merge distinct identities');
- const pro=r.body.records.find(row=>row.emp_id===`professional:${id(1)}`);
- assert.equal(pro.punch_in,'09:00:00');assert.equal(pro.punch_out,'18:00:00');assert.equal(pro.is_auto_punch_out,true);assert.equal(pro.punch_in_image_url,'https://signed.example.test/professional-photo.jpg');
+ const pro=r.body.records.find(row=>row.emp_id===`self_attendance:${id(1)}`);
+ assert.equal(pro.punch_in,'09:00:00');assert.equal(pro.punch_out,'18:00:00');assert.equal(pro.is_auto_punch_out,true);assert.equal(pro.punch_in_image_url,'https://signed.example.test/self-attendance-photo.jpg');
  assert.deepEqual(Array.from(pro.designation_ids),[2,3]);assert.equal(pro.punched_in_by,'Same Person');
  assert.equal(r.body.records.find(row=>row.emp_id==='1').punched_in_by,'Supervisor');
- assert.equal(r.body.records.find(row=>row.emp_id===`professional:${id(3)}`).punch_in,null);
- assert.equal(r.body.records.find(row=>row.emp_id===`professional:${id(3)}`).attendance_status,'in-consideration');
- assert.equal(r.body.records.find(row=>row.emp_id===`professional:${id(4)}`).attendance_status,'punch-not-accepted');
- assert.equal(r.body.records.find(row=>row.emp_id===`professional:${id(5)}`).leave_type,'CASUAL');
+ assert.equal(r.body.records.find(row=>row.emp_id===`self_attendance:${id(3)}`).punch_in,null);
+ assert.equal(r.body.records.find(row=>row.emp_id===`self_attendance:${id(3)}`).attendance_status,'in-consideration');
+ assert.equal(r.body.records.find(row=>row.emp_id===`self_attendance:${id(4)}`).attendance_status,'punch-not-accepted');
+ assert.equal(r.body.records.find(row=>row.emp_id===`self_attendance:${id(5)}`).leave_type,'CASUAL');
  assert.ok(!r.body.employees.some(row=>row.source_employee_id===id(8)),'Inactive accounts without historical records are excluded');
  assert.equal((await call({...query,employeeType:'regular'})).body.records.length,1);
- assert.equal((await call({...query,employeeType:'professional'})).body.records.length,6);
- r=await call(query,{cities:{attendance_reports:[1],'professional-attendance':[2]}});assert.equal(r.code,200);
- assert.equal(r.body.employees.filter(row=>row.employee_kind==='regular').length,2);assert.equal(r.body.employees.filter(row=>row.employee_kind==='professional').length,1);
+ assert.equal((await call({...query,employeeType:'self_attendance'})).body.records.length,6);
+ r=await call(query,{cities:{attendance_reports:[1],'self-attendance-records':[2]}});assert.equal(r.code,200);
+ assert.equal(r.body.employees.filter(row=>row.employee_kind==='regular').length,2);assert.equal(r.body.employees.filter(row=>row.employee_kind==='self_attendance').length,1);
  r=await call(query,{kothiScope:{all:false,ids:[10]}});assert.ok(r.body.employees.every(row=>row.ward_id===10));
  r=await call(query,{kothiScope:{all:false,ids:[]}});assert.equal(r.body.employees.length,0);
- r=await call(query,{user:{role:'supervisor',user_id:9},cityScope:{all:false,ids:[1]},cities:{attendance_reports:[1],'professional-attendance':[1]},kothiScope:{all:false,ids:[10]}});assert.equal(r.code,200,JSON.stringify(r.body));assert.ok(r.body.employees.every(row=>row.ward_id===10));
- assert.equal((await call(query,{denied:'professional-attendance'})).code,403);
- assert.equal((await call({...query,employeeType:'regular'},{denied:'professional-attendance'})).code,200);
+ r=await call(query,{user:{role:'supervisor',user_id:9},cityScope:{all:false,ids:[1]},cities:{attendance_reports:[1],'self-attendance-records':[1]},kothiScope:{all:false,ids:[10]}});assert.equal(r.code,200,JSON.stringify(r.body));assert.ok(r.body.employees.every(row=>row.ward_id===10));
+ assert.equal((await call(query,{denied:'self-attendance-records'})).code,403);
+ assert.equal((await call({...query,employeeType:'regular'},{denied:'self-attendance-records'})).code,200);
  assert.equal((await call(query,{denied:'attendance_reports'})).code,403);
  assert.equal((await call({...query,employeeType:'bad'})).code,400);
  for(const bad of [{date:'2026-02-30'},{date:'2026-99-01'},{startDate:'2026-10-22',endDate:'2026-10-21'},{startDate:'2020-01-01',endDate:'2026-10-21'}])assert.equal((await call(bad)).code,400);
@@ -91,8 +91,8 @@ const id=n=>`d0000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
  assert.equal(rollbacks,rollbackCount,'Driver timeout must not queue a rollback');
  assert.equal((await call(query)).code,200,'Following request can use a clean connection');
  await db.query('UPDATE employee SET ward_id=20 WHERE emp_id=1');
- await db.query('UPDATE professional_employees SET city_id=2,zone_id=2,ward_id=200,kothi_id=20 WHERE id=$1',[id(1)]);
- r=await call(query,{cityScope:{all:false,ids:[1]},cities:{attendance_reports:[1],'professional-attendance':[1]},kothiScope:{all:false,ids:[10]}});
+ await db.query('UPDATE self_attendance_employees SET city_id=2,zone_id=2,ward_id=200,kothi_id=20 WHERE id=$1',[id(1)]);
+ r=await call(query,{cityScope:{all:false,ids:[1]},cities:{attendance_reports:[1],'self-attendance-records':[1]},kothiScope:{all:false,ids:[10]}});
  assert.equal(r.code,200,JSON.stringify(r.body));
  for(const employeeId of ['1']){
   const history=r.body.records.find(row=>row.emp_id===employeeId);
@@ -100,18 +100,18 @@ const id=n=>`d0000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
   const person=r.body.employees.find(row=>row.emp_id===employeeId);assert.equal(person.ward_id,10);
   assert.ok(person.report_locations.every(location=>location.city_id===1),'Unapproved current location must not leak');
  }
- assert.ok(!r.body.employees.some(row=>row.emp_id===`professional:${id(1)}`),'Transferred professional history leaves the former posting employee report');
+ assert.ok(!r.body.employees.some(row=>row.emp_id===`self_attendance:${id(1)}`),'Transferred self_attendance history leaves the former posting employee report');
  r=await call({...query,cityId:'2',zoneId:'2',sectorId:'200',kothiIds:'20'},
-  {cityScope:{all:false,ids:[2]},cities:{attendance_reports:[2],'professional-attendance':[2]},kothiScope:{all:false,ids:[20]}});
+  {cityScope:{all:false,ids:[2]},cities:{attendance_reports:[2],'self-attendance-records':[2]},kothiScope:{all:false,ids:[20]}});
  assert.equal(r.code,200,JSON.stringify(r.body));
- const transferred=r.body.records.filter(row=>row.emp_id===`professional:${id(1)}`);
+ const transferred=r.body.records.filter(row=>row.emp_id===`self_attendance:${id(1)}`);
  assert.equal(transferred.length,1,'Destination report carries historical attendance exactly once');
  assert.equal(transferred[0].punch_in,'09:00:00');assert.equal(transferred[0].city_id,2);assert.equal(transferred[0].ward_id,20);
  assert.equal(transferred[0].sector_id,200);assert.equal(transferred[0].zone_id,2);
- const original=(await db.query('SELECT city_id,kothi_id FROM professional_attendance WHERE professional_id=$1',[id(1)])).rows[0];
+ const original=(await db.query('SELECT city_id,kothi_id FROM self_attendance_records WHERE self_attendance_id=$1',[id(1)])).rows[0];
  assert.deepEqual(original,{city_id:1,kothi_id:10},'Original punch location stays available for site-wise history');
- await db.query('UPDATE professional_attendance SET kothi_id=NULL WHERE professional_id=$1',[id(3)]);
- r=await call(query);const legacy=r.body.records.find(row=>row.emp_id===`professional:${id(3)}`);
+ await db.query('UPDATE self_attendance_records SET kothi_id=NULL WHERE self_attendance_id=$1',[id(3)]);
+ r=await call(query);const legacy=r.body.records.find(row=>row.emp_id===`self_attendance:${id(3)}`);
  assert.equal(legacy.ward,'Site One');assert.equal(legacy.ward_id,10);assert.equal(legacy.historical_site_unknown,false,'Legacy punches without a saved site also follow the current posting');
  r=await call({...query,cityId:'2',kothiIds:'20'});assert.ok(r.body.records.every(row=>row.city_id===2 && row.ward_id===20));
  assert.equal((await call({...query,kothiIds:'invalid'})).code,400);

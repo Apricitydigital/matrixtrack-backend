@@ -7,8 +7,8 @@ const { uploadToS3, deleteFromS3 } = require('../utils/s3SelfPunch');
 const socketio = require('../utils/socket');
 const { trackCityTraffic, getIstDateKey } = require('../utils/cityTrafficCost');
 const { logUserConsent } = require('./consentController');
-const { findProfessionalIdentityConflict } = require('../utils/professionalIdentity');
-const { resolveProfessionalLocation } = require('../utils/professionalLocation');
+const { findSelfAttendanceIdentityConflict } = require('../utils/selfAttendanceIdentity');
+const { resolveSelfAttendanceLocation } = require('../utils/selfAttendanceLocation');
 
 // Multer memory storage to hold files before uploading to S3
 const storage = multer.memoryStorage();
@@ -190,11 +190,12 @@ const validateInput = (reqBody, reqFiles) => {
 
   if (!city_id || isNaN(parseInt(city_id, 10))) errors.city_id = "Valid city_id is required.";
   if (!zone_id || isNaN(parseInt(zone_id, 10))) errors.zone_id = "Valid zone_id is required.";
-  if (!ward_id || isNaN(parseInt(ward_id, 10))) errors.ward_id = "Valid ward_id (sector in DB) is required.";
+  if ((!ward_id && !reqBody.kothi_id) || (ward_id && isNaN(parseInt(ward_id, 10)))) errors.ward_id = "Select a valid Ward.";
 
-  // kothi_id is optional at UI level, but if provided must be integer
-  if (reqBody.kothi_id && isNaN(parseInt(reqBody.kothi_id, 10))) {
-    errors.kothi_id = "Valid kothi_id (ward in DB) is required if provided.";
+  // Explicit physical Ward is mandatory for new registrations. Never select
+  // an arbitrary employee location from a deprecated Sector-only request.
+  if (!/^\d+$/.test(String(reqBody.kothi_id || '')) || Number(reqBody.kothi_id) < 1) {
+    errors.kothi_id = "Select a valid Ward.";
   }
 
   if (!reqFiles || !reqFiles['aadhar_doc'] || !reqFiles['aadhar_doc'][0]) {
@@ -249,15 +250,15 @@ const submitRequest = async (req, res) => {
   try {
     await client.query('BEGIN');
     // Same ordering as approvals and list updates prevents concurrent duplicate identities.
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
-    const identityConflict = await findProfessionalIdentityConflict(client, {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
+    const identityConflict = await findSelfAttendanceIdentityConflict(client, {
       mobile, email: sanitizedEmail, empCode: sanitizedEmpCode, aadharNumber:aadhar_number, requireAadhaar:true,
     });
     if (identityConflict) {
       await client.query('ROLLBACK');
       return res.status(409).json({ success: false, message: identityConflict.source === 'account'
-        ? 'A professional account already exists for this mobile, email, employee code or Aadhaar. Use the existing account; ask an administrator to correct its details.'
-        : 'A professional request already exists for this mobile, email, employee code or Aadhaar. Check the existing request instead of registering again.' });
+        ? 'A self_attendance account already exists for this mobile, email, employee code or Aadhaar. Use the existing account; ask an administrator to correct its details.'
+        : 'A self_attendance request already exists for this mobile, email, employee code or Aadhaar. Check the existing request instead of registering again.' });
     }
 
     // Daily cap: max 10 requests per mobile per day (IST)
@@ -279,7 +280,7 @@ const submitRequest = async (req, res) => {
       });
     }
 
-    const resolvedLoc = await resolveProfessionalLocation(client, {
+    const resolvedLoc = await resolveSelfAttendanceLocation(client, {
       city_id,
       zone_id,
       ward_id,
@@ -287,7 +288,7 @@ const submitRequest = async (req, res) => {
     });
     const safeWardId = resolvedLoc.ward_id;
     const safeKothiId = resolvedLoc.kothi_id;
-    if (!safeWardId) {
+    if (!safeKothiId || !resolvedLoc.employee_ward_id) {
       await client.query('ROLLBACK');
       logger.warn('[SelfPunch] Invalid ward mapping for request', {
         requested_ward_id: ward_id ? parseInt(ward_id, 10) : null,
@@ -297,7 +298,7 @@ const submitRequest = async (req, res) => {
       return res.status(400).json({
         success: false,
         errors: {
-          ward_id: 'Selected ward/sector is not mapped to a valid ward. Please refresh location and try again.'
+          kothi_id: 'Select a valid Ward. Please refresh locations and try again.'
         }
       });
     }
@@ -420,7 +421,9 @@ const submitRequest = async (req, res) => {
     if (aadharDocKey) await deleteFromS3(aadharDocKey);
     if (selfieKey) await deleteFromS3(selfieKey);
 
-    if (error?.code === 'PROFESSIONAL_IDENTITY_UNVERIFIED') {
+    if (error?.status === 400) return res.status(400).json({success:false,errors:{kothi_id:error.message}});
+
+    if (error?.code === 'SELF_ATTENDANCE_IDENTITY_UNVERIFIED') {
       return res.status(409).json({success:false,message:error.message});
     }
     if (error?.code === '23505') {

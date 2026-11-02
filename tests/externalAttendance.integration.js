@@ -25,16 +25,16 @@ test('external API returns complete scoped punch, supervisor, register and emplo
   await db.exec(`CREATE TABLE cities(city_id INT PRIMARY KEY,city_name TEXT);INSERT INTO cities VALUES(1,'One'),(2,'Two');
    CREATE TABLE zones(zone_id INT PRIMARY KEY,city_id INT,zone_name TEXT);INSERT INTO zones VALUES(10,1,'Zone One'),(20,2,'Zone Two');
    CREATE TABLE wards(ward_id INT PRIMARY KEY,zone_id INT,sector_id INT,ward_name TEXT);INSERT INTO wards VALUES(100,10,1000,'Site One'),(200,20,2000,'Site Two');
-   CREATE TABLE department(department_id INT PRIMARY KEY,department_name TEXT);INSERT INTO department VALUES(1,'Regular'),(2,'Professional');
+   CREATE TABLE department(department_id INT PRIMARY KEY,department_name TEXT);INSERT INTO department VALUES(1,'Regular'),(2,'Self Attendance');
    CREATE TABLE designation(designation_id INT PRIMARY KEY,designation_name TEXT,department_id INT);INSERT INTO designation VALUES(1,'Guard',1),(2,'Project Head / Site Head',2);
    CREATE TABLE users(user_id INT PRIMARY KEY,name TEXT,emp_code TEXT,phone TEXT,email TEXT,role TEXT,is_deleted BOOLEAN,profile_photo_url TEXT,password TEXT);
    INSERT INTO users VALUES(9,'Legacy Supervisor','SUP9','9000000009','supervisor@example.test','supervisor',false,'supervisor.jpg','must-not-leak'),(10,'Other Supervisor','SUP10','9000000010','other@example.test','supervisor',false,NULL,'must-not-leak');
    CREATE TABLE employee(emp_id INT PRIMARY KEY,name TEXT,emp_code TEXT,phone TEXT,ward_id INT,designation_id INT,face_embedding TEXT,self_attendance_enabled BOOLEAN,no_personal_phone BOOLEAN,aadhar_no TEXT);
    INSERT INTO employee VALUES(1,'Face Employee','E1','9000000001',100,1,'face.jpg',false,false,'existing-private-field'),(2,'Register Employee','E2',NULL,100,1,NULL,false,true,NULL),(3,'Unmarked Employee','E3',NULL,100,1,NULL,false,true,NULL),(4,'Outside Employee','E4',NULL,200,1,NULL,false,true,NULL);
-   CREATE TABLE professional_employees(id UUID PRIMARY KEY,full_name TEXT,emp_code TEXT,mobile TEXT,email TEXT,city_id INT,zone_id INT,ward_id INT,kothi_id INT,is_active BOOLEAN,selfie_url TEXT,password_hash TEXT);
-   INSERT INTO professional_employees VALUES('${id(1)}','Project Head','P1','9111111111','head@example.test',1,10,1000,100,true,'head.jpg','must-not-leak'),('${id(2)}','Transferred Professional','P2','9222222222','professional@example.test',2,20,2000,200,true,NULL,'must-not-leak');
-   CREATE TABLE professional_designation_assignments(professional_id UUID,designation_id INT);INSERT INTO professional_designation_assignments VALUES('${id(1)}',2);
-   CREATE TABLE professional_site_access(professional_id UUID,kothi_id INT);INSERT INTO professional_site_access VALUES('${id(1)}',100),('${id(1)}',200);
+   CREATE TABLE self_attendance_employees(id UUID PRIMARY KEY,full_name TEXT,emp_code TEXT,mobile TEXT,email TEXT,city_id INT,zone_id INT,ward_id INT,kothi_id INT,is_active BOOLEAN,selfie_url TEXT,password_hash TEXT);
+   INSERT INTO self_attendance_employees VALUES('${id(1)}','Project Head','P1','9111111111','head@example.test',1,10,1000,100,true,'head.jpg','must-not-leak'),('${id(2)}','Transferred SelfAttendance','P2','9222222222','self_attendance@example.test',2,20,2000,200,true,NULL,'must-not-leak');
+   CREATE TABLE self_attendance_designation_assignments(self_attendance_id UUID,designation_id INT);INSERT INTO self_attendance_designation_assignments VALUES('${id(1)}',2);
+   CREATE TABLE self_attendance_site_access(self_attendance_id UUID,kothi_id INT);INSERT INTO self_attendance_site_access VALUES('${id(1)}',100),('${id(1)}',200);
    CREATE TABLE user_kothi_access(user_id INT,ward_id INT);INSERT INTO user_kothi_access VALUES(9,100),(9,200),(10,200);
    CREATE TABLE user_zone_access(user_id INT,zone_id INT);CREATE TABLE user_city_access(user_id INT,city_id INT);
    CREATE TABLE supervisor_kothi(supervisor_id INT,ward_id INT);INSERT INTO supervisor_kothi VALUES(9,100);
@@ -57,9 +57,9 @@ test('external API returns complete scoped punch, supervisor, register and emplo
    INSERT INTO attendance(attendance_id,emp_id,ward_id,date,register_status,register_request_id,register_marked_by,register_marked_by_name,register_marked_at)
     VALUES(3,2,100,'2026-10-28','present','${id(90)}','${id(1)}','Project Head','2026-10-28 09:00Z'),(4,2,100,'2026-10-27','absent','${id(90)}','${id(1)}','Project Head','2026-10-27 09:00Z');
    INSERT INTO attendance(attendance_id,emp_id,ward_id,date,punch_in_time) VALUES(5,4,200,'2026-10-28','2026-10-28 08:00');
-   CREATE TABLE professional_attendance(id UUID PRIMARY KEY,professional_id UUID,date DATE,punch_in TIMESTAMPTZ,punch_out TIMESTAMPTZ,attempted_punch_in TIMESTAMPTZ,punch_approval_status TEXT,auto_punched_out BOOLEAN,
+   CREATE TABLE self_attendance_records(id UUID PRIMARY KEY,self_attendance_id UUID,date DATE,punch_in TIMESTAMPTZ,punch_out TIMESTAMPTZ,attempted_punch_in TIMESTAMPTZ,punch_approval_status TEXT,auto_punched_out BOOLEAN,
     punch_in_latitude FLOAT,punch_in_longitude FLOAT,punch_out_latitude FLOAT,punch_out_longitude FLOAT,out_address TEXT,punch_in_photo_url TEXT,punch_out_photo_url TEXT,city_id INT,zone_id INT,ward_id INT,kothi_id INT);
-   INSERT INTO professional_attendance(id,professional_id,date,punch_in,punch_out,punch_approval_status,punch_in_photo_url,punch_out_photo_url,city_id,zone_id,ward_id,kothi_id)
+   INSERT INTO self_attendance_records(id,self_attendance_id,date,punch_in,punch_out,punch_approval_status,punch_in_photo_url,punch_out_photo_url,city_id,zone_id,ward_id,kothi_id)
     VALUES('${id(50)}','${id(2)}','2026-10-28','2026-10-28 03:30Z','2026-10-28 12:30Z','accepted','pro-in.jpg','pro-out.jpg',1,10,1000,100);`);
   const key={cityId:1,zoneId:10,wardId:100};
   let r=await call('getDailyAttendance',{date:'2026-10-28'},key);
@@ -79,7 +79,7 @@ test('external API returns complete scoped punch, supervisor, register and emplo
   r=await call('getAttendanceRange',{from:'2026-10-27',to:'2026-10-28',source:'supervisor'},key);
   assert.equal(r.code,200,JSON.stringify(r.body));assert.equal(r.body.pagination.total,1);
   assert.equal(r.body.data[0].punch_in_image_url,'https://signed.example.test/group-in.jpg');assert.equal(r.body.data[0].punch_out_image_url,'https://signed.example.test/group-out.jpg');
-  assert.equal(r.body.data[0].punched_in_by.type,'professional');assert.equal(r.body.data[0].punched_in_by_name,'Head at capture');
+  assert.equal(r.body.data[0].punched_in_by.type,'self_attendance');assert.equal(r.body.data[0].punched_in_by_name,'Head at capture');
   r=await call('getEmployeeAttendance',{from:'2026-10-27',to:'2026-10-28'},key,{empId:'2'});
   assert.equal(r.body.data.length,2);assert.deepEqual(Array.from(r.body.data,x=>x.status),['Absent','Present']);
   r=await call('getAttendanceSummary',{date:'2026-10-28'},key);
@@ -87,10 +87,10 @@ test('external API returns complete scoped punch, supervisor, register and emplo
   r=await call('getFullAttendance',{date:'2026-10-28',limit:2});assert.equal(r.code,200,JSON.stringify(r.body));assert.equal(r.body.pagination.total,4);assert.equal(r.body.data.length,2);
   const firstIds=r.body.data.map(x=>x.employee_kind+':'+x.attendance_id);
   r=await call('getFullAttendance',{date:'2026-10-28',limit:2,page:2});assert.ok(r.body.data.every(x=>!firstIds.includes(x.employee_kind+':'+x.attendance_id)));
-  r=await call('getProfessionalDailyAttendance',{date:'2026-10-28'},{cityId:2,wardId:200});
+  r=await call('getSelfAttendanceDailyAttendance',{date:'2026-10-28'},{cityId:2,wardId:200});
   assert.equal(r.code,200,JSON.stringify(r.body));assert.equal(r.body.data.length,1);assert.equal(r.body.data[0].punch_in,'09:00:00');assert.equal(r.body.data[0].punch_out,'18:00:00');
   assert.equal(r.body.data[0].punch_in_image_url,'https://signed.example.test/pro-in.jpg');assert.equal(r.body.data[0].original_city_id,1);assert.equal(r.body.data[0].city_id,2);
-  assert.equal((await call('getFullAttendance',{date:'2026-10-28',employee_type:'professional'},key)).body.data.length,0);
+  assert.equal((await call('getFullAttendance',{date:'2026-10-28',employee_type:'self_attendance'},key)).body.data.length,0);
   signed.length=0;
   r=await call('getDailyAttendance',{date:'2026-10-28',city_id:2},key);assert.equal(r.body.data.length,0);assert.equal(signed.length,0,'Out-of-scope rows never receive photo links');
   r=await call('getEmployees',{},key);assert.equal(r.code,200,JSON.stringify(r.body));assert.equal(r.body.data.length,3,'Registered roster includes employees with no attendance');

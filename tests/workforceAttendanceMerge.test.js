@@ -6,28 +6,28 @@ const db=new PGlite();
 const ids=['10000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000002'];
 const attendanceIds=['20000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000002'];
 (async()=>{
- await db.exec(`CREATE TABLE professional_attendance(
- id UUID PRIMARY KEY,professional_id UUID NOT NULL,date DATE NOT NULL,punch_in TIMESTAMPTZ,punch_out TIMESTAMPTZ,
+ await db.exec(`CREATE TABLE self_attendance_records(
+ id UUID PRIMARY KEY,self_attendance_id UUID NOT NULL,date DATE NOT NULL,punch_in TIMESTAMPTZ,punch_out TIMESTAMPTZ,
  city_id INT NOT NULL DEFAULT 1,punch_approval_status TEXT NOT NULL DEFAULT 'accepted',
- metadata JSONB,created_at TIMESTAMPTZ DEFAULT NOW(),UNIQUE(professional_id,date),
+ metadata JSONB,created_at TIMESTAMPTZ DEFAULT NOW(),UNIQUE(self_attendance_id,date),
  CHECK(punch_out IS NULL OR punch_out>=punch_in));
- CREATE TABLE evidence(id SERIAL PRIMARY KEY,attendance_id UUID REFERENCES professional_attendance);
+ CREATE TABLE evidence(id SERIAL PRIMARY KEY,attendance_id UUID REFERENCES self_attendance_records);
  CREATE TABLE legacy_evidence(id SERIAL PRIMARY KEY,attendance_id UUID,note TEXT);`);
- await db.query(`INSERT INTO professional_attendance(id,professional_id,date,punch_in,punch_out,metadata) VALUES
+ await db.query(`INSERT INTO self_attendance_records(id,self_attendance_id,date,punch_in,punch_out,metadata) VALUES
  ($1,$2,'2026-10-01','2026-10-01 09:00+05:30',NULL,'{"device":"same","accuracy":1}'),
  ($3,$4,'2026-10-01','2026-10-01 03:30+00','2026-10-01 12:30+00','{"accuracy":1,"device":"same"}')`,[attendanceIds[0],ids[0],attendanceIds[1],ids[1]]);
  await db.query('INSERT INTO evidence(attendance_id) VALUES($1)',[attendanceIds[1]]);
  await db.query("INSERT INTO legacy_evidence(attendance_id,note) VALUES($1,'retain original evidence')",[attendanceIds[1]]);
  await db.query('BEGIN');
  await db.query('SAVEPOINT conflict_review');
- await db.query("UPDATE professional_attendance SET punch_in='2026-10-01 10:00+05:30',metadata='{\"device\":\"other\"}' WHERE id=$1",[attendanceIds[1]]);
+ await db.query("UPDATE self_attendance_records SET punch_in='2026-10-01 10:00+05:30',metadata='{\"device\":\"other\"}' WHERE id=$1",[attendanceIds[1]]);
  await assert.rejects(attendanceMergePlan(db,ids,ids[0]),error=>error.status===409 && error.attendanceConflicts[0].records.length===2 && error.attendanceConflicts[0].fields.includes('punch_in'));
  await assert.rejects(attendanceMergePlan(db,ids,ids[0],[]),{status:400});
  await assert.rejects(attendanceMergePlan(db,ids,ids[0],{'2026-10-01':'another-record'}),{status:409});
  await assert.rejects(attendanceMergePlan(db,ids,ids[0],{'2026-10-02':attendanceIds[1]}),{status:409});
  const chosen=await attendanceMergePlan(db,ids,ids[0],{'2026-10-01':attendanceIds[1]});
  assert.equal(chosen.groups[0].survivorId,attendanceIds[1]);assert.deepEqual(chosen.groups[0].updates,{});
- assert.equal(chosen.groups[0].originals.length,2);assert.equal(chosen.summary.resolvedConflicts[0].professionalId,ids[1]);
+ assert.equal(chosen.groups[0].originals.length,2);assert.equal(chosen.summary.resolvedConflicts[0].selfAttendanceId,ids[1]);
  await db.query('ROLLBACK TO SAVEPOINT conflict_review');
  const plan=await attendanceMergePlan(db,ids,ids[0]);
  assert.deepEqual(plan.summary,{originalRows:2,uniqueDays:1,overlapDays:1,consolidatedRows:1});
@@ -37,7 +37,7 @@ const attendanceIds=['20000000-0000-4000-8000-000000000001','20000000-0000-4000-
  const changedPlan=await attendanceMergePlan(db,ids,ids[0]);
  assert.notEqual(changedPlan.links.find(link=>link.table==='legacy_evidence').state.digest,oldDigest,'non-FK child changes must invalidate the merge fingerprint');
  await consolidateAttendance(db,changedPlan);await db.query('COMMIT');
- const rows=(await db.query('SELECT to_jsonb(a) AS row FROM professional_attendance a')).rows;
+ const rows=(await db.query('SELECT to_jsonb(a) AS row FROM self_attendance_records a')).rows;
  assert.equal(rows.length,1);assert.equal(rows[0].row.id,attendanceIds[0]);
  assert.equal(Date.parse(rows[0].row.punch_in),Date.parse('2026-10-01T09:00:00+05:30'));
  assert.equal(Date.parse(rows[0].row.punch_out),Date.parse('2026-10-01T18:00:00+05:30'));

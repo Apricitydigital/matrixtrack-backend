@@ -17,7 +17,7 @@ async function fixture() {
     CREATE TABLE designation(designation_id int PRIMARY KEY,designation_name text,department_id int REFERENCES department);
     CREATE TABLE employee(emp_id serial PRIMARY KEY,emp_code varchar(50) UNIQUE,name varchar(100),phone text,ward_id int REFERENCES wards,
       designation_id int REFERENCES designation,aadhar_no text,no_personal_phone boolean DEFAULT false);
-    CREATE TABLE professional_employees(emp_code text,mobile text);
+    CREATE TABLE self_attendance_employees(emp_code text,mobile text);
     CREATE TABLE self_punch_requests(emp_code text,mobile text,status text);
     INSERT INTO cities VALUES(1,'City A'),(2,'City B');
     INSERT INTO zones VALUES(10,'Zone A',1),(20,'Zone B',2);
@@ -26,7 +26,7 @@ async function fixture() {
     INSERT INTO department VALUES(7,'Operations'),(8,'Other department');
     INSERT INTO designation VALUES(70,'Operator',7),(80,'Other role',8);
     INSERT INTO employee(emp_code,name,phone,ward_id,designation_id,aadhar_no) VALUES('EXISTING','Existing','9999999999',1000,70,'999999999999');
-    INSERT INTO professional_employees VALUES('PRO-01','8888888888');
+    INSERT INTO self_attendance_employees VALUES('PRO-01','8888888888');
     INSERT INTO self_punch_requests VALUES('PENDING-01','7777777777','pending');`);
   return db;
 }
@@ -53,7 +53,7 @@ test('validates names and IDs within location scope and preserves no-phone emplo
   } finally {await db.close();}
 });
 
-test('rejects duplicates in file, Employee Master and professional accounts without writes',async()=>{
+test('rejects duplicates in file, Employee Master and self_attendance accounts without writes',async()=>{
   const db=await fixture();
   try {
     const options=await importOptions(db,null,null);

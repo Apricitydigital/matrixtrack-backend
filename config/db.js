@@ -1,5 +1,6 @@
 const { Pool } = require("pg");
 require("dotenv").config();
+require('../utils/selfAttendanceNaming').loadLegacyEnvironment();
 
 const pool = new Pool({
   user: process.env.DB_USER,

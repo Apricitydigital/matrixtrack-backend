@@ -2,6 +2,9 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 const authenticate = require("../middleware/authMiddleware");
+const { attachCityScope } = require("../middleware/cityScope");
+const { attachKothiScope } = require("../middleware/kothiScope");
+const { authorize, getPermissionCityFilter } = require("../middleware/permissionMiddleware");
 
 // 🛠 IST Date Formatter
 const formatDateIST = (date = new Date()) => {
@@ -13,10 +16,10 @@ const formatDateIST = (date = new Date()) => {
 /**
  * @route GET /api/supervisor-audit
  * @desc Fetch punch-in and punch-out counts performed by supervisors within a date range
- * @access Admin only (verified by middleware and role check in UI)
+ * @access Supervisor Audit view permission, restricted to assigned City/Ward scope
  */
-router.get("/", authenticate, async (req, res) => {
-  const { startDate, endDate, cityId, zoneId, sectorId, wardId } = req.query;
+router.get("/", authenticate, authorize("supervisor-audit", "view"), attachCityScope, attachKothiScope, async (req, res) => {
+  const { startDate, endDate, cityId, zoneId, wardId } = req.query;
 
   try {
     // Default to today if no dates provided
@@ -24,16 +27,35 @@ router.get("/", authenticate, async (req, res) => {
     const end = endDate && endDate !== "" && endDate !== "undefined" ? endDate : start;
 
     const params = [start, end];
+    const filters = [];
+    const cityScope = getPermissionCityFilter(req, "supervisor-audit", "view");
+    if (cityScope !== null) {
+      params.push(cityScope);
+      filters.push(`c.city_id = ANY($${params.length}::int[])`);
+    }
+    if (!req.kothiScope?.all) {
+      params.push(req.kothiScope?.ids || []);
+      filters.push(`w.ward_id = ANY($${params.length}::int[])`);
+    }
+    for (const [value, column] of [[cityId, 'c.city_id'], [zoneId, 'z.zone_id'], [wardId, 'w.ward_id']]) {
+      if (value == null || value === '' || value === 'all') continue;
+      if (!/^[1-9]\d*$/.test(String(value)) || !Number.isSafeInteger(Number(value)) || Number(value) > 2147483647) {
+        return res.status(400).json({error: 'Choose a valid City, Zone and Ward.'});
+      }
+      params.push(Number(value));
+      filters.push(`${column} = $${params.length}`);
+    }
 
     const query = `
       SELECT 
+        u.user_id AS supervisor_id,
         c.city_id,
         z.zone_id,
         s.sector_id,
         w.ward_id,
         c.city_name,
         z.zone_name,
-        s.sector_name AS ward_name,
+        w.ward_name AS ward_name,
         w.ward_name AS kothi_name,
         u.name AS supervisor_name,
         u.phone AS supervisor_phone,
@@ -49,7 +71,7 @@ router.get("/", authenticate, async (req, res) => {
       JOIN supervisor_ward sw ON u.user_id = sw.supervisor_id
       JOIN wards w ON sw.ward_id = w.ward_id
       LEFT JOIN sectors s ON w.sector_id = s.sector_id
-      LEFT JOIN zones z ON s.zone_id = z.zone_id
+      LEFT JOIN zones z ON w.zone_id = z.zone_id
       LEFT JOIN cities c ON z.city_id = c.city_id
       LEFT JOIN attendance a_in ON a_in.punched_in_by = u.user_id 
         AND a_in.ward_id = w.ward_id 
@@ -58,8 +80,9 @@ router.get("/", authenticate, async (req, res) => {
         AND a_out.ward_id = w.ward_id 
         AND a_out.date::date >= $1 AND a_out.date::date <= $2
       WHERE u.role = 'supervisor'
-      GROUP BY c.city_id, z.zone_id, s.sector_id, w.ward_id, c.city_name, z.zone_name, s.sector_name, w.ward_name, u.name, u.phone
-      ORDER BY c.city_name, z.zone_name, s.sector_name, w.ward_name, u.name;
+        ${filters.length ? 'AND ' + filters.join(' AND ') : ''}
+      GROUP BY u.user_id,c.city_id, z.zone_id, s.sector_id, w.ward_id, c.city_name, z.zone_name, w.ward_name, u.name, u.phone
+      ORDER BY c.city_name, z.zone_name, w.ward_name, u.name;
     `;
 
     const result = await pool.query(query, params);

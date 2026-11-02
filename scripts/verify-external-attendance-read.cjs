@@ -16,7 +16,7 @@ vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module:moduleRef,process,co
 (async()=>{try{
  await db.connect();
  const date=process.argv[2] || new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});
- const checks=[['getDailyAttendance',{date,limit:1}],['getFullAttendance',{date,limit:1}],['getFullAttendance',{date,employee_type:'professional',limit:1}],
+ const checks=[['getDailyAttendance',{date,limit:1}],['getFullAttendance',{date,limit:1}],['getFullAttendance',{date,employee_type:'self_attendance',limit:1}],
   ['getAttendanceSummary',{date}],['getEmployees',{limit:1}],['getSupervisors',{limit:1}]];
  for(const [method,query] of checks){
   const res={code:200,status(code){this.code=code;return this;},set(){return this;},json(body){this.body=body;return this;}};

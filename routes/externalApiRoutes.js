@@ -63,17 +63,17 @@ router.put("/attendance/:attendanceId",     requireScope("attendance:write"), ct
 router.delete("/attendance/:attendanceId",  requireScope("attendance:write"), ctrl.deleteAttendance);
 
 // ═══════════════════════════════════════════════════════════
-//  PROFESSIONAL ATTENDANCE
+//  SELF_ATTENDANCE ATTENDANCE
 // ═══════════════════════════════════════════════════════════
 
 // Read
-router.get("/professional/attendance/daily", requireScope("attendance:read"), ctrl.getProfessionalDailyAttendance);
+router.get("/self-attendance/attendance/daily", requireScope("attendance:read"), ctrl.getSelfAttendanceDailyAttendance);
 
 // Write
-router.post("/professional/attendance/punch-in",   requireScope("attendance:write"), ctrl.markProfessionalPunchIn);
-router.post("/professional/attendance/punch-out",  requireScope("attendance:write"), ctrl.markProfessionalPunchOut);
-router.put("/professional/attendance/:id",         requireScope("attendance:write"), ctrl.editProfessionalAttendance);
-router.delete("/professional/attendance/:id",      requireScope("attendance:write"), ctrl.deleteProfessionalAttendance);
+router.post("/self-attendance/attendance/punch-in",   requireScope("attendance:write"), ctrl.markSelfAttendancePunchIn);
+router.post("/self-attendance/attendance/punch-out",  requireScope("attendance:write"), ctrl.markSelfAttendancePunchOut);
+router.put("/self-attendance/attendance/:id",         requireScope("attendance:write"), ctrl.editSelfAttendanceRecords);
+router.delete("/self-attendance/attendance/:id",      requireScope("attendance:write"), ctrl.deleteSelfAttendanceRecords);
 
 // ═══════════════════════════════════════════════════════════
 //  EMPLOYEE MANAGEMENT (CRUD)

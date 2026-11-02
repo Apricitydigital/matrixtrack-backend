@@ -6,15 +6,15 @@ async function fixture(run){const db=new PGlite();try{
  await db.exec(`CREATE TABLE zones(zone_id INT PRIMARY KEY,city_id INT);INSERT INTO zones VALUES(1,1),(2,2);
  CREATE TABLE wards(ward_id INT PRIMARY KEY,ward_name TEXT,zone_id INT);INSERT INTO wards VALUES(10,'Kothi A',1),(20,'Kothi B',2);
  CREATE TABLE employee(emp_id INT PRIMARY KEY,name TEXT,emp_code TEXT,ward_id INT,phone TEXT,face_embedding TEXT,self_attendance_enabled BOOLEAN DEFAULT FALSE,is_active BOOLEAN DEFAULT TRUE);
- CREATE TABLE professional_employees(id UUID PRIMARY KEY,full_name TEXT,emp_code TEXT,is_active BOOLEAN DEFAULT TRUE);
+ CREATE TABLE self_attendance_employees(id UUID PRIMARY KEY,full_name TEXT,emp_code TEXT,is_active BOOLEAN DEFAULT TRUE);
  CREATE TABLE designation(designation_id INT PRIMARY KEY,designation_name TEXT);INSERT INTO designation VALUES(1,'Project Head / Site Head'),(2,'HO Coordinator'),(3,'Head of Department');
- CREATE TABLE professional_designation_assignments(professional_id UUID,designation_id INT);
- CREATE TABLE professional_site_access(professional_id UUID,kothi_id INT);
+ CREATE TABLE self_attendance_designation_assignments(self_attendance_id UUID,designation_id INT);
+ CREATE TABLE self_attendance_site_access(self_attendance_id UUID,kothi_id INT);
  CREATE TABLE attendance(attendance_id SERIAL PRIMARY KEY,emp_id INT,date DATE,ward_id INT,punch_in_time TIMESTAMP,punch_out_time TIMESTAMP,
   mid_shift_punch_in_time TIMESTAMPTZ,leave_type TEXT,latitude_in DOUBLE PRECISION,longitude_in DOUBLE PRECISION,
   latitude_out DOUBLE PRECISION,longitude_out DOUBLE PRECISION,in_address TEXT,out_address TEXT,punch_in_image TEXT,punch_out_image TEXT,UNIQUE(emp_id,date));`);
  for(const file of ['20261026_register_attendance.sql','20261026_supervisor_attendance.sql','20261026_supervisor_attendance.sql'])await db.exec(fs.readFileSync('db/migrations/'+file,'utf8'));
- for(let n=1;n<=4;n++){await db.query('INSERT INTO professional_employees VALUES($1,$2,$3,TRUE)',[id(n),'Supervisor '+n,'P'+n]);await db.query('INSERT INTO professional_designation_assignments VALUES($1,$2)',[id(n),n===2?2:n===3?3:1]);await db.query('INSERT INTO professional_site_access VALUES($1,$2)',[id(n),n===4?20:10]);}
+ for(let n=1;n<=4;n++){await db.query('INSERT INTO self_attendance_employees VALUES($1,$2,$3,TRUE)',[id(n),'Supervisor '+n,'P'+n]);await db.query('INSERT INTO self_attendance_designation_assignments VALUES($1,$2)',[id(n),n===2?2:n===3?3:1]);await db.query('INSERT INTO self_attendance_site_access VALUES($1,$2)',[id(n),n===4?20:10]);}
  for(let n=1;n<=8;n++)await db.query('INSERT INTO employee(emp_id,name,emp_code,ward_id,face_embedding) VALUES($1,$2,$3,$4,$5)',[n,'Worker '+n,'E'+n,n===8?20:10,n===7?'legacy-face.jpg':null]);
  let counter=0;const state={matchIds:[1],normalizeFails:false,onMatch:null,uploaded:[],deleted:[],indexed:[],deletedFaces:[]};
  const faceApi={collectionFor:site=>'matrixtrack-supervisor-site-'+site,
@@ -30,18 +30,18 @@ async function fixture(run){const db=new PGlite();try{
   return sql.includes('pg_try_advisory_lock')?{rows:[{locked:true}]}:sql.includes('pg_advisory_')?{rows:[]}:db.query(sql,params);
  };
  const pool={query,connect:async()=>({query,release(error){state.releasedErrors.push(error?.message||null);}})};
- const caps={exports:{}};vm.runInNewContext(fs.readFileSync('utils/professionalPunchCutoff.js','utf8'),{module:caps,require:name=>name==='fs'?fs:name==='path'?require('node:path'):pool});
- const deps={'node:crypto':crypto,'./professionalPunchCutoff':caps.exports,'./supervisorFaceIndex':faceApi,'./employeeAttendanceMode':require('../utils/employeeAttendanceMode')};
+ const caps={exports:{}};vm.runInNewContext(fs.readFileSync('utils/selfAttendancePunchCutoff.js','utf8'),{module:caps,require:name=>name==='fs'?fs:name==='path'?require('node:path'):pool});
+ const deps={'node:crypto':crypto,'./selfAttendancePunchCutoff':caps.exports,'./supervisorFaceIndex':faceApi,'./employeeAttendanceMode':require('../utils/employeeAttendanceMode')};
  const module={exports:{}};vm.runInNewContext(fs.readFileSync('utils/supervisorAttendance.js','utf8'),{module,Buffer,require:name=>deps[name]});const api=module.exports;
  const enroll=(emp=1,actor=id(1),site=10,file={buffer:Buffer.from('photo-'+emp)},extra={})=>api.enroll(pool,actor,{site_id:site,emp_id:emp,consent_given:true,...extra},file);
  const punch=(type='in',group=true,key='capture_reference_001',actor=id(1),site=10,emp=1)=>api.punch(pool,actor,{site_id:site,group,punch_type:type,emp_id:emp,request_key:key,latitude:22,longitude:75},{buffer:Buffer.from('capture-'+key)});
  const manual=async(emp=1)=>db.query(`INSERT INTO register_attendance_requests(emp_id,site_id,requested_by,duration_days,reason,status,ho_reviewer_id,hod_reviewer_id,starts_on,ends_on)
   VALUES($1,10,$2,30,'No phone','approved',$3,$4,(clock_timestamp() AT TIME ZONE 'Asia/Kolkata')::date,(clock_timestamp() AT TIME ZONE 'Asia/Kolkata')::date+29)`,[emp,id(1),id(2),id(3)]);
  const routeModule={exports:{}};const fakeMulter=()=>({single:()=> (req,res,next)=>next()});fakeMulter.memoryStorage=()=>({});
- const routeDeps={'express':require('express'),'multer':fakeMulter,'../config/db':pool,'../middleware/professionalAuth':(req,res,next)=>req.professional?next():res.status(401).json({success:false}),
-  '../utils/professionalPunchCutoff':caps.exports,'../utils/supervisorAttendance':api,'../utils/supervisorFaceIndex':faceApi};
+ const routeDeps={'express':require('express'),'multer':fakeMulter,'../config/db':pool,'../middleware/selfAttendanceAuth':(req,res,next)=>req.self_attendance?next():res.status(401).json({success:false}),
+  '../utils/selfAttendancePunchCutoff':caps.exports,'../utils/supervisorAttendance':api,'../utils/supervisorFaceIndex':faceApi};
  vm.runInNewContext(fs.readFileSync('routes/supervisorAttendanceRoutes.js','utf8'),{module:routeModule,console,require:name=>routeDeps[name]});
- const call=(url,actor=id(1),queryParams={site_id:'10'})=>new Promise((resolve,reject)=>routeModule.exports.handle({method:'GET',url,query:queryParams,headers:{},professional:actor?{professional_id:actor}:null},{statusCode:200,status(n){this.statusCode=n;return this;},json(data){resolve({code:this.statusCode,...data});}},e=>e?reject(e):resolve({code:404})));
+ const call=(url,actor=id(1),queryParams={site_id:'10'})=>new Promise((resolve,reject)=>routeModule.exports.handle({method:'GET',url,query:queryParams,headers:{},self_attendance:actor?{self_attendance_id:actor}:null},{statusCode:200,status(n){this.statusCode=n;return this;},json(data){resolve({code:this.statusCode,...data});}},e=>e?reject(e):resolve({code:404})));
  await run({db,pool,api,state,faceApi,enroll,punch,manual,call,id});
  }finally{await db.close();}}
 

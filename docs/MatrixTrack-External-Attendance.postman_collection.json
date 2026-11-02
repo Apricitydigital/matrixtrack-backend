@@ -122,11 +122,11 @@
       }
     },
     {
-      "name": "Professional attendance",
+      "name": "SelfAttendance attendance",
       "request": {
         "method": "GET",
         "header": [],
-        "url": "{{baseUrl}}/professional/attendance/daily?date={{date}}&page=1&limit=200"
+        "url": "{{baseUrl}}/self-attendance/attendance/daily?date={{date}}&page=1&limit=200"
       }
     },
     {

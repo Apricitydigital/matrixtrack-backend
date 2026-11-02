@@ -1,40 +1,40 @@
 const pool = require('../config/db');
-const { requestLocationJoins } = require('../utils/professionalRequestLocation');
+const { requestLocationJoins } = require('../utils/selfAttendanceRequestLocation');
 const logger = require('../utils/logger');
 const { getSignedS3Url } = require('../utils/s3SelfPunch');
 const socketio = require('../utils/socket');
 const { decryptAadhar } = require('../utils/encryption');
 const bcrypt = require('bcryptjs');
 const { sendSms } = require('../utils/smsNotifier');
-const { ensureProfessionalDesignation } = require('../utils/professionalDesignation');
-const { resolveProfessionalLocation } = require('../utils/professionalLocation');
-const { buildScopedProfessionalRequestFilters, employeeMasterCode } = require('../utils/professionalRequestFilters');
-const { findProfessionalIdentityConflict } = require('../utils/professionalIdentity');
-let professionalEmployeeColumnsCache = null;
+const { ensureSelfAttendanceDesignation } = require('../utils/selfAttendanceDesignation');
+const { resolveSelfAttendanceLocation } = require('../utils/selfAttendanceLocation');
+const { buildScopedSelfAttendanceRequestFilters, employeeMasterCode } = require('../utils/selfAttendanceRequestFilters');
+const { findSelfAttendanceIdentityConflict } = require('../utils/selfAttendanceIdentity');
+let selfAttendanceEmployeeColumnsCache = null;
 
-const getProfessionalEmployeeColumns = async (client) => {
-  if (professionalEmployeeColumnsCache) {
-    return professionalEmployeeColumnsCache;
+const getSelfAttendanceEmployeeColumns = async (client) => {
+  if (selfAttendanceEmployeeColumnsCache) {
+    return selfAttendanceEmployeeColumnsCache;
   }
 
   const { rows } = await client.query(
     `SELECT column_name
      FROM information_schema.columns
-     WHERE table_schema = 'public' AND table_name = 'professional_employees'`
+     WHERE table_schema = 'public' AND table_name = 'self_attendance_employees'`
   );
 
-  professionalEmployeeColumnsCache = new Set(rows.map((r) => String(r.column_name)));
-  return professionalEmployeeColumnsCache;
+  selfAttendanceEmployeeColumnsCache = new Set(rows.map((r) => String(r.column_name)));
+  return selfAttendanceEmployeeColumnsCache;
 };
 
-const ensureProfessionalPasswordColumn = async (client) => {
-  const cols = await getProfessionalEmployeeColumns(client);
+const ensureSelfAttendancePasswordColumn = async (client) => {
+  const cols = await getSelfAttendanceEmployeeColumns(client);
   if (cols.has('password_hash') || cols.has('password')) {
     return;
   }
 
-  await client.query('ALTER TABLE professional_employees ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)');
-  professionalEmployeeColumnsCache = null; // refresh cache after DDL
+  await client.query('ALTER TABLE self_attendance_employees ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)');
+  selfAttendanceEmployeeColumnsCache = null; // refresh cache after DDL
 };
 
 // Helper to generate hierarchy visibility CTE for a reviewer user.
@@ -43,7 +43,8 @@ const ensureProfessionalPasswordColumn = async (client) => {
 // - zone assignments (all wards/sectors in zone)
 // - city assignments (all zones/wards in city)
 // - legacy rows where spr.ward_id stores sector_id
-const getVisibilityCTE = () => `
+const getVisibilityCTE = () => {
+  const cte = `
   WITH assigned_wards AS (
     SELECT ward_id FROM supervisor_ward WHERE supervisor_id = $1
     UNION
@@ -109,6 +110,9 @@ const getVisibilityCTE = () => `
       )
   )
 `;
+  return typeof process !== 'undefined' && process.env.WARD_HIERARCHY === 'city_zone_ward'
+    ? cte.replace(/\bwards\b/g, 'ward_legacy_sector_links') : cte;
+};
 
 // Visibility rules (strictly scoped — no accidental city-wide leak):
 // 1) full_city_access: user has city assigned with NO zone restrictions → sees all in that city
@@ -149,7 +153,7 @@ const getRequests = async (req, res) => {
       listStatusFilter = `AND spr.status = $${listParams.length}`;
     }
     const visibilitySql = isAdmin ? '' : getVisibilityCTE();
-    listStatusFilter += await buildScopedProfessionalRequestFilters(req.query, listParams, {
+    listStatusFilter += await buildScopedSelfAttendanceRequestFilters(req.query, listParams, {
       client: pool, visibilitySql,
       where: `${isAdmin ? 'TRUE' : visibilityWhereClause} ${listStatusFilter}`,
     });
@@ -165,7 +169,7 @@ const getRequests = async (req, res) => {
       SELECT 
         spr.id, spr.full_name, spr.mobile, spr.email, spr.emp_code, spr.status, spr.created_at,
         (SELECT em.emp_id FROM employee em WHERE em.emp_code = ${employeeMasterCode} LIMIT 1) AS employee_master_id,
-        'Professional' AS designation_name, 'Professional' AS department_name,
+        'Self Attendance' AS designation_name, 'Self Attendance' AS department_name,
         spr.selfie_url, spr.aadhar_doc_url,
         c.city_name,
         z.zone_name,
@@ -189,8 +193,8 @@ const getRequests = async (req, res) => {
             WHEN pa.punch_in IS NOT NULL THEN 'punched_in'
             ELSE 'not_punched_in'
           END as attendance_state
-        FROM professional_attendance pa
-        WHERE pa.professional_id = spr.id
+        FROM self_attendance_records pa
+        WHERE pa.self_attendance_id = spr.id
           AND pa.date = CURRENT_DATE
         LIMIT 1
       ) att ON spr.status = 'approved'
@@ -256,7 +260,7 @@ const getRequestDetails = async (req, res) => {
       ${visibilitySql}
       SELECT 
         spr.*,
-        'Professional' AS designation_name, 'Professional' AS department_name,
+        'Self Attendance' AS designation_name, 'Self Attendance' AS department_name,
         c.city_name,
         z.zone_name,
         COALESCE(s.sector_name, w_from_ward.ward_name) as ward_name,
@@ -328,7 +332,7 @@ const approveRequest = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
 
     // Verify visibility and status with row lock
     const visibilitySql = isAdmin ? '' : getVisibilityCTE();
@@ -353,13 +357,13 @@ const approveRequest = async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ success: false, message: `Cannot approve request with status: ${request.status}` });
     }
-    const identityConflict = await findProfessionalIdentityConflict(client, {
+    const identityConflict = await findSelfAttendanceIdentityConflict(client, {
       mobile: request.mobile, email: request.email, empCode: request.emp_code, excludeRequestId: request.id,
       aadharNumber:request.aadhar_number, requireAadhaar:true,
     });
     if (identityConflict) {
       await client.query('ROLLBACK');
-      return res.status(409).json({ success: false, message: 'Another professional account or request already uses this mobile, email, employee code or Aadhaar. Review the existing record; approval would create a duplicate.' });
+      return res.status(409).json({ success: false, message: 'Another self_attendance account or request already uses this mobile, email, employee code or Aadhaar. Review the existing record; approval would create a duplicate.' });
     }
 
     const mobileDigits = String(request.mobile || '').replace(/[^\d]/g, '');
@@ -372,14 +376,14 @@ const approveRequest = async (req, res) => {
     }
 
     // 0. Canonical geography resolution (supports modern sector assignments and legacy ward references)
-    const resolvedLoc = await resolveProfessionalLocation(client, {
+    const resolvedLoc = await resolveSelfAttendanceLocation(client, {
       city_id: request.city_id,
       zone_id: request.zone_id,
       ward_id: request.ward_id,
       kothi_id: request.kothi_id
     });
 
-    if (!resolvedLoc.ward_id) {
+    if (!resolvedLoc.ward_id && (!resolvedLoc.kothi_id || !resolvedLoc.employee_ward_id)) {
       await client.query('ROLLBACK');
       return res.status(400).json({
         success: false,
@@ -410,9 +414,9 @@ const approveRequest = async (req, res) => {
     const plainTextPassword = `${normalizedName}@${last4 || '0000'}`;
     const passwordHash = await bcrypt.hash(plainTextPassword, 10);
 
-    // 3. Insert into professional_employees (schema-compatible across deployments)
-    await ensureProfessionalPasswordColumn(client);
-    const peColumns = await getProfessionalEmployeeColumns(client);
+    // 3. Insert into self_attendance_employees (schema-compatible across deployments)
+    await ensureSelfAttendancePasswordColumn(client);
+    const peColumns = await getSelfAttendanceEmployeeColumns(client);
     const insertCols = [];
     const insertVals = [];
 
@@ -438,7 +442,7 @@ const approveRequest = async (req, res) => {
       insertCols.push('password');
       insertVals.push(passwordHash);
     } else {
-      throw new Error('professional_employees table has neither password_hash nor password column.');
+      throw new Error('self_attendance_employees table has neither password_hash nor password column.');
     }
 
     pushCol('aadhar_number', request.aadhar_number);
@@ -457,7 +461,7 @@ const approveRequest = async (req, res) => {
       conflictAssignments.push('updated_at = NOW()');
     }
     const insertPeQuery = `
-      INSERT INTO professional_employees (${insertCols.join(', ')})
+      INSERT INTO self_attendance_employees (${insertCols.join(', ')})
       VALUES (${placeholders})
       ON CONFLICT (id) DO UPDATE SET ${conflictAssignments.join(', ')}
       RETURNING id
@@ -469,9 +473,9 @@ const approveRequest = async (req, res) => {
     if (Array.isArray(week_off_days)) {
       const validDays = week_off_days.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
       await client.query(`
-        INSERT INTO professional_week_off (professional_id, week_off_days, created_by, updated_by)
+        INSERT INTO self_attendance_week_off (self_attendance_id, week_off_days, created_by, updated_by)
         VALUES ($1, $2, $3, $3)
-        ON CONFLICT (professional_id) DO UPDATE
+        ON CONFLICT (self_attendance_id) DO UPDATE
           SET week_off_days = EXCLUDED.week_off_days,
               updated_by = EXCLUDED.updated_by,
               updated_at = NOW()
@@ -488,10 +492,10 @@ const approveRequest = async (req, res) => {
         const validPeriods = new Set(['monthly', 'quarterly', 'half_yearly', 'yearly']);
         if (!validTypes.has(leaveType) || !validPeriods.has(period) || isNaN(count) || count < 0) continue;
         await client.query(`
-          INSERT INTO professional_leave_allocations
-            (professional_id, leave_type, period, allocated_count, created_by, updated_by)
+          INSERT INTO self_attendance_leave_allocations
+            (self_attendance_id, leave_type, period, allocated_count, created_by, updated_by)
           VALUES ($1, $2, $3, $4, $5, $5)
-          ON CONFLICT (professional_id, leave_type, period) DO UPDATE
+          ON CONFLICT (self_attendance_id, leave_type, period) DO UPDATE
             SET allocated_count = EXCLUDED.allocated_count,
                 updated_by = EXCLUDED.updated_by,
                 updated_at = NOW()
@@ -503,8 +507,8 @@ const approveRequest = async (req, res) => {
       ) : { rows: [] };
       const actorName = actorRes.rows[0]?.name || 'Supervisor';
       await client.query(`
-        INSERT INTO professional_leave_allocation_logs
-          (professional_id, actor_user_id, actor_name, change_summary, old_values, new_values)
+        INSERT INTO self_attendance_leave_allocation_logs
+          (self_attendance_id, actor_user_id, actor_name, change_summary, old_values, new_values)
         VALUES ($1, $2, $3, $4, $5, $6)
       `, [
         request.id,
@@ -533,7 +537,7 @@ const approveRequest = async (req, res) => {
         throw new Error(`Cannot sync to employee master: no valid ward found for location (zone: ${request.zone_id}, sector: ${resolvedLoc.ward_id})`);
       }
 
-      const { designationId: defaultDesignationId } = await ensureProfessionalDesignation(client);
+      const { designationId: defaultDesignationId } = await ensureSelfAttendanceDesignation(client);
 
       const empUpsertQuery = `
         INSERT INTO employee (emp_code, name, phone, ward_id, designation_id, aadhar_no, aadhar_url, face_embedding, self_attendance_enabled)
@@ -562,7 +566,7 @@ const approveRequest = async (req, res) => {
       logger.info(`[Supervisor] Synced approved request ${id} to employee table (Employee Master)`);
     } catch (empSyncErr) {
       logger.error(`[Supervisor] Error syncing approved request ${id} to employee table:`, empSyncErr);
-      throw empSyncErr; // Do not approve without its Professional master mapping.
+      throw empSyncErr; // Do not approve without its Self Attendance master mapping.
     }
 
 
@@ -620,7 +624,7 @@ const approveRequest = async (req, res) => {
     logger.info(`[Supervisor] Request ${id} approved by ${supervisorId}`);
     res.json({
       success: true,
-      professional_id: request.id,
+      self_attendance_id: request.id,
       message: 'Request approved successfully.',
       sms: { sent: approvalSmsSent, error: approvalSmsError }
     });
@@ -628,7 +632,7 @@ const approveRequest = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
     logger.error(`[Supervisor] Failed to approve request ${id}`, error);
-    if (error?.code === 'PROFESSIONAL_IDENTITY_UNVERIFIED') return res.status(409).json({success:false,message:error.message});
+    if (error?.code === 'SELF_ATTENDANCE_IDENTITY_UNVERIFIED') return res.status(409).json({success:false,message:error.message});
     res.status(500).json({ success: false, message: 'Internal server error' });
   } finally {
     client.release();
@@ -684,10 +688,10 @@ const rejectRequest = async (req, res) => {
       UPDATE self_punch_requests SET status = 'rejected', updated_at = NOW() WHERE id = $1
     `, [id]);
 
-    // 1b. If this was already approved, deactivate the professional account.
+    // 1b. If this was already approved, deactivate the self_attendance account.
     if (request.status === 'approved') {
       await client.query(
-        `UPDATE professional_employees
+        `UPDATE self_attendance_employees
          SET is_active = false
          WHERE request_id = $1 OR id = $1`,
         [id]
@@ -704,8 +708,8 @@ const rejectRequest = async (req, res) => {
 
     const rejectionMessage =
       request.status === 'approved'
-        ? `MatrixTrack: Your professional access has been revoked.\nReason: ${note}`
-        : `MatrixTrack: Your professional access request was rejected.\nReason: ${note}`;
+        ? `MatrixTrack: Your self_attendance access has been revoked.\nReason: ${note}`
+        : `MatrixTrack: Your self_attendance access request was rejected.\nReason: ${note}`;
     let smsSent = false;
     let smsFailure = null;
     try {
@@ -734,7 +738,7 @@ const rejectRequest = async (req, res) => {
     res.json({
       success: true,
       message: request.status === 'approved'
-        ? 'Request rejected and professional access deactivated successfully.'
+        ? 'Request rejected and self_attendance access deactivated successfully.'
         : 'Request rejected successfully.',
       sms: { sent: smsSent, error: smsFailure }
     });

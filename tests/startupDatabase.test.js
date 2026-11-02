@@ -64,10 +64,10 @@ function loadRunner({failure,rollbackFails=false}={}) {
  const mocks={
   '../config/db':{},fs:{existsSync:()=>true,readFileSync:()=> 'SELECT 1'},path,
   '../utils/migrationConnection':{migrationConnection:async()=>client},
-  '../utils/professionalLeaveSchema':{ensureProfessionalLeaveSchema:async options=>leaveOptions.push(options)},
-  '../utils/professionalPushService':{ensureProfessionalPushSchema:async()=>{}},
-  '../utils/professionalAttendanceBlock':{markAttendanceBlockSchemaReady:()=>ready.push('blocks')},
-  '../utils/professionalPunchCutoff':{markPunchCutoffSchemaReady:()=>ready.push('cutoff')},
+  '../utils/selfAttendanceLeaveSchema':{ensureSelfAttendanceLeaveSchema:async options=>leaveOptions.push(options)},
+  '../utils/selfAttendancePushService':{ensureSelfAttendancePushSchema:async()=>{}},
+  '../utils/selfAttendanceRecordsBlock':{markAttendanceBlockSchemaReady:()=>ready.push('blocks')},
+  '../utils/selfAttendancePunchCutoff':{markPunchCutoffSchemaReady:()=>ready.push('cutoff')},
  };
  const module={exports:{}};
  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../db/migrations.js'),'utf8'),{

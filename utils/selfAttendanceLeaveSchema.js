@@ -1,0 +1,184 @@
+const pool = require("../config/db");
+
+let schemaPromise = null;
+
+const ensureSelfAttendanceLeaveSchema = async ({ expirePending = true } = {}) => {
+  if (!schemaPromise) {
+    schemaPromise = (async () => {
+      const client = await pool.connect();
+      let schemaError;
+      try {
+        await client.query("BEGIN");
+        await client.query("SET LOCAL lock_timeout='5s'");
+        await client.query("SET LOCAL idle_in_transaction_session_timeout='60s'");
+        await client.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+
+        await client.query(`
+          ALTER TABLE self_attendance_employees
+            ADD COLUMN IF NOT EXISTS reminder_time VARCHAR(8) DEFAULT '10:00',
+            ADD COLUMN IF NOT EXISTS reminder_enabled BOOLEAN DEFAULT TRUE;
+        `);
+
+        // Assigned cutoff times drive reminders. Preserve employee opt-out settings.
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_emp_active_reminder
+          ON self_attendance_employees (is_active, reminder_enabled, reminder_time)
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_att_prof_date
+          ON self_attendance_records (self_attendance_id, date)
+        `);
+
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS self_attendance_leave_requests (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            self_attendance_id UUID NOT NULL REFERENCES self_attendance_employees(id) ON DELETE CASCADE,
+            requested_date DATE NOT NULL,
+            leave_type VARCHAR(24) NOT NULL CHECK (leave_type IN ('MEDICAL', 'CASUAL', 'PAID')),
+            reason TEXT,
+            status VARCHAR(16) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+            requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            reviewed_by INTEGER REFERENCES users(user_id),
+            reviewed_at TIMESTAMPTZ,
+            review_note TEXT
+          )
+        `);
+
+        await client.query(`
+          CREATE UNIQUE INDEX IF NOT EXISTS uidx_prof_leave_prof_date
+          ON self_attendance_leave_requests (self_attendance_id, requested_date)
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_leave_status_date
+          ON self_attendance_leave_requests (status, requested_date DESC)
+        `);
+
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS self_attendance_leave_request_logs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            request_id UUID NOT NULL REFERENCES self_attendance_leave_requests(id) ON DELETE CASCADE,
+            action VARCHAR(24) NOT NULL CHECK (action IN ('submitted', 'approved', 'rejected', 'resubmitted')),
+            actor_type VARCHAR(16) NOT NULL CHECK (actor_type IN ('self_attendance', 'supervisor', 'admin', 'system')),
+            actor_user_id INTEGER REFERENCES users(user_id),
+            actor_self_attendance_id UUID REFERENCES self_attendance_employees(id),
+            note TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_leave_logs_request
+          ON self_attendance_leave_request_logs (request_id, created_at DESC)
+        `);
+
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS self_attendance_notifications (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            self_attendance_id UUID NOT NULL REFERENCES self_attendance_employees(id) ON DELETE CASCADE,
+            type VARCHAR(40) NOT NULL,
+            title VARCHAR(160) NOT NULL,
+            message TEXT NOT NULL,
+            metadata JSONB DEFAULT '{}'::jsonb,
+            is_read BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_notifications_prof_read
+          ON self_attendance_notifications (self_attendance_id, is_read, created_at DESC)
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_notifications_reminder_guard
+          ON self_attendance_notifications (
+            self_attendance_id,
+            type,
+            (COALESCE(metadata ->> 'reminder_date', ''))
+          )
+        `);
+
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS self_attendance_holidays (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            holiday_date DATE NOT NULL,
+            holiday_name VARCHAR(120) NOT NULL,
+            description TEXT,
+            city_id INTEGER NOT NULL REFERENCES cities(city_id) ON DELETE CASCADE,
+            zone_id INTEGER REFERENCES zones(zone_id) ON DELETE SET NULL,
+            ward_id INTEGER REFERENCES sectors(sector_id) ON DELETE SET NULL,
+            kothi_id INTEGER REFERENCES wards(ward_id) ON DELETE SET NULL,
+            created_by INTEGER REFERENCES users(user_id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_by INTEGER REFERENCES users(user_id),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+
+        await client.query(`
+          CREATE UNIQUE INDEX IF NOT EXISTS uidx_prof_holidays_scope_date
+          ON self_attendance_holidays (
+            holiday_date,
+            city_id,
+            COALESCE(zone_id, -1),
+            COALESCE(ward_id, -1),
+            COALESCE(kothi_id, -1)
+          )
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_holidays_date_city
+          ON self_attendance_holidays (holiday_date DESC, city_id, zone_id, ward_id, kothi_id)
+        `);
+
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS self_attendance_holiday_logs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            holiday_id UUID,
+            action VARCHAR(24) NOT NULL CHECK (action IN ('created', 'deleted')),
+            actor_user_id INTEGER REFERENCES users(user_id),
+            actor_name VARCHAR(160),
+            holiday_date DATE NOT NULL,
+            holiday_name VARCHAR(120) NOT NULL,
+            description TEXT,
+            city_id INTEGER NOT NULL,
+            zone_id INTEGER,
+            ward_id INTEGER,
+            kothi_id INTEGER,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_prof_holiday_logs_date
+          ON self_attendance_holiday_logs (holiday_date DESC, created_at DESC)
+        `);
+
+        await client.query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/20261015_self_attendance_leave_workflow.sql'), 'utf8'));
+        await client.query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/20261016_self_attendance_leave_expiry.sql'), 'utf8'));
+        await client.query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/20261016_self_attendance_holiday_permissions.sql'), 'utf8'));
+        await client.query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/20261016_self_attendance_hod_leave_approval.sql'), 'utf8'));
+        await client.query("COMMIT");
+      } catch (error) {
+        schemaError=error;
+        if(error.message!=='Query read timeout')try{await client.query('ROLLBACK');}catch(rollbackError){console.error('[Leave Schema] Rollback failed:',rollbackError.message);}
+        throw error;
+      } finally {
+        client.release(schemaError);
+      }
+    })().catch((error) => {
+      schemaPromise = null;
+      throw error;
+    });
+  }
+
+  await schemaPromise;
+  // Catch up before lists, balances and reports are read, even after downtime.
+  if (expirePending) await pool.query('SELECT self_attendance_expire_pending_leaves()');
+};
+
+module.exports = {
+  ensureSelfAttendanceLeaveSchema,
+};

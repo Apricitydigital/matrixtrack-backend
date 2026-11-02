@@ -29,9 +29,9 @@ const appRoutes = require("./appRoutes/index");
 const publicDropdownRoutes = require("./publicDropdownRoutes");
 const publicSelfPunchRoutes = require("./publicSelfPunchRoutes");
 const supervisorSelfPunchRoutes = require("./supervisorSelfPunchRoutes");
-const professionalRoutes = require("./professionalRoutes");
-const professionalReportsRoutes = require("./professionalReportsRoutes");
-const professionalGeofencingAdminRoutes = require("./professionalGeofencingAdminRoutes");
+const selfAttendanceRoutes = require("./selfAttendanceRoutes");
+const selfAttendanceReportsRoutes = require("./selfAttendanceReportsRoutes");
+const selfAttendanceGeofencingAdminRoutes = require("./selfAttendanceGeofencingAdminRoutes");
 const cityCostRoutes = require("./cityCostRoutes");
 
 // Protected Route
@@ -61,24 +61,24 @@ router.use('/attendance/combined',require('./combinedAttendanceRoutes'));
 router.use("/attendance", attendanceRoutes);
 router.use("/supervisor", supervisorRoutes);
 router.use("/supervisor/self-punch", supervisorSelfPunchRoutes);
-router.use("/professional/weekly-off", require('./professionalWeeklyOffRoutes').app);
-router.use('/professional/punch-cutoff', require('./professionalPunchCutoffRoutes'));
-router.use('/professional/team-attendance', require('./professionalTeamAttendanceRoutes'));
-router.use('/professional/register-attendance', require('./registerAttendanceRoutes'));
-router.use('/professional/supervisor-attendance', require('./supervisorAttendanceRoutes'));
+router.use("/self-attendance/weekly-off", require('./selfAttendanceWeeklyOffRoutes').app);
+router.use('/self-attendance/punch-cutoff', require('./selfAttendancePunchCutoffRoutes'));
+router.use('/self-attendance/team-attendance', require('./selfAttendanceTeamAttendanceRoutes'));
+router.use('/self-attendance/register-attendance', require('./registerAttendanceRoutes'));
+router.use('/self-attendance/supervisor-attendance', require('./supervisorAttendanceRoutes'));
 router.use('/attendance-modes', require('./employeeAttendanceModesRoutes'));
-router.use('/admin/professional-punch-settings', require('./professionalPunchSettingsRoutes'));
-router.use('/admin/professional-punch-times', require('./professionalPunchBulkRoutes'));
-router.use("/admin/professional-weekly-off", require('./professionalWeeklyOffRoutes').admin);
-router.use("/professional", professionalRoutes);
+router.use('/admin/self-attendance-punch-settings', require('./selfAttendancePunchSettingsRoutes'));
+router.use('/admin/self-attendance-punch-times', require('./selfAttendancePunchBulkRoutes'));
+router.use("/admin/self-attendance-weekly-off", require('./selfAttendanceWeeklyOffRoutes').admin);
+router.use("/self-attendance", selfAttendanceRoutes);
 
 // Mount reports before the main adminRoutes to bypass strict requireAdmin middleware
 // allowing both admins and supervisors to access these specific reporting endpoints.
-router.use('/admin/professional-holidays',require('./professionalHolidayRoutes'));
-router.use('/admin/professional-employee-blocks',require('./professionalEmployeeBlockRoutes'));
+router.use('/admin/self-attendance-holidays',require('./selfAttendanceHolidayRoutes'));
+router.use('/admin/self-attendance-employee-blocks',require('./selfAttendanceEmployeeBlockRoutes'));
 router.use('/admin/workforce-review',require('./workforceReviewRoutes'));
-router.use("/admin", professionalReportsRoutes);
-router.use("/admin", professionalGeofencingAdminRoutes);
+router.use("/admin", selfAttendanceReportsRoutes);
+router.use("/admin", selfAttendanceGeofencingAdminRoutes);
 
 router.use("/assignedWardRoutes", assignedWardRoutes);
 router.use("/assignedKothiRoutes", assignedKothiRoutes);

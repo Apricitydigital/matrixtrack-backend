@@ -5,32 +5,32 @@ const assert=require('node:assert/strict');
 const {Client}=require('pg');
 const merge=require('../utils/workforceMerge');
 const recovery=require('../utils/workforceMergeRecovery');
-const {retainMergedLogins}=require('../utils/professionalMergeLogin');
+const {retainMergedLogins}=require('../utils/selfAttendanceMergeLogin');
 const {fingerprint,quote}=require('../utils/workforceReview');
 const main='63285616-8cb6-4b0e-b9b0-d6451270350c';
 const duplicate='d4135905-921b-4994-884d-027492e27645';
 const client=new Client({host:process.env.DB_HOST,port:process.env.DB_PORT,user:process.env.DB_USER,password:process.env.DB_PASSWORD,database:process.env.DB_NAME,ssl:{rejectUnauthorized:false},connectionTimeoutMillis:10000,statement_timeout:30000});
 let committedMerge=null;
-async function begin(){await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');await client.query("SET LOCAL lock_timeout='2s'");await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-professional-list'))");}
+async function begin(){await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');await client.query("SET LOCAL lock_timeout='2s'");await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");}
 async function state(){
  const result={};
  const scope=[main,duplicate];
- for(const link of await merge.references(client,'professional')){
+ for(const link of await merge.references(client,'self_attendance')){
   const rows=(await client.query(`SELECT to_jsonb(t) AS row FROM ${quote(link.table)} t WHERE ${quote(link.column)}::text=ANY($1::text[])`,[scope])).rows;
   result[`${link.table}.${link.column}`]=rows.map(row=>fingerprint(row.row)).sort();
  }
  for(const [table,sql,params] of [
-  ['profiles','SELECT to_jsonb(t) AS row FROM professional_employees t WHERE id::text=ANY($1::text[])',[scope]],
-  ['id_aliases',"SELECT to_jsonb(t) AS row FROM workforce_employee_aliases t WHERE employee_kind='professional' AND (source_id=ANY($1::text[]) OR target_id=ANY($1::text[]))",[scope]],
-  ['login_aliases','SELECT to_jsonb(t) AS row FROM workforce_professional_login_aliases t WHERE source_id=ANY($1::text[]) OR target_id::text=ANY($1::text[])',[scope]],
-  ['issues',"SELECT to_jsonb(t) AS row FROM workforce_review_issues t WHERE employee_kind='professional' AND employee_id=ANY($1::text[])",[scope]],
+  ['profiles','SELECT to_jsonb(t) AS row FROM self_attendance_employees t WHERE id::text=ANY($1::text[])',[scope]],
+  ['id_aliases',"SELECT to_jsonb(t) AS row FROM workforce_employee_aliases t WHERE employee_kind='self_attendance' AND (source_id=ANY($1::text[]) OR target_id=ANY($1::text[]))",[scope]],
+  ['login_aliases','SELECT to_jsonb(t) AS row FROM workforce_self_attendance_login_aliases t WHERE source_id=ANY($1::text[]) OR target_id::text=ANY($1::text[])',[scope]],
+  ['issues',"SELECT to_jsonb(t) AS row FROM workforce_review_issues t WHERE employee_kind='self_attendance' AND employee_id=ANY($1::text[])",[scope]],
   ['regular_profiles',"SELECT to_jsonb(t) AS row FROM employee t WHERE emp_id IN (30624,31280)",[]],
   ['regular_attendance',"SELECT to_jsonb(t) AS row FROM attendance t WHERE emp_id IN (30624,31280)",[]],
  ])result[table]=(await client.query(sql,params)).rows.map(row=>fingerprint(row.row)).sort();
  return result;
 }
 async function prepare(){
- const plan=await merge.mergePlan(client,'professional',main,[duplicate]);
+ const plan=await merge.mergePlan(client,'self_attendance',main,[duplicate]);
  assert.equal(plan.profiles.length,2);
  for(const row of plan.profiles)assert.equal(row.full_name.trim().toLowerCase(),'ashu test','Only the explicitly authorized Ashu test profiles may be changed');
  await merge.assertAliasTriggers(client,plan);await recovery.assertRecoveryReady(client,plan);
@@ -46,13 +46,13 @@ async function apply(plan,actor){
  assert.deepEqual(plan.weeklyOff.days,[],'The main account keeps its own weekly-off schedule');
  await merge.moveReferences(client,plan);await retainMergedLogins(client,plan);
  for(const source of plan.profiles.filter(row=>row.id!==main)){
-  await client.query("UPDATE workforce_employee_aliases SET target_id=$1 WHERE employee_kind='professional' AND target_id=$2",[main,source.id]);
-  await client.query("INSERT INTO workforce_employee_aliases(employee_kind,source_id,target_id,emp_code,face_id) VALUES('professional',$1,$2,$3,$4)",[source.id,main,source.emp_code || null,source.face_id || null]);
+  await client.query("UPDATE workforce_employee_aliases SET target_id=$1 WHERE employee_kind='self_attendance' AND target_id=$2",[main,source.id]);
+  await client.query("INSERT INTO workforce_employee_aliases(employee_kind,source_id,target_id,emp_code,face_id) VALUES('self_attendance',$1,$2,$3,$4)",[source.id,main,source.emp_code || null,source.face_id || null]);
  }
- await client.query('DELETE FROM professional_employees WHERE id=$1',[duplicate]);
- assert.deepEqual((await client.query('SELECT week_off_days FROM professional_week_off WHERE professional_id=$1',[main])).rows[0].week_off_days,[]);
+ await client.query('DELETE FROM self_attendance_employees WHERE id=$1',[duplicate]);
+ assert.deepEqual((await client.query('SELECT week_off_days FROM self_attendance_week_off WHERE self_attendance_id=$1',[main])).rows[0].week_off_days,[]);
  await client.query("SELECT set_config('matrixtrack.merge_id','',true)");
- assert.equal((await client.query('SELECT 1 FROM professional_employees WHERE id=$1',[duplicate])).rows.length,0);
+ assert.equal((await client.query('SELECT 1 FROM self_attendance_employees WHERE id=$1',[duplicate])).rows.length,0);
  assert.equal((await client.query('SELECT target_id FROM workforce_employee_aliases WHERE source_id=$1',[duplicate])).rows[0].target_id,main);
  return audit;
 }

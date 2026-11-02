@@ -6,10 +6,10 @@ async function hasRelation(name) {
  if(rows[0]?.available)knownRelations.add(name);
  return Boolean(rows[0]?.available);
 }
-const hasLoginAliases=()=>hasRelation('workforce_professional_login_aliases');
+const hasLoginAliases=()=>hasRelation('workforce_self_attendance_login_aliases');
 async function ensureMergeSchema() {
  const {rows}=await pool.query(`SELECT to_regclass('workforce_employee_aliases') IS NOT NULL
- AND to_regclass('workforce_professional_login_aliases') IS NOT NULL
+ AND to_regclass('workforce_self_attendance_login_aliases') IS NOT NULL
  AND to_regclass('workforce_merge_audit') IS NOT NULL
  AND to_regprocedure('workforce_redirect_employee_reference()') IS NOT NULL
  AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()

@@ -37,7 +37,7 @@ test('photo capabilities are specific to one record, punch type and unchanged ev
 }));
 test('session-check outages fail closed and signed report tokens include mid-shift images',()=>fixture(async({call,access,setUnavailable})=>{
  setUnavailable(true);assert.equal((await call(2)).code,503);
- const records=[{attendance_id:id(101),employee_kind:'regular',punch_in_image:'private-in',mid_shift_punch_in_image:'private-mid'},{attendance_id:'professional:uuid',employee_kind:'professional',punch_in_image:'professional-photo'}];
+ const records=[{attendance_id:id(101),employee_kind:'regular',punch_in_image:'private-in',mid_shift_punch_in_image:'private-mid'},{attendance_id:'self_attendance:uuid',employee_kind:'self_attendance',punch_in_image:'self-attendance-photo'}];
  await access.addAttendanceImageTokens(records);assert.ok(records[0].punch_in_image_token);assert.ok(records[0].mid_shift_punch_in_image_token);assert.equal(records[1].punch_in_image_token,undefined);
  assert.equal((await call(null,{punch_type:'MID_IN',image_access:records[0].mid_shift_punch_in_image_token})).passed,true);
 }));

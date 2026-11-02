@@ -3,7 +3,7 @@ const { requireSupervisor } = require('../middleware/supervisorAccess');
 const authenticate = require('../middleware/authMiddleware');
 const { authorize } = require('../middleware/permissionMiddleware');
 const { attachCityScope } = require('../middleware/cityScope');
-const { requireTransferAdmin, transferRequest } = require('../controllers/professionalTransferController');
+const { requireTransferAdmin, transferRequest } = require('../controllers/selfAttendanceTransferController');
 const {
   getRequests,
   getRequestDetails,
@@ -13,7 +13,7 @@ const {
 } = require('../controllers/supervisorSelfPunchController');
 
 const router = express.Router();
-const { getApprovedList, updateApprovedList, requireListAdmin } = require('../controllers/approvedProfessionalController');
+const { getApprovedList, updateApprovedList, requireListAdmin } = require('../controllers/approvedSelfAttendanceController');
 
 // Apply authentication and supervisor role enforcement to all routes in this file
 router.use(authenticate, requireSupervisor);

@@ -10,8 +10,8 @@ const {getSignedS3Url}=require('../utils/s3SelfPunch');
 router.use(authenticate,attachKothiScope,attachCityScope,requireCityScope(),authorize('attendance_reports','view'));
 const selectType=(req,res,next)=>{
  req.reportEmployeeType=req.query.employeeType || req.body?.employeeType || 'all';
- if(!['all','regular','professional'].includes(req.reportEmployeeType))return res.status(400).json({error:'Invalid employee type.'});
- return req.reportEmployeeType==='regular'?next():authorize('professional-attendance','view')(req,res,next);
+ if(!['all','regular','self_attendance'].includes(req.reportEmployeeType))return res.status(400).json({error:'Invalid employee type.'});
+ return req.reportEmployeeType==='regular'?next():authorize('self-attendance-records','view')(req,res,next);
 };
 async function report(req,res) {
  let client;
@@ -26,10 +26,10 @@ async function report(req,res) {
   const rows=[];
   const deadline=Date.now()+60000;
   let recordCount=0;
-  for(const kind of ['regular','professional']) {
+  for(const kind of ['regular','self_attendance']) {
    if(req.reportEmployeeType!=='all' && req.reportEmployeeType!==kind)continue;
    const query=reportQuery(kind,{...range,zoneId:filters.zoneId,sectorId:filters.sectorId,user:req.user,cityScope:req.cityScope,
-    cities:intersect(getPermissionCityFilter(req,kind==='regular'?'attendance_reports':'professional-attendance','view'),filters.cityId===null?null:[filters.cityId]),
+    cities:intersect(getPermissionCityFilter(req,kind==='regular'?'attendance_reports':'self-attendance-records','view'),filters.cityId===null?null:[filters.cityId]),
     sites:intersect(req.kothiScope?.all?null:req.kothiScope?.ids || [],filters.sites)});
    await client.query(`DECLARE attendance_report_cursor NO SCROLL CURSOR FOR ${query.sql}`,query.params);
    while(true){
@@ -48,8 +48,8 @@ async function report(req,res) {
   await require('../utils/attendanceImageAccess').addAttendanceImageTokens(result.records);
   await require('../utils/supervisorAttendancePhotos').signSupervisorAttendancePhotos(result.records,pool,getSignedS3Url);
   // Sign only actual punch photos, in bounded batches; no regular-image endpoint
-  // receives a professional UUID. No biometric/profile data is returned here.
-  const photos=result.records.filter(row=>row.employee_kind==='professional');
+  // receives a self_attendance UUID. No biometric/profile data is returned here.
+  const photos=result.records.filter(row=>row.employee_kind==='self_attendance');
   for(let i=0;i<photos.length;i+=20)await Promise.all(photos.slice(i,i+20).map(async row=>{
    if(row.punch_in_image)row.punch_in_image_url=await getSignedS3Url(row.punch_in_image,900);
    if(row.punch_out_image)row.punch_out_image_url=await getSignedS3Url(row.punch_out_image,900);

@@ -23,7 +23,7 @@ const normalizeIndianPhone = (phoneRaw = '') => {
 const contextTemplateEnvMap = {
   'self-punch-approve': 'AWS_SNS_TEMPLATE_ID_SELF_PUNCH_APPROVE',
   'self-punch-reject': 'AWS_SNS_TEMPLATE_ID_SELF_PUNCH_REJECT',
-  professional_otp_login: 'AWS_SNS_TEMPLATE_ID_PROFESSIONAL_OTP',
+  self_attendance_otp_login: 'AWS_SNS_TEMPLATE_ID_SELF_ATTENDANCE_OTP',
   supervisor_otp_login: 'AWS_SNS_TEMPLATE_ID_SUPERVISOR_OTP'
 };
 
@@ -37,7 +37,7 @@ const resolveTemplateIdForContext = (context) => {
 };
 
 const isOtpContext = (context = '') =>
-  ['professional_otp_login', 'supervisor_otp_login'].includes(String(context || '').trim());
+  ['self_attendance_otp_login', 'supervisor_otp_login'].includes(String(context || '').trim());
 
 const buildSnsMessageAttributes = (context = 'general') => {
   const attributes = {};

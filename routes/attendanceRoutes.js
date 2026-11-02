@@ -224,12 +224,17 @@ router.get("/short-report", async (req, res) => {
       params.push(scope.ids.map(Number).filter((id) => !isNaN(id)));
       extraClause += ` AND c.city_id = ANY($${params.length})`;
     }
+    if (!req.kothiScope?.all) {
+      params.push(req.kothiScope?.ids || []);
+      extraClause += ` AND w.ward_id = ANY($${params.length}::int[])`;
+    }
 
     const { rows } = await pool.query(
       `SELECT
     c.city_name,
     z.zone_name,
-    s.sector_name AS ward_name,
+    w.ward_id,
+    w.ward_name AS ward_name,
     w.ward_name AS kothi_name,
 
     COALESCE(sup.supervisor_names, '') AS supervisor_names,
