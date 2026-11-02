@@ -1,11 +1,12 @@
 name: Backend Deploy (EC2)
 
 on:
-  push:
-    branches: [ main ]
+  # Keep production deployment manual until payroll/export and cutover checks pass.
+  workflow_dispatch:
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
