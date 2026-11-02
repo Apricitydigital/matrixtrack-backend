@@ -33,3 +33,20 @@ scratch/dry_run_group_punch.js
 
 
 manual_attendance_log.js
+
+# Local troubleshooting artifacts and obsolete bootstrap scripts
+.expo/
+*.bak
+*.backup-*
+/debug*.js
+/kill_and_setup.js
+/create-admin-user.js
+/create-supervisor-user.js
+/server.out
+/server.err
+/multi_faces_report.*
+/all_s3_keys.txt
+/all_face_folders.txt
+/diff_*.txt
+/*_results.txt
+/patch.diff
