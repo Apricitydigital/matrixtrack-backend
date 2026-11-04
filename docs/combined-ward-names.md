@@ -1,12 +1,19 @@
 # Automatic combined Ward names
 
-The Ward retirement CLI now automatically writes **old Sector name + physical
+The Ward retirement CLI now automatically writes **old Sector name, physical
 Ward name** into `wards.ward_name`. For example `Human Matrix` + `Solaris` becomes
-`Human Matrix + Solaris`. This is a label change; it does not merge or renumber
+`Human Matrix, Solaris`. This is a label change; it does not merge or renumber
 physical Wards. `wards.ward_id`, `employee.ward_id`, Self Attendance `kothi_id`,
 employee identities, attendance rows and stored historical location snapshots
 are preserved. No frontend name parsing is required: active views already read
 the physical Ward master name.
+
+New combined labels use a comma followed by a space. Already-prefixed comma or
+legacy plus labels are recognized without adding a second prefix. Bulk import
+accepts original names and the legacy `Sector + Ward` spelling for comma-combined
+labels. A separator correction on an already migrated database must update the
+current master and its saved `combined_name` together, while retaining the
+original name and a separate record of the previous combined label.
 
 ## Rules and guards
 

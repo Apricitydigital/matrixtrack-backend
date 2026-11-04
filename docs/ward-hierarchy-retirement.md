@@ -1,7 +1,7 @@
 # City → Zone → Ward rollout
 
 The physical `wards.ward_id` remains unchanged. The migration CLI automatically
-combines the old Sector label and physical Ward label as `Sector + Ward` before
+combines the old Sector label and physical Ward label as `Sector, Ward` before
 retiring the Sector link, in the same transaction. The former Kothi is now called
 Ward. The intermediate Sector is retired from active master setup, registration,
 employee forms, transfer and report filters. See [combined-name details and
@@ -10,7 +10,7 @@ production commands](combined-ward-names.md).
 | Storage | Meaning after cutover |
 | --- | --- |
 | `wards.ward_id`, `wards.zone_id` | Existing physical Ward ID and direct Zone; unchanged |
-| `wards.ward_name` | Automatically combined `Sector + Ward` name; exact approved map checked |
+| `wards.ward_name` | Automatically combined `Sector, Ward` name; exact approved map checked |
 | `ward_name_retirement_backup` | Original/combined names for rerun, import aliases and rollback |
 | `wards.sector_id` | NULL, enforced by `wards_retired_sector_null` |
 | `employee.ward_id` | Existing physical Ward; unchanged and still required |

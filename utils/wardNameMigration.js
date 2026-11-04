@@ -3,8 +3,9 @@ const clean = value => String(value ?? '').trim().replace(/\s+/g, ' ');
 const key = value => clean(value).toLowerCase();
 // Skip cosmetic repeats such as "Head Office - HMS" / "Head Office- HMS".
 // This normalization is only for prefix detection, never for IDs or SQL names.
-const labelKey = value => key(value).replace(/\s*[-–—]\s*/g,'-').replace(/\s*\+\s*/g,'+');
+const labelKey = value => key(value).replace(/\s*[-–—]\s*/g,'-').replace(/\s*\+\s*/g,'+').replace(/\s*,\s*/g,',');
 const length = value => Array.from(String(value ?? '')).length;
+const separator = ', ';
 const backupTable = 'ward_name_retirement_backup';
 const exists = async (db, name) => Boolean((await db.query('SELECT to_regclass($1) IS NOT NULL AS present', ['public.' + name])).rows[0]?.present);
 
@@ -72,7 +73,7 @@ function validateNames(plan, meta) {
 
 async function previewWardNames(db, {restore=false}={}) {
   const meta=await metadata(db), saved=new Map(meta.backups.map(row=>[String(row.ward_id),row]));
-  const plan={operation:restore?'RESTORE_NAMES':'COMBINE_NAMES',separator:' + ',valid:true,issues:[],rows:[]};
+  const plan={operation:restore?'RESTORE_NAMES':'COMBINE_NAMES',separator,valid:true,issues:[],rows:[]};
   const add = (type,row,detail) => plan.issues.push({type,ward_id:row.ward_id,detail});
   for (const ward of meta.rows) {
     const old=saved.get(String(ward.ward_id));
@@ -108,8 +109,9 @@ async function previewWardNames(db, {restore=false}={}) {
     if (ward.parent_id==null || ward.parent_zone_id!==ward.zone_id) {add('invalid_parent',row,'Sector is missing or belongs to a different Zone');continue;}
     const parent=clean(ward.sector_name), child=clean(ward.ward_name);
     if (!parent || !child) {add('blank_name',row,'Both Sector and Ward names are required for combining');continue;}
-    if (labelKey(child)===labelKey(parent) || labelKey(child).startsWith(labelKey(parent)+'+')) {row.action='keep_already_combined';continue;}
-    row.proposed_name=parent+' + '+child;row.action='rename';
+    const parentKey=labelKey(parent),childKey=labelKey(child);
+    if (childKey===parentKey || ['+',','].some(join=>childKey.startsWith(parentKey+join))) {row.action='keep_already_combined';continue;}
+    row.proposed_name=parent+separator+child;row.action='rename';
   }
   for (const old of meta.backups.filter(row=>row.active)) if (!meta.rows.some(row=>String(row.ward_id)===String(old.ward_id)))
     plan.issues.push({type:'missing_saved_ward',ward_id:old.ward_id,detail:'A renamed Ward was removed; review its saved mapping'});
@@ -167,12 +169,17 @@ async function applyWardNamePlan(db,plan) {
 // import's normal single-location check. Rollback workbooks remain readable too.
 async function attachWardImportAliases(db,locations) {
   if (!locations.length || !await exists(db,backupTable)) return locations;
-  const rows=(await db.query(`SELECT b.ward_id,
+  const rows=(await db.query(`SELECT b.ward_id,b.sector_name,b.original_name,b.combined_name,
     CASE WHEN b.active THEN b.original_name ELSE b.combined_name END AS alias
     FROM ${backupTable} b JOIN wards w USING(ward_id)
     WHERE b.ward_id=ANY($1::int[]) AND b.zone_id=w.zone_id
     AND w.ward_name=CASE WHEN b.active THEN b.combined_name ELSE b.original_name END`,[locations.map(row=>row.kothi_id)])).rows;
-  const aliases=new Map(rows.map(row=>[String(row.ward_id),[row.alias]]));
+  const aliases=new Map(rows.map(row=>{
+    const values=[row.alias],parent=clean(row.sector_name),child=clean(row.original_name);
+    if(parent&&child&&row.combined_name===parent+separator+child)values.push(parent+' + '+child);
+    return [String(row.ward_id),[...new Set(values)]];
+  }));
   return locations.map(row=>aliases.has(String(row.kothi_id))?{...row,kothi_aliases:aliases.get(String(row.kothi_id))}:row);
 }
-module.exports={previewWardNames,assertValidNamePlan,nameOverrides,applyWardNamePlan,attachWardImportAliases};
+async function validateWardNamePlan(db,plan) { return validateNames(plan,await metadata(db)); }
+module.exports={previewWardNames,assertValidNamePlan,nameOverrides,applyWardNamePlan,attachWardImportAliases,validateWardNamePlan};

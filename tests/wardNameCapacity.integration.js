@@ -22,7 +22,7 @@ test('capacity widens 100 to 255 while preserving every business/view row, ACL, 
   assert.equal((await previewWardNames(adapter(db))).valid,true);
   const applied=await retireSectorMemberships(adapter(db),()=>{},{combineWardNames:true,requireCompleteSchema:true});await db.exec('COMMIT');
   assert.deepEqual(applied.expectedAfter,applied.after);assert.deepEqual(await protectedRows(db),before);
-  const name='P'.repeat(95)+' + Solaris';assert.equal((await db.query('SELECT ward_name,kothi_name FROM attendance_dashboard_view WHERE kothi_id=1008')).rows[0].ward_name,name);
+  const name='P'.repeat(95)+', Solaris';assert.equal((await db.query('SELECT ward_name,kothi_name FROM attendance_dashboard_view WHERE kothi_id=1008')).rows[0].ward_name,name);
   assert.equal((await db.query("SELECT has_table_privilege('payroll_reader','attendance_dashboard_view','SELECT') AS allowed")).rows[0].allowed,true);
   assert.equal((await db.query("SELECT obj_description('attendance_dashboard_view'::regclass,'pg_class') AS comment")).rows[0].comment,'payroll view');
   assert.ok((await db.query("SELECT reloptions FROM pg_class WHERE oid='attendance_dashboard_view'::regclass")).rows[0].reloptions.includes('security_barrier=true'));
