@@ -60,6 +60,7 @@ async function main() {
       '../utils/selfAttendanceWeeklyOff': { todayIST: () => '2026-10-15' },
       '../utils/regularTeamAttendance':require('../utils/regularTeamAttendance'),
       '../utils/combinedTeamAttendance':require('../utils/combinedTeamAttendance'),
+      '../utils/teamAttendanceEmployeeSummary':require('../utils/teamAttendanceEmployeeSummary'),
     });
     async function request(actor, query = {}, url = '/') {
       const req = { self_attendance: { self_attendance_id: id(actor) }, query };
@@ -117,6 +118,31 @@ async function main() {
     assert.equal((await request(1,{employeeType:'all',search:'Outside'})).body.total,0);
     assert.equal((await request(1,{employeeType:'all',site:'2'})).code,403);
     assert.equal((await request(1,{employeeType:'invalid'})).code,400);
+    const grouped=await request(1,{month:'2026-10',view:'employees'});
+    assert.equal(grouped.code,200);assert.equal(grouped.body.view,'employees');assert.equal(grouped.body.total,2);
+    const person=grouped.body.data.find(r=>r.employee_kind==='self_attendance');
+    assert.equal(person.days.length,31,'Employee details must cover the full month, beyond daily pagination');
+    assert.equal(person.working_days,12,'Exclude future dates, weekly offs and holiday from elapsed working days');
+    assert.equal(person.attended_days,1,'Pending and rejected punch attempts are not attendance');
+    assert.equal(person.pending_days,2);assert.equal(person.leave_days,1);assert.equal(person.absent_days,7);
+    const punch=person.days.find(d=>d.date==='2026-10-15');
+    assert.equal(punch.site_name,'Assigned');assert.ok(punch.punch_in);assert.ok(punch.punch_out);
+    assert.equal(grouped.body.data.find(r=>r.employee_kind==='regular').days.length,31);
+    assert.equal((await request(1,{month:'2026-10',view:'employees',employeeType:'regular'})).body.total,1);
+    assert.equal((await request(1,{month:'2026-10',view:'employees',site:'2'})).code,403);
+    assert.equal((await request(1,{month:'2026-10',view:'employees',search:'Outside'})).body.total,0);
+    const half=await request(1,{month:'2026-09',view:'employees',search:'E001'});
+    assert.equal(half.body.data[0].attended_days,1);assert.equal(half.body.data[0].half_days,1);
+    const singleDay=await request(1,{month:'2026-10',view:'employees',date:'2026-10-15'});
+    assert.ok(singleDay.body.data.every(r=>r.working_days===1&&r.attended_days===1&&r.days.length===1));
+    assert.equal((await request(1,{view:'invalid'})).code,400);
+    await db.exec(`INSERT INTO employee(emp_id,name,emp_code,ward_id)
+      SELECT n,'Worker '||n,'CODE'||n,1 FROM generate_series(20,70) n`);
+    const firstEmployees=await request(1,{month:'2026-10',view:'employees'});
+    const secondEmployees=await request(1,{month:'2026-10',view:'employees',page:2});
+    assert.equal(firstEmployees.body.total,53);assert.equal(firstEmployees.body.data.length,50);assert.equal(secondEmployees.body.data.length,3);
+    assert.equal(new Set([...firstEmployees.body.data,...secondEmployees.body.data].map(r=>r.employee_kind+':'+r.employee_id)).size,53);
+    assert.ok([...firstEmployees.body.data,...secondEmployees.body.data].every(r=>r.days.length===31));
     console.log('Team attendance: role access, site isolation, historical months, inactive history, statuses, filters and pagination passed.');
   } finally { await db.close(); }
 }

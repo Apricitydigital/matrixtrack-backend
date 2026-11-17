@@ -33,6 +33,8 @@ router.get('/sites', wrap(async (req, res) => {
 
 router.get('/', wrap(async (req, res) => {
   const employeeType=req.query.employeeType||'all';
+  const view=req.query.view||'records';
+  if(!['records','employees'].includes(view))return res.status(400).json({success:false,message:'Choose a valid attendance view.'});
   if(!['all','regular','self_attendance'].includes(employeeType))return res.status(400).json({success:false,message:'Choose an employee type.'});
   const today = todayIST();
   const month = req.query.month || today.slice(0, 7);
@@ -54,8 +56,9 @@ router.get('/', wrap(async (req, res) => {
   const start = `${month}-01`;
   if(employeeType==='regular'){
     const query=require('../utils/regularTeamAttendance').regularTeamAttendanceQuery([req.self_attendance.self_attendance_id,start,site||null,day||null,search,today,(page-1)*50]);
-    const result=await pool.query(query.sql,query.params);
-    return res.json({success:true,...result.rows[0],page,page_size:50,month});
+    const selected=view==='employees'?require('../utils/teamAttendanceEmployeeSummary').employeeSummaryQuery([query.cte],query.params):query;
+    const result=await pool.query(selected.sql,selected.params);
+    return res.json({success:true,...result.rows[0],page,page_size:50,month,view});
   }
   // Every employee/date pair is included, so missing punches remain visible.
   // Identity matching by phone/email is deliberately avoided: it could cross site boundaries.
@@ -89,6 +92,13 @@ router.get('/', wrap(async (req, res) => {
     WHERE ($4::date IS NULL OR d::date=$4::date)
   )`;
   const params = [req.self_attendance.self_attendance_id,start,site || null,day || null,search,today];
+  if(view==='employees'){
+    const ctes=[cte];
+    if(employeeType==='all')ctes.push(require('../utils/regularTeamAttendance').regularTeamAttendanceQuery([...params,(page-1)*50]).cte);
+    const query=require('../utils/teamAttendanceEmployeeSummary').employeeSummaryQuery(ctes,[...params,(page-1)*50]);
+    const result=await pool.query(query.sql,query.params);
+    return res.json({success:true,...result.rows[0],page,page_size:50,month,view});
+  }
   if(employeeType==='all'){
     const regular=require('../utils/regularTeamAttendance').regularTeamAttendanceQuery([...params,(page-1)*50]);
     const query=require('../utils/combinedTeamAttendance').combinedTeamAttendanceQuery(cte,regular.cte,[...params,(page-1)*50]);

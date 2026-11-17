@@ -11,3 +11,12 @@ Site access follows each employee's current site assignment, matching the existi
 API: `GET /api/self-attendance/team-attendance/sites`; `GET /api/self-attendance/team-attendance?month=YYYY-MM&site=ID&date=YYYY-MM-DD&search=TEXT&page=1`. All filters except month are optional; month defaults to the current IST month. No write endpoint is exposed.
 
 Verification: `node tests/selfAttendanceTeamAttendance.integration.js` uses isolated PGlite and never connects to live data. It covers all allowed roles, ordinary-user denial, site isolation, duplicate site assignments, invalid filters, inactive historical records, day/name/code filtering, pagination, and attendance statuses.
+
+
+## Employee monthly summary
+
+The app requests `view=employees` on the same endpoint. All existing role, site, month, date, name/code and employee-type filters still apply. Old clients omit this parameter and continue receiving daily records. The new view paginates 50 employees, grouped by employee kind and ID, after processing the entire scoped month. Every employee includes all matching daily rows (including upcoming dates), so opening details needs no additional pagination or request.
+
+`working_days` counts distinct dates through today IST, excluding dates classified as weekly-off, holiday or upcoming by the existing source report. Regular attendance retains its existing calendar rules; no new off-day, holiday, join-date or payroll entitlement rules are introduced. `attended_days` counts distinct Present and Half-day dates through today; half-days are also shown separately. Pending/rejected attempts do not count as attended. Approved leave, absent and pending counts are separate. These are attendance-report counts, not payable-day calculations. Site names reflect current assignments, as in the existing daily report, not a historical transfer ledger.
+
+No schema migration or attendance mutation is required. Deploy this backward-compatible backend addition before distributing the app build.
