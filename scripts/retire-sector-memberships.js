@@ -10,12 +10,13 @@ const {validateMigrationArguments}=require('../utils/migrationArguments');
 async function main(args=process.argv.slice(2),{ClientType=Client,reportDirectory=path.resolve(__dirname,'../../outputs'),log=console.log}={}) {
   validateMigrationArguments(args);
   if(args.includes('--help')){
-    log('Usage: node scripts/retire-sector-memberships.js --expected-host=HOST --expected-database=DATABASE [--env-file=PATH] [--preview-names | --apply] [--rollback | --include-self-attendance-rename] [--report=PATH]. Apply also requires --compatible-code-deployed --maintenance-confirmed --payroll-export-verified after actual HR-sheet verification. Default mode rehearses and rolls back.');
+    log('Usage: node scripts/retire-sector-memberships.js --expected-host=HOST --expected-database=DATABASE [--env-file=PATH] [--preview-names | --apply] [--rollback | --include-self-attendance-rename] [--archive-unused-canonical] [--report=PATH]. Shadow archival requires the naming phase and does not bypass DMS guards. Apply also requires --compatible-code-deployed --maintenance-confirmed --payroll-export-verified after actual HR-sheet verification. Default mode rehearses and rolls back.');
     return {mode:'HELP'};
   }
   const apply=args.includes('--apply'),preview=args.includes('--preview-names'),rollback=args.includes('--rollback');
   if(apply&&preview)throw Error('--preview-names is read-only and cannot be combined with --apply');
   if(rollback&&args.includes('--include-self-attendance-rename'))throw Error('Rollback does not reverse the Self Attendance table rename');
+  if(args.includes('--archive-unused-canonical')&&(rollback||(!preview&&!args.includes('--include-self-attendance-rename'))))throw Error('--archive-unused-canonical requires the naming migration or a read-only preview');
   const target=loadMigrationTarget(args);
   if(apply&&!args.includes('--compatible-code-deployed'))throw Error('Prepare the compatible backend/web/app before applying; rehearsal uses ROLLBACK.');
   if(apply&&!args.includes('--payroll-export-verified'))throw Error('Actual HR export/salary-sheet matching must be verified before apply; --payroll-export-verified is an operator acknowledgement, not an automated salary certification');
@@ -33,11 +34,18 @@ async function main(args=process.argv.slice(2),{ClientType=Client,reportDirector
       result.capacityPlan=await previewWardNameCapacity(client,result);
       result.validAfterPlannedCapacity=result.capacityPlan.valid&&result.issues.every(issue=>issue.type==='name_too_long');
       result.ddlEventTriggers=(await client.query("SELECT evtname,evtenabled FROM pg_event_trigger WHERE evtenabled<>'D' ORDER BY evtname")).rows;
+      if(args.includes('--archive-unused-canonical'))result.shadowSchema=await require('../utils/selfAttendanceShadowSchema').inspectShadowSchema(client);
       result.databasePreflightReady=result.validAfterPlannedCapacity&&result.ddlEventTriggers.length===0;
+      if(result.shadowSchema?.issues.length)result.databasePreflightReady=false;
       result.readyForApply=result.databasePreflightReady&&args.includes('--payroll-export-verified');
       result.externalPayrollContract='Actual HR export/salary-sheet matching not verified by this preview';
     }else if(rollback)result=await restoreSectorMemberships(client,message=>log(message),{verifyPayrollInputs:true});
     else{
+      let shadowArchive=null;
+      if(args.includes('--archive-unused-canonical')){
+        if((await client.query("SELECT evtname FROM pg_event_trigger WHERE evtenabled<>'D'")).rows.length)throw Error('Review enabled database event triggers before shadow archival; DMS guards remain enforced');
+        shadowArchive=await require('../utils/selfAttendanceShadowSchema').archiveShadowSchema(client,{schema:'self_attendance_shadow_cutover'});
+      }
       const naming=args.includes('--include-self-attendance-rename')?await require('../utils/selfAttendanceRenameMigration').renameSelfAttendance(client):null;
       const names=await previewWardNames(client);
       if(names.issues.some(issue=>issue.type!=='name_too_long'))require('../utils/wardNameMigration').assertValidNamePlan(names);
@@ -46,6 +54,7 @@ async function main(args=process.argv.slice(2),{ClientType=Client,reportDirector
       result=await retireSectorMemberships(client,message=>log(message),{requireCompleteSchema:true,combineWardNames:true});
       result.capacity=capacity;
       result.naming=naming;
+      if(shadowArchive)result.shadowArchive=shadowArchive;
     }
     if(apply){
       commitState='requested';

@@ -1,5 +1,5 @@
 'use strict';
-function validateMigrationArguments(args,{flags=['--apply','--preview-names','--rollback','--compatible-code-deployed','--maintenance-confirmed','--include-self-attendance-rename','--payroll-export-verified','--help']}={}){
+function validateMigrationArguments(args,{flags=['--apply','--preview-names','--rollback','--compatible-code-deployed','--maintenance-confirmed','--include-self-attendance-rename','--archive-unused-canonical','--payroll-export-verified','--help']}={}){
  const allowed=new Set(flags),values=new Set(['--env-file','--expected-host','--expected-database','--report']),seen=new Set();
  for(const arg of args){
   if(typeof arg!=='string'||!arg.startsWith('--'))throw Error('Unknown migration argument; use --help');

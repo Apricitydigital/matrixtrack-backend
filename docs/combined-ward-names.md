@@ -72,6 +72,19 @@ Zone there; this feature does not silently substitute a Zone prefix.
 
 ## Production procedure
 
+If an earlier startup created both legacy and canonical tables, first inspect
+`--preview-names --archive-unused-canonical`. The optional
+`--include-self-attendance-rename --archive-unused-canonical` phase archives the
+unused canonical tables, singleton settings, unassigned duplicate permissions
+and unused duplicate department/designation configuration in the private
+`self_attendance_shadow_cutover` schema. It keeps their original contents and
+table identities, plus an operation journal. Active employee/designation IDs,
+permission IDs and user/role grants remain unchanged. Assigned canonical data,
+external references, unsupported dependencies or preview drift block the step.
+This archive and the normal naming/Ward cutover share one transaction; any
+failure rolls both back. The option never disables or bypasses a DMS trigger.
+Archive schemas are retained for recovery and must not be used by the app.
+
 Prepare a separate secure `.env.production` file, or use the deployment environment.
 Replace `PROD_HOST` and `PROD_DB` below with the exact intended target. Do not copy
 dev rows/dumps into production. These commands do not run automatically on server
