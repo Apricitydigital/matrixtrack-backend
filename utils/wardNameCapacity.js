@@ -70,11 +70,12 @@ async function previewWardNameCapacity(db,namePlan){
  return plan;
 }
 
-async function applyWardNameCapacity(db,plan){
+async function applyWardNameCapacity(db,plan,{dmsReview}={}){
  if(!plan.required)return {changed:false,targetLength:plan.targetLength};
  if(!plan.valid)throw Error('Ward capacity plan requires review: '+plan.issues.join('; '));
  await db.query("SET LOCAL lock_timeout='5s'");
- if((await db.query("SELECT 1 FROM pg_event_trigger WHERE evtenabled<>'D' LIMIT 1")).rows.length)throw Error('Review DDL event triggers before Ward capacity migration');
+ if(!dmsReview&&(await db.query("SELECT 1 FROM pg_event_trigger WHERE evtenabled<>'D' LIMIT 1")).rows.length)throw Error('Review DDL event triggers before Ward capacity migration');
+ await require('./dmsCutoverGuard').assertEventTriggerSafety(db,dmsReview);
  if((await db.query("SELECT 1 FROM pg_trigger WHERE tgrelid='public.wards'::regclass AND NOT tgisinternal AND tgenabled<>'D' LIMIT 1")).rows.length)throw Error('Review Ward triggers before capacity migration');
  if((await db.query("SELECT to_regclass('public.ward_name_capacity_backup') AS backup")).rows[0].backup)throw Error('Capacity backup already exists but schema is narrow; review instead of overwriting it');
  const {available,fingerprint}=require('./sectorRetirement');

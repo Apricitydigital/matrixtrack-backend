@@ -113,10 +113,9 @@ async function digest(db,table,columns) {
     md5(COALESCE(string_agg(row_hash,'' ORDER BY row_hash),'')) AS digest FROM
     (SELECT md5((${row})::text) AS row_hash FROM ${qualified(table)} t) rows`)).rows[0];
 }
-async function renameSelfAttendance(db,{onStep = () => {}} = {}) {
+async function renameSelfAttendance(db,{onStep = () => {},dmsReview} = {}) {
   // Caller owns BEGIN/COMMIT. Failure must roll back the entire operation.
-  if((await db.query("SELECT evtname FROM pg_event_trigger WHERE evtenabled<>'D'")).rows.length)
-    throw Error('Review enabled database event triggers before naming migration.');
+  await require('./dmsCutoverGuard').assertEventTriggerSafety(db,dmsReview);
   await db.query("SELECT pg_advisory_xact_lock(hashtext('matrixtrack-self-attendance-rename-v1'))");
   const schema = await catalog(db);
   const oldTables = schema.relations.filter(r=>['r','p'].includes(r.relkind)&&/professional/i.test(r.relname));

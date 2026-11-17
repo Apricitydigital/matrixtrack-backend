@@ -16,7 +16,9 @@ test('real migration CLI entry point previews read-only, rehearses/rolls back, a
   assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,'Solaris');
   assert.equal((await db.query("SELECT to_regclass('ward_name_retirement_backup') AS name")).rows[0].name,null);
   const applyFlags=['--apply','--maintenance-confirmed','--compatible-code-deployed','--payroll-export-verified'];
-  const applied=await main([...args,...applyFlags],opts);assert.equal(applied.combinedNames,3);assert.equal(applied.mode,'APPLIED');
+  const applied=await main([...args,...applyFlags.filter(flag=>flag!=='--payroll-export-verified'),'--accept-unverified-payroll-workbook'],opts);assert.equal(applied.combinedNames,3);assert.equal(applied.mode,'APPLIED');
+  assert.equal(applied.payrollExportAcknowledged,false);assert.equal(applied.externalPayrollWorkbookRiskAccepted,true);assert.equal(applied.payrollInputsVerified,true);
+  await assert.rejects(main([...args,...applyFlags,'--accept-unverified-payroll-workbook'],opts),/not both/);
   const restorePreview=await main([...args,'--preview-names','--rollback'],opts);assert.equal(restorePreview.changedNames,3);
   const restored=await main([...args,'--rollback',...applyFlags],opts);assert.equal(restored.restoredNames,3);
   assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,'Solaris');assert.deepEqual(await protectedRows(db),before);

@@ -85,6 +85,29 @@ This archive and the normal naming/Ward cutover share one transaction; any
 failure rolls both back. The option never disables or bypasses a DMS trigger.
 Archive schemas are retained for recovery and must not be used by the app.
 
+`--review-inactive-dms` supports only the exact reviewed AWS DDL audit function
+when fresh AWS CLI calls identify the owning RDS account/region and find no
+classic, serverless or homogeneous migrations. Set the intended `AWS_PROFILE`
+and `AWS_REGION` for those calls. The database must also have no replication
+slots/senders, and its DMS audit table must be empty. The trigger stays enabled;
+its definition/state and the audit table are checked through the cutover.
+Unknown triggers, function changes, migration resources or existing audit rows
+still block. Non-preview use requires maintenance confirmation and no other DB
+clients. This option does not change RDS system-object ownership or privileges.
+
+If the operator explicitly accepts proceeding without an actual external salary
+workbook comparison, `--accept-unverified-payroll-workbook` is the alternative to
+`--payroll-export-verified`; the two cannot be combined. The report records
+unverified-workbook risk acceptance separately and never labels it verified.
+All user/attendance fingerprints, access checks and employee-month payroll-input
+comparisons remain mandatory. This decision must be made before maintenance:
+changed Ward labels may affect external name-based formulas even when every
+employee, punch and payable input is preserved.
+
+The explicit Ward CLI permits up to ten minutes per database statement for full
+history/view fingerprints; writer lock acquisition still fails after five
+seconds. This timeout is separate from normal API query limits.
+
 Prepare a separate secure `.env.production` file, or use the deployment environment.
 Replace `PROD_HOST` and `PROD_DB` below with the exact intended target. Do not copy
 dev rows/dumps into production. These commands do not run automatically on server

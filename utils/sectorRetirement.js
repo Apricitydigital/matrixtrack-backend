@@ -77,12 +77,12 @@ async function fingerprintWards(client,overrides=[]) {
     md5(COALESCE(string_agg(h,'' ORDER BY h),'')) AS checksum FROM
     (SELECT md5((to_jsonb(w)-'sector_id')::text) AS h FROM wards w) rows`)).rows[0];
 }
-async function lockProtectedData(client,tables) {
+async function lockProtectedData(client,tables,dmsReview) {
   const names=[...new Set([...tables,'wards'])].sort();
   await client.query(`LOCK TABLE ${names.map(name=>'public."'+name.replace(/"/g,'""')+'"').join(',')} IN SHARE ROW EXCLUSIVE MODE`);
-  if((await client.query("SELECT evtname FROM pg_event_trigger WHERE evtenabled<>'D'")).rows.length)fail('Review enabled database event triggers before migration; protected rows must not be modified by DDL.');
+  await require('./dmsCutoverGuard').assertEventTriggerSafety(client,dmsReview);
 }
-async function retireSectorMemberships(client, progress=()=>{}, {requireCompleteSchema=false,combineWardNames=false}={}) {
+async function retireSectorMemberships(client, progress=()=>{}, {requireCompleteSchema=false,combineWardNames=false,dmsReview}={}) {
   await client.query("SET LOCAL lock_timeout='5s'");
   // Stop concurrent parent edits; other table snapshots stay consistent when the
   // runner opens REPEATABLE READ. A concurrent write conflict aborts safely.
@@ -93,7 +93,7 @@ async function retireSectorMemberships(client, progress=()=>{}, {requireComplete
     const missing=required.filter(name=>!tables.includes(name));
     if(missing.length)fail('Complete production preservation checks require tables: '+missing.join(', '));
   }
-  await lockProtectedData(client,tables);
+  await lockProtectedData(client,tables,dmsReview);
   const triggers=(await client.query("SELECT tgname FROM pg_trigger WHERE tgrelid='wards'::regclass AND NOT tgisinternal AND tgenabled<>'D'")).rows;
   if(triggers.length)fail('Review enabled Ward triggers before retirement; history must have no indirect write path.');
   const invalid=(await client.query(`SELECT count(*)::int AS count FROM wards w
@@ -201,7 +201,7 @@ async function retireSectorMemberships(client, progress=()=>{}, {requireComplete
   return {changed:changed.rowCount,combinedNames:combinedNames.changed,namePlan,payrollInputs,payrollInputsVerified:payrollInputs?.verified??false,nullableParents,updatedViews:viewChanges.map(v=>v.viewname),protectedTables:Object.keys(before),before,expectedAfter,after,accessBefore,accessAfter,protectedDataUnchanged:true};
 }
 
-async function restoreSectorMemberships(client,progress=()=>{},{verifyPayrollInputs=false}={}) {
+async function restoreSectorMemberships(client,progress=()=>{},{verifyPayrollInputs=false,dmsReview}={}) {
   await client.query("SET LOCAL lock_timeout='5s'");
   await client.query('LOCK TABLE wards IN SHARE ROW EXCLUSIVE MODE');
   if(!(await client.query("SELECT to_regclass('public.ward_sector_retirement_backup') AS backup")).rows[0].backup)fail('Original rollback map is missing.');
@@ -211,7 +211,7 @@ async function restoreSectorMemberships(client,progress=()=>{},{verifyPayrollInp
       OR (w.sector_id IS NOT NULL AND w.sector_id IS DISTINCT FROM b.sector_id) LIMIT 1`)).rows.length)fail('Ward/Zone/Sector data changed since cutover; review rollback mapping instead of overwriting it.');
   if((await client.query("SELECT 1 FROM pg_trigger WHERE tgrelid='wards'::regclass AND NOT tgisinternal AND tgenabled<>'D'")).rows.length)fail('Review enabled Ward triggers before rollback.');
   const tables=await available(client);
-  await lockProtectedData(client,tables);
+  await lockProtectedData(client,tables,dmsReview);
   const namePlan=await previewWardNames(client,{restore:true});assertValidNamePlan(namePlan);
   const before=await fingerprint(client,tables,progress,{fullAttendance:true});
   const payrollBefore=verifyPayrollInputs?await capturePayrollInputs(client):null;
