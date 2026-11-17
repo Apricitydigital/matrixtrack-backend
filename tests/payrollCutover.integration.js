@@ -80,7 +80,7 @@ test('CLI automatically expands long-name capacity; rehearsal and late failures 
   fail=true;await assert.rejects(main([...args,...apply],opts),/late capacity cutover failure/);
   assert.equal(await width(),100);assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,'Solaris');
   fail=false;const applied=await main([...args,...apply],opts);assert.equal(applied.capacity.changed,true);assert.equal(applied.payrollInputsVerified,true);assert.equal(await width(),255);
-  assert.equal((await db.query('SELECT ward_name FROM attendance_dashboard_view WHERE kothi_id=1008')).rows[0].ward_name,'P'.repeat(95)+' + Solaris');
+  assert.equal((await db.query('SELECT ward_name FROM attendance_dashboard_view WHERE kothi_id=1008')).rows[0].ward_name,'P'.repeat(95)+', Solaris');
   assert.deepEqual(await protectedRows(db),before);
  }finally{await db.close();for(const file of fs.readdirSync(dir))fs.unlinkSync(path.join(dir,file));fs.rmdirSync(dir);}
 });

@@ -27,7 +27,7 @@ test('real migration CLI entry point previews read-only, rehearses/rolls back, a
 test('invalid CLI name preview saves issues without changing names or touching migration DDL',async()=>{
  const db=await fixture(),dir=fs.mkdtempSync(path.join(os.tmpdir(),'ward-name-cli-invalid-'));try{
   const envFile=path.join(dir,'fixture.env');fs.writeFileSync(envFile,'DB_HOST=fixture\nDB_NAME=postgres\nDB_USER=fixture\nDB_PASSWORD=fake-fixture-password\n');
-  await db.exec("INSERT INTO wards VALUES(2000,55,NULL,'Human Matrix + Solaris')");const queries=[];
+  await db.exec("INSERT INTO wards VALUES(2000,55,NULL,'Human Matrix, Solaris')");const queries=[];
   class ClientType{async connect(){}async end(){}query(sql,params){queries.push(sql);return adapter(db).query(sql,params);}}
   await assert.rejects(main(['--env-file='+envFile,'--expected-host=fixture','--expected-database=postgres','--preview-names'],{ClientType,reportDirectory:dir,log:()=>{}}),/preview saved with issues/);
   const report=JSON.parse(fs.readFileSync(path.join(dir,'ward-names-preview.json'),'utf8'));assert.equal(report.valid,false);assert.ok(report.issues.length);

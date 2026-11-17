@@ -12,18 +12,18 @@ function cli(t){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ward-name-edges-
 
 test('Unicode length boundaries and quoted/SQL-looking labels preserve exact data without truncation or SQL execution',async()=>{
  const db=await fixture();try{
-  await db.query('UPDATE sectors SET sector_name=$1 WHERE sector_id=10',['P'.repeat(47)]);
+  await db.query('UPDATE sectors SET sector_name=$1 WHERE sector_id=10',['P'.repeat(48)]);
   await db.query('UPDATE wards SET ward_name=$1 WHERE ward_id=1008',['🏠'.repeat(50)]);
   const exact=await previewWardNames(adapter(db));assert.equal(exact.valid,true);const proposed=exact.rows.find(r=>r.ward_id===1008).proposed_name;
   assert.equal(Array.from(proposed).length,100);assert.equal((await db.query('SELECT char_length($1::text) AS n',[proposed])).rows[0].n,100);
-  await db.query('UPDATE sectors SET sector_name=$1 WHERE sector_id=10',['P'.repeat(48)]);
+  await db.query('UPDATE sectors SET sector_name=$1 WHERE sector_id=10',['P'.repeat(49)]);
   const over=await previewWardNames(adapter(db));assert.equal(over.valid,false);assert.ok(over.issues.some(i=>i.type==='name_too_long'&&i.ward_id===1008));
   assert.equal(over.requiredNameCapacity[0].minimumRequired,101);
   assert.equal(Array.from((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name).length,50);
   const parent="O'Brien",child="Gate'); DROP TABLE attendance; -- 🏠";
   await db.query('UPDATE sectors SET sector_name=$1 WHERE sector_id=10',[parent]);await db.query('UPDATE wards SET ward_name=$1 WHERE ward_id=1008',[child]);
   const before=await protectedRows(db);await db.exec('BEGIN');await migrate(db);await db.exec('COMMIT');
-  assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,parent+' + '+child);
+  assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,parent+', '+child);
   assert.equal((await db.query('SELECT original_name FROM ward_name_retirement_backup WHERE ward_id=1008')).rows[0].original_name,child);
   assert.deepEqual(await protectedRows(db),before);
  }finally{await db.close();}
@@ -85,11 +85,13 @@ test('blank, cosmetic-prefix, case-folded duplicate and name-transition boundari
  const db=await fixture();try{
   await db.exec("BEGIN;UPDATE wards SET ward_name=E'  \\t ' WHERE ward_id=1621");
   assert.ok((await previewWardNames(adapter(db))).issues.some(i=>i.type==='blank_name'&&i.ward_id===1621));await db.exec('ROLLBACK');
-  await db.exec("BEGIN;UPDATE wards SET ward_name='  CAMPUS+Store  ' WHERE ward_id=1900");
-  const cosmetic=await previewWardNames(adapter(db));assert.equal(cosmetic.valid,true);assert.equal(cosmetic.rows.find(r=>r.ward_id===1900).action,'keep_already_combined');await db.exec('ROLLBACK');
-  await db.exec("BEGIN;INSERT INTO wards VALUES(2000,55,NULL,'human matrix + SOLARIS')");
+  for(const label of ['  CAMPUS+Store  ','  CAMPUS , Store  ']){
+   await db.exec('BEGIN');await db.query('UPDATE wards SET ward_name=$1 WHERE ward_id=1900',[label]);
+   const cosmetic=await previewWardNames(adapter(db));assert.equal(cosmetic.valid,true);assert.equal(cosmetic.rows.find(r=>r.ward_id===1900).action,'keep_already_combined');await db.exec('ROLLBACK');
+  }
+  await db.exec("BEGIN;INSERT INTO wards VALUES(2000,55,NULL,'human matrix, SOLARIS')");
   assert.ok((await previewWardNames(adapter(db))).issues.some(i=>i.type==='duplicate_name'));await db.exec('ROLLBACK');
-  await db.exec("BEGIN;INSERT INTO wards VALUES(2000,55,31,'Human Matrix + Solaris')");
+  await db.exec("BEGIN;INSERT INTO wards VALUES(2000,55,31,'Human Matrix, Solaris')");
   const transition=await previewWardNames(adapter(db));assert.equal(transition.valid,false);
   assert.ok(transition.issues.some(i=>i.type==='name_transition_conflict'));assert.ok(!transition.issues.some(i=>i.type==='duplicate_name'));
   await assert.rejects(migrate(db),/name preview/);await db.exec('ROLLBACK');
@@ -110,7 +112,7 @@ test('enabled backup-row triggers cannot corrupt the original-name journal durin
    CREATE TRIGGER tamper_names BEFORE UPDATE ON ward_name_retirement_backup FOR EACH ROW EXECUTE FUNCTION tamper_name_backup()`);
   await db.exec('BEGIN');await assert.rejects(restoreSectorMemberships(adapter(db)),/backup triggers/);await db.exec('ROLLBACK');
   assert.equal((await db.query('SELECT original_name FROM ward_name_retirement_backup WHERE ward_id=1008')).rows[0].original_name,'Solaris');
-  assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,'Human Matrix + Solaris');
+  assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,'Human Matrix, Solaris');
   assert.deepEqual(await protectedRows(db),before);
   await db.exec('DROP TRIGGER tamper_names ON ward_name_retirement_backup;BEGIN');await restoreSectorMemberships(adapter(db));await db.exec('COMMIT');
   assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,'Solaris');
@@ -133,7 +135,7 @@ test('cleanup errors cannot mask the primary operation failure or hide a success
   }}
   const opts={ClientType,reportDirectory:c.dir,log:()=>{}};
   await assert.rejects(main([...c.args,...c.apply],opts),/changes committed; connection cleanup failed/);
-  assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,'Human Matrix + Solaris');
+  assert.equal((await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name,'Human Matrix, Solaris');
   assert.ok(fs.readdirSync(c.dir).some(f=>f==='sector-retirement-applied.json'));
   class BrokenClient extends ClientType{async query(){throw Error('primary query failure');}}
   await assert.rejects(main([...c.args,'--preview-names'],{...opts,ClientType:BrokenClient}),/primary query failure/);
@@ -153,7 +155,7 @@ test('lost COMMIT response is reported as uncertain; confirmed ROLLBACK never be
    }}
    await assert.rejects(main([...c.args,...c.apply],{ClientType,reportDirectory:c.dir,log:()=>{}}),outcome==='rolled_back'?/did not commit/:/Commit outcome uncertain/);
    const name=(await db.query('SELECT ward_name FROM wards WHERE ward_id=1008')).rows[0].ward_name;
-   assert.equal(name,outcome==='lost_after'?'Human Matrix + Solaris':'Solaris');
+   assert.equal(name,outcome==='lost_after'?'Human Matrix, Solaris':'Solaris');
    assert.ok(!fs.readdirSync(c.dir).some(f=>f.includes('sector-retirement-applied')));
   }finally{await db.close();}
  }
