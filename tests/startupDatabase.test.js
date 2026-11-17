@@ -68,6 +68,7 @@ function loadRunner({failure,rollbackFails=false}={}) {
   '../utils/selfAttendancePushService':{ensureSelfAttendancePushSchema:async()=>{}},
   '../utils/selfAttendanceRecordsBlock':{markAttendanceBlockSchemaReady:()=>ready.push('blocks')},
   '../utils/selfAttendancePunchCutoff':{markPunchCutoffSchemaReady:()=>ready.push('cutoff')},
+  '../utils/workforceMergeSchema':{refreshMergeTriggers:async()=>ready.push('merge')},
  };
  const module={exports:{}};
  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../db/migrations.js'),'utf8'),{
@@ -89,6 +90,6 @@ test('read timeout skips queued rollback and fails startup with its original err
 });
 test('successful startup warms cutoff/block schema and avoids leave-expiry scan',async()=>{
  const r=loadRunner();await r.runMigrations();
- assert.equal(r.queries.at(-1),'COMMIT');assert.deepEqual(r.ready,['blocks','cutoff']);
+ assert.equal(r.queries.at(-1),'COMMIT');assert.deepEqual(r.ready,['merge','blocks','cutoff']);
  assert.equal(r.leaveOptions[0].expirePending,false);assert.deepEqual(r.released,[undefined]);
 });
