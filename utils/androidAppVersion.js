@@ -1,10 +1,10 @@
 const UPDATE_URL='https://play.google.com/store/apps/details?id=com.apricitydigital.attendeaseApp';
 function policy(platform='android'){
  const android=platform==='android';
- const version=/^\d+\.\d+\.\d+$/.test(process.env.ANDROID_MIN_APP_VERSION||'')?process.env.ANDROID_MIN_APP_VERSION:'1.0.20';
+ const version=/^\d+\.\d+\.\d+$/.test(process.env.ANDROID_MIN_APP_VERSION||'')?process.env.ANDROID_MIN_APP_VERSION:'1.0.19';
  const build=Number(process.env.ANDROID_MIN_VERSION_CODE);
- return {platform,latestVersion:'1.0.20',minVersion:android?version:'1.0.0',
-  minVersionCode:android?(Number.isSafeInteger(build)&&build>0?build:68):null,
+ return {platform,latestVersion:'1.0.19',minVersion:android?version:'1.0.0',
+  minVersionCode:android?(Number.isSafeInteger(build)&&build>0?build:67):null,
   forceUpdate:android&&(process.env.ANDROID_FORCE_UPDATE??'true')==='true',updateUrl:process.env.ANDROID_UPDATE_URL||UPDATE_URL,
   message:'Please update MatrixTrack to continue using the app.'};
 }
