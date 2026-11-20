@@ -193,8 +193,8 @@ module.exports = async function verifyAttendanceIdentity(client, reportDependenc
     '../utils/s3SelfPunch':{},'../utils/cityTrafficCost':{},'./selfAttendanceGeofenceController':{},'./consentController':{},
   });
   const beforeBlock=(await client.query('SELECT * FROM self_attendance_records ORDER BY id')).rows;
-  await client.query(`INSERT INTO self_attendance_records_blocks(self_attendance_id,is_blocked,reason)
-    SELECT unnest($1::uuid[]),TRUE,'Verified block fixture'`,[profileIds]);
+  await client.query(`INSERT INTO self_attendance_records_blocks(self_attendance_id,is_blocked,reason,updated_at)
+    SELECT unnest($1::uuid[]),TRUE,'Verified block fixture','2026-09-15T10:00:00+05:30'::timestamptz`,[profileIds]);
   const blockedMonthly=response();
   await appWithBlocks.getMonthlyAttendance({self_attendance:{self_attendance_id:primaryId},query:{month:'2026-09'}},blockedMonthly);
   assert.equal(blockedMonthly.code,200);assert.equal(blockedMonthly.body.attendance_access.is_attendance_blocked,true);
@@ -204,11 +204,22 @@ module.exports = async function verifyAttendanceIdentity(client, reportDependenc
   assert.equal(blockedRange.data[0].attendance_count,29);assert.equal(blockedRange.data[0].payable_days,29);assert.equal(blockedRange.data[0].absent_days,1);
   const blockedDaily=await run(reportsWithBlocks,'getAttendanceList',{date:'2026-09-01',self_attendance_id:primaryId});
   assert.equal(blockedDaily.data[0].is_attendance_blocked,true);assert.ok(blockedDaily.data[0].punch_in);
+  for (const filters of [{date:'2026-10-01'},{month:'2026-10'}]) {
+    const nextList=await run(reportsWithBlocks,'getAttendanceList',{...filters,self_attendance_id:primaryId});
+    assert.equal(nextList.data.length,0,'Next-month daily/monthly list excludes blocked identities');
+    assert.equal(Number(nextList.pagination.total),0,'Pagination uses the same block cutoff');
+    const nextSummary=await run(reportsWithBlocks,'getAttendanceSummary',{...filters,self_attendance_id:primaryId});
+    assert.equal(nextSummary.data.total_self_attendances,0,'Dashboard totals match the filtered list');
+  }
+  const nextRange=await run(reportsWithBlocks,'getDateRangeAttendanceSummary',{start_date:'2026-10-01',end_date:'2026-10-31',self_attendance_id:primaryId});
+  assert.equal(nextRange.data.length,0,'Site-wise range downloads exclude next-month blocked identities');
   const blockedDetails=await run(reportsWithBlocks,'getDateRangeAttendanceDetails',{start_date:'2026-09-01',end_date:'2026-09-30',self_attendance_id:primaryId});
   assert.equal(blockedDetails.data.is_attendance_blocked,true);assert.equal(blockedDetails.data.attendance_days,29);
   const unrelatedAfterBlock=await run(reportsWithBlocks,'getDateRangeAttendanceSummary',{start_date:'2026-09-01',end_date:'2026-09-30',self_attendance_id:stranger});
   assert.equal(unrelatedAfterBlock.data[0].is_attendance_blocked,undefined);assert.equal(unrelatedAfterBlock.data[0].attendance_count,1);
   await client.query('UPDATE self_attendance_records_blocks SET is_blocked=FALSE WHERE self_attendance_id=ANY($1::uuid[])',[profileIds]);
+  const restoredRange=await run(reportsWithBlocks,'getDateRangeAttendanceSummary',{start_date:'2026-10-01',end_date:'2026-10-31',self_attendance_id:primaryId});
+  assert.equal(restoredRange.data.length,1,'Unblock restores report inclusion');
   assert.deepEqual((await client.query('SELECT * FROM self_attendance_records ORDER BY id')).rows,beforeBlock,'Block/unblock and reports leave every stored attendance row unchanged');
   console.log('PASS: actual blocked daily/range/detail badges, Manisha monthly remains 28 present / 1 half-day / 29 payable, and unrelated employees and all stored attendance stay unchanged.');
   console.log('PASS: Manisha 28 present / 1 half-day / 29 payable, complete 29-date website history, all unlinked rows unchanged, aliases/search/exports source, other months, permissions, preserved records, current open punches, duplicate prevention and conflict/scope guards.');

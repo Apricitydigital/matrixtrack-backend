@@ -1,4 +1,4 @@
-const {attendanceBlockSql}=require('./attendanceBlockReporting');
+const {attendanceBlockSql,attendanceReportVisibleSql}=require('./attendanceBlockReporting');
 const {withAttendanceIdentity}=require('./selfAttendanceRecordsIdentity');
 const {buildVisibilityScope}=require('./selfAttendanceAccess');
 
@@ -41,9 +41,11 @@ function reportQuery(kind,{cities,sites,user,cityScope,start,end,zoneId=null,sec
    CROSS JOIN LATERAL(SELECT pe.city_id,pe.zone_id,pe.ward_id,pe.kothi_id) geo
    LEFT JOIN wards aw ON aw.ward_id=geo.kothi_id LEFT JOIN zones az ON az.zone_id=geo.zone_id LEFT JOIN cities ac ON ac.city_id=geo.city_id
    WHERE a.self_attendance_id=pe.id AND a.date BETWEEN ${from} AND ${to}
+   AND ${attendanceReportVisibleSql('pe.id','a.date')}
    AND ${allowed('geo.city_id','geo.kothi_id','geo.zone_id','geo.ward_id')} AND (${visibility.whereClause})
    UNION ALL SELECT jsonb_build_object('record',NULL,'date',l.requested_date::text,'leave_type',l.leave_type)
    FROM self_attendance_leave_requests l WHERE l.self_attendance_id=pe.id AND l.status='approved' AND l.requested_date BETWEEN ${from} AND ${to}
+   AND ${attendanceReportVisibleSql('pe.id','l.requested_date')}
    AND (${currentAllowed}) AND NOT EXISTS(SELECT 1 FROM self_attendance_records a WHERE a.self_attendance_id=pe.id AND a.date=l.requested_date)`
  :`SELECT jsonb_build_object('record',to_jsonb(a)||jsonb_build_object('punched_in_by',ui.name,'punched_out_by',uo.name,'mid_shift_punched_in_by',um.name),'date',a.date::date::text,'location',${location('ac.city_id','az.zone_id','aw.sector_id','aw.ward_id','ac.city_name','az.zone_name','aw.ward_name')},'leave_type',a.leave_type) AS entry
    FROM attendance a LEFT JOIN wards aw ON aw.ward_id=a.ward_id LEFT JOIN zones az ON az.zone_id=aw.zone_id LEFT JOIN cities ac ON ac.city_id=az.city_id
@@ -54,7 +56,7 @@ function reportQuery(kind,{cities,sites,user,cityScope,start,end,zoneId=null,sec
   (${currentAllowed}) AS current_assignment_visible,COALESCE(data.entries,'[]'::jsonb) AS entries FROM ${directory}
   LEFT JOIN LATERAL(SELECT jsonb_agg(entry ORDER BY entry->>'date') AS entries FROM (SELECT entry FROM (${entries}) raw_events LIMIT 50001) events) data ON true
   WHERE ((${currentAllowed}) OR data.entries IS NOT NULL)
-  ${self_attendance?`AND (pe.is_active=true OR data.entries IS NOT NULL)`:''}
+  ${self_attendance?`AND (pe.is_active=true OR data.entries IS NOT NULL) AND ${attendanceReportVisibleSql('pe.id',from)}`:''}
   ORDER BY ${self_attendance?'pe.full_name,pe.id':'e.name,e.emp_id'}`;
  return {sql:self_attendance?withAttendanceIdentity(sql,params):sql,params};
 }

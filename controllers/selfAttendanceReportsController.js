@@ -7,7 +7,7 @@ const logger = require('../utils/logger');
 const pool = require('../config/db');
 const { ensurePunchCutoffSchema } = require('../utils/selfAttendancePunchCutoff');
 const { ensureSelfAttendanceLeaveSchema } = require('../utils/selfAttendanceLeaveSchema');
-const { attendanceBlockSql } = require('../utils/attendanceBlockReporting');
+const { attendanceBlockSql, attendanceReportVisibleSql } = require('../utils/attendanceBlockReporting');
 const { withAttendanceBlocks, ensureAttendanceBlockSchema } = require('../utils/selfAttendanceRecordsBlock');
 
 let attendanceReportColumnsEnsured = false;
@@ -228,6 +228,9 @@ const getAttendanceList = async (req, res) => {
       paCheckOrder = `CASE WHEN pa_check.punch_in IS NOT NULL THEN 0 ELSE 1 END,`;
     }
 
+    params.push(date || (month ? `${month}-01` : getTodayInIST()));
+    peFilters += ` AND ${attendanceReportVisibleSql('pe.id', `$${++paramCount}`)}`;
+
     const distinctCte = `
       ${cte ? cte + ',' : 'WITH'} distinct_pe AS (
         SELECT DISTINCT ON (
@@ -430,6 +433,8 @@ const getAttendanceSummary = async (req, res) => {
     if (self_attendance_id) { peParamCount++; peFilters += ` AND pe.id = $${peParamCount}`; params.push(self_attendance_id); }
 
     // Date filters on self_attendance_records (pa)
+    params.push(dateRange?.startDate || date || `${month}-01`);
+    peFilters += ` AND ${attendanceReportVisibleSql('pe.id', `$${++peParamCount}`)}`;
     let paFilters = '';
     let paParamCount = peParamCount;
     let paCheckJoin = '';
@@ -751,6 +756,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
     const startParam = paramCount + 1;
     const endParam = paramCount + 2;
     const pageParams = [dateRange.startDate, dateRange.endDate, numericLimit, offset];
+    peFilters += ` AND ${attendanceReportVisibleSql('pe.id', `$${startParam}`)}`;
 
     const distinctCte = `
       ${cte ? cte + ',' : 'WITH'} distinct_pe AS (
