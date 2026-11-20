@@ -5,7 +5,7 @@ const { transferSelfAttendance } = require('../utils/selfAttendanceTransfer');
 const requireTransferAdmin = async (req,res,next) => {
   try {
     const user = (await pool.query('SELECT role,is_deleted FROM users WHERE user_id=$1', [req.supervisorId])).rows[0];
-    if (!user || user.is_deleted || user.role !== 'admin') return res.status(403).json({ message: 'Only an administrator with Self Attendance Access Requests write permission can transfer employees.' });
+    if (!user || user.is_deleted || user.role !== 'admin') return res.status(403).json({ message: 'Only an administrator with Self Attendance Access Requests write permission can manage employee details and transfers.' });
     next();
   } catch (_) { res.status(500).json({ message: 'Unable to verify transfer access.' }); }
 };

@@ -4,6 +4,7 @@ const authenticate = require('../middleware/authMiddleware');
 const { authorize } = require('../middleware/permissionMiddleware');
 const { attachCityScope } = require('../middleware/cityScope');
 const { requireTransferAdmin, transferRequest } = require('../controllers/selfAttendanceTransferController');
+const { editRequestDetails } = require('../controllers/selfAttendanceDetailsController');
 const {
   getRequests,
   getRequestDetails,
@@ -55,5 +56,6 @@ router.post('/requests/:id/approve', authorize('field-access-requests', 'write')
  */
 router.post('/requests/:id/reject', authorize('field-access-requests', 'write'), rejectRequest);
 router.post('/requests/:id/transfer', requireTransferAdmin, authorize('field-access-requests', 'write'), attachCityScope, transferRequest);
+router.patch('/requests/:id/details', requireTransferAdmin, authorize('field-access-requests', 'write'), attachCityScope, editRequestDetails);
 
 module.exports = router;
