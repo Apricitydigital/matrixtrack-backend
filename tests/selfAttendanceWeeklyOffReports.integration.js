@@ -8,8 +8,10 @@ module.exports = async function verifyReports(client) {
     ALTER TABLE self_attendance_records ADD COLUMN ward_id INT, ADD COLUMN city_id INT, ADD COLUMN zone_id INT, ADD COLUMN kothi_id INT;
     ALTER TABLE self_attendance_leave_requests ADD COLUMN leave_type TEXT, ADD COLUMN reviewed_by INT, ADD COLUMN review_note TEXT, ADD COLUMN reviewed_at TIMESTAMPTZ, ADD COLUMN requested_at TIMESTAMPTZ DEFAULT NOW(), ADD COLUMN pm_reviewer_id UUID, ADD COLUMN ho_reviewer_id UUID, ADD COLUMN hod_reviewer_id UUID;
     CREATE TABLE self_punch_requests(id UUID,ward_id INT,kothi_id INT);`);
+  await client.query('CREATE TABLE IF NOT EXISTS self_attendance_records_blocks(self_attendance_id UUID PRIMARY KEY,is_blocked BOOLEAN,reason TEXT,updated_at TIMESTAMPTZ)');
   let reportQueryCount = 0;
   const dependencies = {
+    '../utils/attendanceBlockReporting': require('../utils/attendanceBlockReporting'),
     '../utils/selfAttendanceRecordsBlock': require('./helpers/unblockedAttendance'),
     '../utils/selfAttendanceRecordsIdentity': require('../utils/selfAttendanceRecordsIdentity'),
     '../utils/selfAttendancePunchCutoff': { ensurePunchCutoffSchema: async () => client.query(fs.readFileSync(path.join(__dirname,'../db/migrations/20261014_self_attendance_punch_cutoff.sql'),'utf8')) },

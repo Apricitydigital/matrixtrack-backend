@@ -7,11 +7,13 @@ const logger = require('../utils/logger');
 const pool = require('../config/db');
 const { ensurePunchCutoffSchema } = require('../utils/selfAttendancePunchCutoff');
 const { ensureSelfAttendanceLeaveSchema } = require('../utils/selfAttendanceLeaveSchema');
-const { withAttendanceBlocks } = require('../utils/selfAttendanceRecordsBlock');
+const { attendanceBlockSql } = require('../utils/attendanceBlockReporting');
+const { withAttendanceBlocks, ensureAttendanceBlockSchema } = require('../utils/selfAttendanceRecordsBlock');
 
 let attendanceReportColumnsEnsured = false;
 const ensureAttendanceReportColumns = async () => {
   await ensurePunchCutoffSchema();
+  await ensureAttendanceBlockSchema();
   if (attendanceReportColumnsEnsured) return;
   await pool.query(`
     ALTER TABLE self_attendance_records
@@ -320,7 +322,7 @@ const getAttendanceList = async (req, res) => {
       LEFT JOIN sectors sec_w ON w.sector_id = sec_w.sector_id
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
-      ORDER BY COALESCE(pa.date, leave_row.requested_date, DATE '1900-01-01') DESC, pe.full_name ASC
+      ORDER BY ${attendanceBlockSql('pe.id')} ASC, COALESCE(pa.date, leave_row.requested_date, DATE '1900-01-01') DESC, pe.full_name ASC, pe.id ASC
       LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
     `;
 
@@ -892,7 +894,7 @@ const getDateRangeAttendanceSummary = async (req, res) => {
                z.zone_name, c.city_name,
                leave_agg.leave_days, leave_agg.latest_reviewer_name,
                weekoff_agg.week_off_count, weekoff_agg.payable_days, holiday_agg.holiday_days
-      ORDER BY (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0) + COALESCE(holiday_agg.holiday_days, 0)) DESC, pe.full_name ASC, pe.id ASC
+      ORDER BY ${attendanceBlockSql('pe.id')} ASC, (COUNT(pa.id) + COALESCE(leave_agg.leave_days, 0) + COALESCE(holiday_agg.holiday_days, 0)) DESC, pe.full_name ASC, pe.id ASC
       LIMIT $${startParam + 2} OFFSET $${startParam + 3}
     `;
 
@@ -1137,6 +1139,7 @@ const getDateRangeAttendanceDetails = async (req, res) => {
  */
 const getEmployeesList = async (req, res) => {
   try {
+    await ensureAttendanceBlockSchema();
     const { city_id, zone_id, ward_id, kothi_id, page = 1, limit = 50, search } = req.query;
     const numericLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 10000);
     const numericPage = Math.max(parseInt(page, 10) || 1, 1);
@@ -1222,7 +1225,7 @@ const getEmployeesList = async (req, res) => {
       LEFT JOIN wards wk_req ON spr.kothi_id = wk_req.ward_id
       JOIN zones z ON pe.zone_id = z.zone_id
       JOIN cities c ON pe.city_id = c.city_id
-      ORDER BY pe.created_at DESC
+      ORDER BY ${attendanceBlockSql('pe.id')} ASC, pe.created_at DESC, pe.id ASC
       LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
     `;
 

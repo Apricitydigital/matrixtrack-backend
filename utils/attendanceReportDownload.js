@@ -1,4 +1,4 @@
-const SUPPORTED_FORMATS = new Set(["csv", "json"]);
+const SUPPORTED_FORMATS = new Set(["xlsx", "csv", "json"]);
 const SUPPORTED_GROUPINGS = new Set([
   "detail",
   "simple", // <-- ADD THIS
@@ -711,7 +711,7 @@ TO_CHAR(a.date, 'DD-MM-YYYY') AS attendance_date,
 };
 
 const createAttendanceDownloadHandler =
-  ({ pool, defaultFormat = "csv", resolveCityScope, resolveKothiScope } = {}) =>
+  ({ pool, defaultFormat = "xlsx", resolveCityScope, resolveKothiScope } = {}) =>
     async (req, res) => {
       let payload = null;
       try {

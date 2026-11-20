@@ -1,3 +1,4 @@
+const {attendanceBlockSql}=require('./attendanceBlockReporting');
 const {withAttendanceIdentity}=require('./selfAttendanceRecordsIdentity');
 const {buildVisibilityScope}=require('./selfAttendanceAccess');
 
@@ -17,7 +18,7 @@ function reportQuery(kind,{cities,sites,user,cityScope,start,end,zoneId=null,sec
  const allowed=(cityExpr,siteExpr,zoneExpr,sectorExpr)=>`(${city} IS NULL OR ${cityExpr}=ANY(${city})) AND (${site} IS NULL OR ${siteExpr}=ANY(${site})) AND (${zone} IS NULL OR ${zoneExpr}=${zone}) AND (${sector} IS NULL OR ${sectorExpr}=${sector})`;
  const currentAllowed=`(${allowed('c.city_id','w.ward_id','z.zone_id','w.sector_id')}) AND (${visibility.whereClause.replace(/\bgeo\./g,'pe.')})`;
  const location=(cityExpr,zoneExpr,sectorExpr,siteExpr,cityName,zoneName,siteName)=>`jsonb_build_object('city_id',${cityExpr},'zone_id',${zoneExpr},'sector_id',${sectorExpr},'ward_id',${siteExpr},'city',${cityName},'zone',${zoneName},'ward',${siteName})`;
- const fields=self_attendance?`'self_attendance:'||pe.id::text AS emp_id,pe.id::text AS source_employee_id,pe.full_name AS name,pe.emp_code,pe.mobile AS phone,
+ const fields=self_attendance?`'self_attendance:'||pe.id::text AS emp_id,pe.id::text AS source_employee_id,pe.full_name AS name,pe.emp_code,pe.mobile AS phone,${attendanceBlockSql('pe.id')} AS is_attendance_blocked,
   pe.city_id,pe.zone_id,COALESCE(w.sector_id,pe.ward_id) AS sector_id,w.ward_id,
   pe.selfie_url IS NOT NULL AS face_registered,COALESCE(roles.department,'Self Attendance') AS department,roles.designation,
   COALESCE(roles.department_ids,ARRAY[(SELECT department_id FROM department WHERE lower(trim(department_name))='self attendance' ORDER BY department_id LIMIT 1)]) AS department_ids,roles.designation_ids`
@@ -98,7 +99,8 @@ function normalizeReport(rows) {
    });
   }
  }
- records.sort((a,b)=>a.date.split('-').reverse().join('-').localeCompare(b.date.split('-').reverse().join('-')) || (a.punch_in || '99').localeCompare(b.punch_in || '99') || a.name.localeCompare(b.name));
+ employees.sort((a,b)=>Number(!!a.is_attendance_blocked)-Number(!!b.is_attendance_blocked));
+ records.sort((a,b)=>Number(!!a.is_attendance_blocked)-Number(!!b.is_attendance_blocked) || a.date.split('-').reverse().join('-').localeCompare(b.date.split('-').reverse().join('-')) || (a.punch_in || '99').localeCompare(b.punch_in || '99') || a.name.localeCompare(b.name));
  return {employees,records};
 }
 module.exports={dateRange,reportQuery,normalizeReport};

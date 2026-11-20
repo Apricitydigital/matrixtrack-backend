@@ -48,6 +48,7 @@ const readOnlyBlocks={
   withAttendanceBlocks:async rows=>(await blockSchemaExists()) ? blockModule.exports.readAttendanceBlocks(rows,pool) : rows,
 };
 const reportDependencies={
+  '../utils/attendanceBlockReporting':{attendanceBlockSql:employeeId=>hasBlockSchema ? require('../utils/attendanceBlockReporting').attendanceBlockSql(employeeId) : 'FALSE'},
   '../utils/selfAttendanceRecordsBlock':readOnlyBlocks,
   '../utils/queryRunner':{runQueryWithTimeout:(text,values)=>client.query({text,values,query_timeout:30000})},
   '../utils/selfAttendanceRecordsIdentity':identity,
@@ -72,6 +73,7 @@ const run=async(controller,name,query,params={})=>{
 async function main(){
   await client.connect();
   await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  await blockSchemaExists();
   const readOnly=(await client.query('SHOW transaction_read_only')).rows[0].transaction_read_only;
   assert.equal(readOnly,'on');
   const eligible=(await client.query(`WITH ${identity.linksSql} SELECT * FROM attendance_identity_links`)).rows;

@@ -19,6 +19,7 @@ async function main() {
   };
   try {
     await db.exec(`
+      CREATE TABLE self_attendance_records_blocks(self_attendance_id UUID PRIMARY KEY,is_blocked BOOLEAN);
       CREATE TABLE wards(ward_id INT PRIMARY KEY,ward_name TEXT);
       CREATE TABLE designation(designation_id INT PRIMARY KEY,designation_name TEXT);
       CREATE TABLE self_attendance_designation_assignments(self_attendance_id UUID,designation_id INT);
@@ -57,6 +58,8 @@ async function main() {
       '../middleware/selfAttendanceAuth': (req, res, next) => next(),
       '../utils/selfAttendancePunchCutoff': { capabilities: utility.capabilities, ensurePunchCutoffSchema: async () => {} },
       '../utils/selfAttendanceLeaveSchema': { ensureSelfAttendanceLeaveSchema: async () => {} },
+      '../utils/attendanceBlockReporting':require('../utils/attendanceBlockReporting'),
+      '../utils/selfAttendanceRecordsBlock':{ensureAttendanceBlockSchema:async()=>{}},
       '../utils/selfAttendanceWeeklyOff': { todayIST: () => '2026-10-15' },
       '../utils/regularTeamAttendance':require('../utils/regularTeamAttendance'),
       '../utils/combinedTeamAttendance':require('../utils/combinedTeamAttendance'),
@@ -143,6 +146,23 @@ async function main() {
     assert.equal(firstEmployees.body.total,53);assert.equal(firstEmployees.body.data.length,50);assert.equal(secondEmployees.body.data.length,3);
     assert.equal(new Set([...firstEmployees.body.data,...secondEmployees.body.data].map(r=>r.employee_kind+':'+r.employee_id)).size,53);
     assert.ok([...firstEmployees.body.data,...secondEmployees.body.data].every(r=>r.days.length===31));
+    // A name that normally sorts first must move beyond the page boundary.
+    await db.query('INSERT INTO self_attendance_records_blocks VALUES($1,TRUE)',[id(10)]);
+    const blockedFirst=await request(1,{month:'2026-10',view:'employees'});
+    const blockedSecond=await request(1,{month:'2026-10',view:'employees',page:2});
+    assert.ok(blockedFirst.body.data.every(r=>!r.is_attendance_blocked));
+    const blockedPerson=blockedSecond.body.data.at(-1);
+    assert.equal(blockedPerson.employee_id,id(10));assert.equal(blockedPerson.is_attendance_blocked,true);
+    assert.equal(blockedPerson.attended_days,person.attended_days);assert.equal(blockedPerson.absent_days,person.absent_days);
+    assert.deepEqual(blockedSecond.body.summary,firstEmployees.body.summary,'Block state does not rewrite attendance statuses');
+    const blockedDay=await request(1,{month:'2026-10',date:'2026-10-15',page:2});
+    assert.equal(blockedDay.body.data.at(-1).employee_id,id(10));assert.equal(blockedDay.body.data.at(-1).status,'present');
+    const selfOnly=await request(1,{month:'2026-10',employeeType:'self_attendance'});
+    assert.ok(selfOnly.body.data.every(r=>r.is_attendance_blocked));
+    assert.equal((await request(1,{month:'2026-10',search:'Outside'})).body.total,0,'Blocking does not expand site visibility');
+    await db.query('UPDATE self_attendance_records_blocks SET is_blocked=FALSE WHERE self_attendance_id=$1',[id(10)]);
+    const restored=await request(1,{month:'2026-10',view:'employees'});
+    assert.equal(restored.body.data[0].employee_id,id(10));assert.equal(restored.body.data[0].is_attendance_blocked,false);
     console.log('Team attendance: role access, site isolation, historical months, inactive history, statuses, filters and pagination passed.');
   } finally { await db.close(); }
 }

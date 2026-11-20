@@ -116,6 +116,7 @@ module.exports = async function verifyAttendanceIdentity(client, reportDependenc
   const pool={query:(sql,params)=>client.query(sql,params),connect:async()=>tx};
   const app=load('../controllers/selfAttendanceRecordsController.js',{
     '../utils/selfAttendanceRecordsBlock':require('./helpers/unblockedAttendance'),
+    '../utils/selfAttendanceRecordsSite':require('../utils/selfAttendanceRecordsSite'),
     '../config/db':pool,'../utils/selfAttendanceRecordsIdentity':identity,
     '../utils/selfAttendancePunchCutoff':{ensurePunchCutoffSchema:async()=>{},loadPunchApprovals:async()=>new Map(),approvalProgress:()=>null},
     '../utils/selfAttendanceLeaveSchema':{ensureSelfAttendanceLeaveSchema:async()=>{}},
@@ -184,6 +185,7 @@ module.exports = async function verifyAttendanceIdentity(client, reportDependenc
     '../utils/selfAttendanceRecordsBlock':access,
   });
   const appWithBlocks=load('../controllers/selfAttendanceRecordsController.js',{
+    '../utils/selfAttendanceRecordsSite':require('../utils/selfAttendanceRecordsSite'),
     '../config/db':pool,'../utils/selfAttendanceRecordsIdentity':identity,'../utils/selfAttendanceRecordsBlock':access,
     '../utils/selfAttendancePunchCutoff':{ensurePunchCutoffSchema:async()=>{},loadPunchApprovals:async()=>new Map(),approvalProgress:()=>null},
     '../utils/selfAttendanceLeaveSchema':{ensureSelfAttendanceLeaveSchema:async()=>{}},

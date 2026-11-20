@@ -41,6 +41,7 @@ const id=n=>`d0000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
  CREATE TABLE attendance(attendance_id SERIAL PRIMARY KEY,emp_id INT,ward_id INT,date DATE,punch_in_time TIMESTAMP,punch_out_time TIMESTAMP,
  mid_shift_punch_in_time TIMESTAMPTZ,leave_type TEXT,punched_in_by INT,punched_out_by INT,mid_shift_punched_in_by INT,auto_punched_out BOOLEAN);
  INSERT INTO attendance(emp_id,ward_id,date,punch_in_time,punch_out_time,punched_in_by,punched_out_by) VALUES(1,10,'2026-10-21','2026-10-21 09:00','2026-10-21 18:00',9,9);
+ CREATE TABLE self_attendance_records_blocks(self_attendance_id UUID PRIMARY KEY,is_blocked BOOLEAN);
  CREATE TABLE self_attendance_employees(id UUID PRIMARY KEY,full_name TEXT,emp_code TEXT,mobile TEXT,city_id INT,zone_id INT,ward_id INT,kothi_id INT,is_active BOOLEAN,selfie_url TEXT);
  CREATE TABLE self_attendance_designation_assignments(self_attendance_id UUID,designation_id INT);
  CREATE TABLE self_attendance_records(id UUID PRIMARY KEY,self_attendance_id UUID,date DATE,punch_in TIMESTAMPTZ,punch_out TIMESTAMPTZ,attempted_punch_in TIMESTAMPTZ,punch_approval_status TEXT,
@@ -71,6 +72,17 @@ const id=n=>`d0000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
  assert.ok(!r.body.employees.some(row=>row.source_employee_id===id(8)),'Inactive accounts without historical records are excluded');
  assert.equal((await call({...query,employeeType:'regular'})).body.records.length,1);
  assert.equal((await call({...query,employeeType:'self_attendance'})).body.records.length,6);
+ const baseline=await call(query);
+ await db.query('INSERT INTO self_attendance_records_blocks VALUES($1,TRUE)',[id(1)]);
+ const blocked=await call(query);
+ assert.equal(blocked.code,200,JSON.stringify(blocked.body));
+ assert.equal(blocked.body.employees.at(-1).source_employee_id,id(1));assert.equal(blocked.body.employees.at(-1).is_attendance_blocked,true);
+ assert.equal(blocked.body.records.at(-1).source_employee_id,id(1));assert.equal(blocked.body.records.at(-1).punch_in,pro.punch_in);
+ assert.equal(blocked.body.records.length,baseline.body.records.length);assert.equal(blocked.body.employees.length,baseline.body.employees.length);
+ const supervisorBlocked=await call(query,{user:{role:'supervisor',user_id:9},cityScope:{all:false,ids:[1]},cities:{attendance_reports:[1],'self-attendance-records':[1]},kothiScope:{all:false,ids:[10]}});
+ assert.equal(supervisorBlocked.body.employees.at(-1).source_employee_id,id(1));assert.ok(supervisorBlocked.body.employees.every(e=>e.ward_id===10));
+ await db.query('UPDATE self_attendance_records_blocks SET is_blocked=FALSE');
+ assert.deepEqual((await call(query)).body,baseline.body,'Unblocking restores normal ordering and all original attendance');
  r=await call(query,{cities:{attendance_reports:[1],'self-attendance-records':[2]}});assert.equal(r.code,200);
  assert.equal(r.body.employees.filter(row=>row.employee_kind==='regular').length,2);assert.equal(r.body.employees.filter(row=>row.employee_kind==='self_attendance').length,1);
  r=await call(query,{kothiScope:{all:false,ids:[10]}});assert.ok(r.body.employees.every(row=>row.ward_id===10));

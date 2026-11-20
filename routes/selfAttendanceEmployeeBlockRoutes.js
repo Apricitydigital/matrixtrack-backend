@@ -66,7 +66,8 @@ router.get('/', permission('view'), wrap(async (req, res) => {
       ($2='' OR p.full_name ILIKE '%' || $2 || '%' OR p.emp_code ILIKE '%' || $2 || '%' OR p.mobile ILIKE '%' || $2 || '%')
     ORDER BY p.full_name,p.id`, [scope(req), q]);
   const enriched = await withAttendanceBlocks(result.rows);
-  const filtered = enriched.filter(p => state === 'all' || (state === 'blocked') === !!p.is_attendance_blocked);
+  const filtered = enriched.filter(p => state === 'all' || (state === 'blocked') === !!p.is_attendance_blocked)
+    .sort((a,b) => Number(!!a.is_attendance_blocked)-Number(!!b.is_attendance_blocked));
   res.json({ success: true, data: filtered.slice((page - 1) * limit, page * limit),
     pagination: { page, limit, total: filtered.length, pages: Math.max(1, Math.ceil(filtered.length / limit)) } });
 }));

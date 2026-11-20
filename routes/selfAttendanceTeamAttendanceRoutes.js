@@ -3,6 +3,8 @@ const pool = require('../config/db');
 const auth = require('../middleware/selfAttendanceAuth');
 const { ensurePunchCutoffSchema, capabilities } = require('../utils/selfAttendancePunchCutoff');
 const { ensureSelfAttendanceLeaveSchema } = require('../utils/selfAttendanceLeaveSchema');
+const { attendanceBlockSql } = require('../utils/attendanceBlockReporting');
+const { ensureAttendanceBlockSchema } = require('../utils/selfAttendanceRecordsBlock');
 const { todayIST } = require('../utils/selfAttendanceWeeklyOff');
 const wrap = handler => async (req, res) => {
   try { await handler(req, res); }
@@ -16,6 +18,7 @@ router.use(async (req, res, next) => {
   try {
     await ensurePunchCutoffSchema();
     await ensureSelfAttendanceLeaveSchema();
+    await ensureAttendanceBlockSchema();
     const access = await capabilities(pool, req.self_attendance.self_attendance_id);
     if (!access.can_view) return res.status(403).json({ success: false, message: 'Assigned team designation required.' });
     next();
@@ -70,7 +73,7 @@ router.get('/', wrap(async (req, res) => {
       AND (p.is_active=TRUE OR EXISTS(SELECT 1 FROM self_attendance_records a WHERE a.self_attendance_id=p.id
         AND a.date >= $2::date AND a.date < $2::date + INTERVAL '1 month'))
   ), records AS (
-    SELECT 'self_attendance'::text AS employee_kind,p.id AS employee_id,p.full_name,p.emp_code,p.kothi_id AS site_id,w.ward_name AS site_name,
+    SELECT 'self_attendance'::text AS employee_kind,p.id AS employee_id,p.full_name,p.emp_code,${attendanceBlockSql('p.id')} AS is_attendance_blocked,p.kothi_id AS site_id,w.ward_name AS site_name,
       d::date::text AS date,a.punch_in,a.punch_out,a.attempted_punch_in,a.punch_approval_status,
       CASE WHEN a.punch_in IS NOT NULL AND a.punch_out IS NOT NULL
         THEN ROUND((EXTRACT(EPOCH FROM (a.punch_out-a.punch_in))/3600)::numeric,2) END AS hours_worked,
@@ -106,8 +109,8 @@ router.get('/', wrap(async (req, res) => {
     return res.json({success:true,...result.rows[0],page,page_size:50,month});
   }
   const result = await pool.query(`${cte} SELECT
-    (SELECT COALESCE(json_agg(r ORDER BY (r.date>$6::text),r.date DESC,r.full_name,r.employee_id),'[]'::json) FROM
-      (SELECT * FROM records ORDER BY (date>$6::text),date DESC,full_name,employee_id LIMIT 50 OFFSET $7) r) AS data,
+    (SELECT COALESCE(json_agg(r ORDER BY r.is_attendance_blocked,(r.date>$6::text),r.date DESC,r.full_name,r.employee_id),'[]'::json) FROM
+      (SELECT * FROM records ORDER BY is_attendance_blocked,(date>$6::text),date DESC,full_name,employee_id LIMIT 50 OFFSET $7) r) AS data,
     (SELECT COUNT(*)::int FROM records) AS total,
     (SELECT COALESCE(json_object_agg(status,n),'{}'::json) FROM
       (SELECT status,COUNT(*)::int AS n FROM records GROUP BY status) s) AS summary`, [...params,(page-1)*50]);

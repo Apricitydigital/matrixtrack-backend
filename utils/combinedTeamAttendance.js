@@ -1,6 +1,6 @@
 // Combine before paginating so totals, status counts and page boundaries cover both populations.
 function combinedTeamAttendanceQuery(selfAttendanceCte,regularCte,params){
- const order="(row->>'date'>$6::text),row->>'date' DESC,row->>'full_name',row->>'employee_kind',row->>'employee_id'";
+ const order="COALESCE((row->>'is_attendance_blocked')::boolean,FALSE),(row->>'date'>$6::text),row->>'date' DESC,row->>'full_name',row->>'employee_kind',row->>'employee_id'";
  return {params,sql:`WITH self_attendance_rows AS (${selfAttendanceCte} SELECT to_jsonb(r) AS row FROM records r),
   regular_rows AS (${regularCte} SELECT to_jsonb(r) AS row FROM records r),
   combined AS (SELECT row FROM self_attendance_rows UNION ALL SELECT row FROM regular_rows)

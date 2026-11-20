@@ -1230,7 +1230,7 @@ router.get("/activity-logs", async (req, res) => {
 // Export data endpoints
 const handleAdminAttendanceDownload = createAttendanceDownloadHandler({
   pool,
-  defaultFormat: "csv",
+  defaultFormat: "xlsx",
   resolveCityScope: (req) => req.cityScope,
 });
 
