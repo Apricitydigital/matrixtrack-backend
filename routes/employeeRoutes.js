@@ -168,10 +168,41 @@ router.post("/", async (req, res) => {
 
 // 🟢 Update an existing employee and return updated details
 router.put("/:id", async (req, res) => {
+  let client;
   try {
+    client = await pool.connect();
+    await client.query('BEGIN');
     const { id } = req.params;
     const { name, emp_code, phone, ward_id, designation_id } = req.body;
-    const result = await pool.query(
+    const previous = (await client.query('SELECT * FROM employee WHERE emp_id = $1 FOR UPDATE', [id])).rows[0];
+    if (!previous) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    if (name !== previous.name) {
+      // Shared legacy codes (for example MP09) are not a person identifier.
+      // Match the original code, physical site and phone before syncing a name.
+      const profiles = (await client.query(`SELECT id, request_id, kothi_id, mobile, full_name
+        FROM self_attendance_employees
+        WHERE emp_code = $1 AND is_active = true ORDER BY id FOR UPDATE`, [previous.emp_code])).rows;
+      const matches = profiles.filter(profile =>
+        Number(profile.kothi_id) === Number(previous.ward_id) &&
+        (previous.phone
+          ? String(profile.mobile || '').trim() === String(previous.phone).trim()
+          : String(profile.full_name || '').trim() === String(previous.name).trim()));
+      if (matches.length > 1 || (!matches.length && profiles.length && previous.self_attendance_enabled)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Self Attendance identity is ambiguous. Correct the employee code and site mapping before changing the name.' });
+      }
+      if (matches.length === 1) {
+        const profile = matches[0];
+        await client.query('UPDATE self_punch_requests SET full_name = $1, updated_at = NOW() WHERE id = $2', [name, profile.request_id || profile.id]);
+        await client.query('UPDATE self_attendance_employees SET full_name = $1 WHERE id = $2', [name, profile.id]);
+      }
+    }
+
+    const result = await client.query(
       `UPDATE employee 
        SET name = $1, emp_code = $2, phone = $3, ward_id = $4, designation_id = $5, aadhar_no = $6,
         no_personal_phone=COALESCE($8::boolean,no_personal_phone)
@@ -181,11 +212,12 @@ router.put("/:id", async (req, res) => {
     );
 
     if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: "Employee not found" });
     }
 
     // Fetch the updated details
-    const updatedEmployee = await pool.query(
+    const updatedEmployee = await client.query(
       `SELECT 
           e.emp_id, 
           e.name, 
@@ -209,8 +241,10 @@ router.put("/:id", async (req, res) => {
       [id]
     );
 
+    await client.query('COMMIT');
     res.json(formatEmployeeRow(updatedEmployee.rows[0]));
   } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
     console.error("Error updating employee:", error);
     if (error.code === "23505") {
       return res.status(409).json({
@@ -218,6 +252,8 @@ router.put("/:id", async (req, res) => {
       });
     }
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (client) client.release();
   }
 });
 
