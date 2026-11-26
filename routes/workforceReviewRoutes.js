@@ -12,6 +12,7 @@ const {ensureMergeSchema}=require('../utils/employeeAliases');
 const {retainMergedLogins}=require('../utils/selfAttendanceMergeLogin');
 const recovery=require('../utils/workforceMergeRecovery');
 const HR_MERGE_ADMIN_EMAIL='hr@apricitydigital.in';
+const HR_HARD_DELETE_ADMIN_EMAIL='hr@humanmatrix.co.in';
 const fail = (message, status=400) => { throw Object.assign(new Error(message), { status }); };
 const wrap = fn => async (req,res,next) => { try { await fn(req,res,next); } catch(e) {
  console.error('[WorkforceReview]', e.message); res.status(e.status || 500).json({message:e.status ? e.message : 'Unable to load workforce review.',...(e.attendanceConflicts ? {attendanceConflicts:e.attendanceConflicts} : {})});
@@ -31,6 +32,7 @@ router.use(wrap(async (req,res,next) => {
  const owners=[process.env.SUPER_ADMIN_EMAIL || 'mtadmin@apricitydigital.in',process.env.SUPER_ADMIN_DB_EMAIL || 'admin@gmail.com'];
   req.reviewOwner=['super_admin','superadmin'].includes(user.role) || p?.role_type==='super_admin' || owners.some(e=>e.trim().toLowerCase()===String(user.email).trim().toLowerCase());
   req.reviewCanMerge=req.reviewOwner || String(user.email || '').trim().toLowerCase()===HR_MERGE_ADMIN_EMAIL;
+ req.reviewCanHardDelete=req.reviewOwner || String(user.email || '').trim().toLowerCase()===HR_HARD_DELETE_ADMIN_EMAIL;
  req.reviewActor=user; req.user={...req.user,user_id:user.user_id,role:'admin',permissions:p};
  next();
 }));
@@ -112,7 +114,7 @@ router.get('/',permission('view'),wrap(async(req,res)=>{
  (!req.query.status || req.query.status==='all' || (req.query.status==='faceRegistered' ? r.face_registered : req.query.status==='midShiftPunchIn' ? r.mid_shift : r.status===req.query.status)) &&
  (req.query.review==='duplicates' ? r.duplicate_count>0 : !req.query.review || req.query.review==='all' || (req.query.review==='signals' ? r.signals.length>0 : r.issues.some(i=>i.status===req.query.review))));
  const page=Math.max(1,parseInt(req.query.page,10)||1),limit=25;
- res.json({data:filtered.slice((page-1)*limit,page*limit),total:filtered.length,pages:Math.max(1,Math.ceil(filtered.length/limit)),canHardDelete:req.reviewOwner,canMerge:req.reviewCanMerge,canManageNonDuplicates:req.reviewOwner,
+ res.json({data:filtered.slice((page-1)*limit,page*limit),total:filtered.length,pages:Math.max(1,Math.ceil(filtered.length/limit)),canHardDelete:req.reviewCanHardDelete,canMerge:req.reviewCanMerge,canManageNonDuplicates:req.reviewOwner,
  canWrite:req.reviewOwner || !req.user.permissions || req.user.permissions.modules?.dashboard==='write'});
 }));
 router.post('/:kind/:id/issues',permission('write'),wrap(async(req,res)=>{
@@ -129,6 +131,7 @@ router.patch('/:kind/:id/issues/:issueId',permission('write'),wrap(async(req,res
  if(!data) fail('Issue not found.',404); res.json({data});
 }));
 const ownerOnly=(req,res,next)=>req.reviewOwner ? next() : res.status(403).json({message:'Only a superadmin can perform this action.'});
+const hardDeleteOnly=(req,res,next)=>req.reviewCanHardDelete ? next() : res.status(403).json({message:'Workforce hard delete permission required.'});
 const mergeOnly=(req,res,next)=>req.reviewCanMerge ? next() : res.status(403).json({message:'Workforce merge permission required.'});
 router.get('/:kind/:id/duplicates',permission('view'),wrap(async(req,res)=>{
  const row=await employee(req),rows=await records(req);
@@ -245,7 +248,7 @@ router.post('/merges/:mergeId/revert',mergeOnly,wrap(async(req,res)=>{
   res.json({message:'Merge reverted. Original employee profiles and record ownership restored; unrelated newer records preserved.'});
  }catch(error){await client.query('ROLLBACK');if(['40001','40P01','23505','23503','23514'].includes(error.code))fail('Newer changes or dependent settings conflict with this revert. No records were restored. Refresh and preview again.',409);throw error;}finally{client.release();}
 }));
-router.get('/:kind/:id/delete-preview',ownerOnly,wrap(async(req,res)=>{
+router.get('/:kind/:id/delete-preview',hardDeleteOnly,wrap(async(req,res)=>{
  const row=await employee(req); const client=await pool.connect();
  try {
  await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -253,7 +256,7 @@ router.get('/:kind/:id/delete-preview',ownerOnly,wrap(async(req,res)=>{
  res.json({employee:row,affected:plan.map(({table,count})=>({table,count})),fingerprint:fingerprint(plan)});
  } catch(e) {await client.query('ROLLBACK');throw e;} finally {client.release();}
 }));
-router.delete('/:kind/:id',ownerOnly,wrap(async(req,res)=>{
+router.delete('/:kind/:id',hardDeleteOnly,wrap(async(req,res)=>{
  const reason=String(req.body.reason || '').trim();
  if(reason.length<3 || reason.length>1000 || req.body.confirmation!==req.params.id) fail('Enter a reason and the exact employee ID to confirm deletion.');
  await schema(); await ensureMergeSchema(); const client=await pool.connect();
