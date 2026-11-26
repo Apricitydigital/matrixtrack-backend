@@ -11,6 +11,7 @@ const {duplicateIndex,matchingSignals,mergePlan,moveReferences,validateMove,asse
 const {ensureMergeSchema}=require('../utils/employeeAliases');
 const {retainMergedLogins}=require('../utils/selfAttendanceMergeLogin');
 const recovery=require('../utils/workforceMergeRecovery');
+const HR_MERGE_ADMIN_EMAIL='hr@apricitydigital.in';
 const fail = (message, status=400) => { throw Object.assign(new Error(message), { status }); };
 const wrap = fn => async (req,res,next) => { try { await fn(req,res,next); } catch(e) {
  console.error('[WorkforceReview]', e.message); res.status(e.status || 500).json({message:e.status ? e.message : 'Unable to load workforce review.',...(e.attendanceConflicts ? {attendanceConflicts:e.attendanceConflicts} : {})});
@@ -28,7 +29,8 @@ router.use(wrap(async (req,res,next) => {
  let p=user?.permissions; if(typeof p==='string') p=JSON.parse(p);
  if(!user || user.is_deleted || !['admin','super_admin','superadmin'].includes(user.role) || p?.is_active===false) return res.status(403).json({message:'Active admin account required.'});
  const owners=[process.env.SUPER_ADMIN_EMAIL || 'mtadmin@apricitydigital.in',process.env.SUPER_ADMIN_DB_EMAIL || 'admin@gmail.com'];
- req.reviewOwner=['super_admin','superadmin'].includes(user.role) || p?.role_type==='super_admin' || owners.some(e=>e.trim().toLowerCase()===String(user.email).trim().toLowerCase());
+  req.reviewOwner=['super_admin','superadmin'].includes(user.role) || p?.role_type==='super_admin' || owners.some(e=>e.trim().toLowerCase()===String(user.email).trim().toLowerCase());
+  req.reviewCanMerge=req.reviewOwner || String(user.email || '').trim().toLowerCase()===HR_MERGE_ADMIN_EMAIL;
  req.reviewActor=user; req.user={...req.user,user_id:user.user_id,role:'admin',permissions:p};
  next();
 }));
@@ -110,7 +112,7 @@ router.get('/',permission('view'),wrap(async(req,res)=>{
  (!req.query.status || req.query.status==='all' || (req.query.status==='faceRegistered' ? r.face_registered : req.query.status==='midShiftPunchIn' ? r.mid_shift : r.status===req.query.status)) &&
  (req.query.review==='duplicates' ? r.duplicate_count>0 : !req.query.review || req.query.review==='all' || (req.query.review==='signals' ? r.signals.length>0 : r.issues.some(i=>i.status===req.query.review))));
  const page=Math.max(1,parseInt(req.query.page,10)||1),limit=25;
- res.json({data:filtered.slice((page-1)*limit,page*limit),total:filtered.length,pages:Math.max(1,Math.ceil(filtered.length/limit)),canHardDelete:req.reviewOwner,canMerge:req.reviewOwner,
+ res.json({data:filtered.slice((page-1)*limit,page*limit),total:filtered.length,pages:Math.max(1,Math.ceil(filtered.length/limit)),canHardDelete:req.reviewOwner,canMerge:req.reviewCanMerge,canManageNonDuplicates:req.reviewOwner,
  canWrite:req.reviewOwner || !req.user.permissions || req.user.permissions.modules?.dashboard==='write'});
 }));
 router.post('/:kind/:id/issues',permission('write'),wrap(async(req,res)=>{
@@ -126,7 +128,8 @@ router.patch('/:kind/:id/issues/:issueId',permission('write'),wrap(async(req,res
  const data=(await pool.query(`UPDATE workforce_review_issues SET status=$1,updated_by=$2,updated_at=NOW() WHERE id=$3 AND employee_kind=$4 AND employee_id=$5 RETURNING *`,[req.body.status,req.reviewActor.user_id,req.params.issueId,row.kind,row.id])).rows[0];
  if(!data) fail('Issue not found.',404); res.json({data});
 }));
-const ownerOnly=(req,res,next)=>req.reviewOwner ? next() : res.status(403).json({message:'Only a superadmin can merge employees, revert merges or permanently delete employee records.'});
+const ownerOnly=(req,res,next)=>req.reviewOwner ? next() : res.status(403).json({message:'Only a superadmin can perform this action.'});
+const mergeOnly=(req,res,next)=>req.reviewCanMerge ? next() : res.status(403).json({message:'Workforce merge permission required.'});
 router.get('/:kind/:id/duplicates',permission('view'),wrap(async(req,res)=>{
  const row=await employee(req),rows=await records(req);
  const excluded=await exclusions(pool);
@@ -157,7 +160,7 @@ async function prepareMerge(req,client) {
  assertSameAadhaar(selected);
  return mergePlan(client,target.kind,target.id,[...ids].sort(),{weeklyOffSourceId:req.body.weeklyOffSourceId,attendanceResolutions:req.body.attendanceResolutions});
 }
-router.post('/:kind/:id/merge-preview',ownerOnly,wrap(async(req,res)=>{
+router.post('/:kind/:id/merge-preview',mergeOnly,wrap(async(req,res)=>{
  await schema();await ensureMergeSchema();const client=await pool.connect();
  try {
   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
@@ -167,7 +170,7 @@ router.post('/:kind/:id/merge-preview',ownerOnly,wrap(async(req,res)=>{
   res.json({targetId:plan.targetId,sourceIds:plan.sourceIds,login:plan.login,attendance:plan.attendance?.summary,weeklyOff:plan.weeklyOff?{selectedId:plan.weeklyOff.selectedId,days:plan.weeklyOff.days}:null,restoreWindowHours:48,affected:plan.affected.map(({table,column,count})=>({table,column,count})),fingerprint:plan.fingerprint});
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }));
-router.post('/:kind/:id/merge',ownerOnly,wrap(async(req,res)=>{
+router.post('/:kind/:id/merge',mergeOnly,wrap(async(req,res)=>{
  if(req.body.identityConfirmed!==true) fail('Confirm these accounts belong to the same person and the chosen main account has their working login and enrolled face.');
  const reason=String(req.body.reason || '').trim();
  if(reason.length<3 || reason.length>1000 || req.body.confirmation!==req.params.id || typeof req.body.fingerprint!=='string') fail('Enter a merge reason and confirm the main employee ID after previewing.');
@@ -192,29 +195,35 @@ router.post('/:kind/:id/merge',ownerOnly,wrap(async(req,res)=>{
   await client.query('COMMIT');res.json({message:'Duplicate IDs merged. You can preview and revert this merge within 48 hours from Merge history.',targetId:plan.targetId,mergeId:audit.id,restoreUntil:audit.restore_until});
  }catch(error){await client.query('ROLLBACK');if(['40001','40P01','23505','23503'].includes(error.code)) fail('Records changed or conflicting settings were found. No merge was saved. Refresh and preview again.',409);throw error;}finally{client.release();}
 }));
-router.get('/merges',ownerOnly,wrap(async(req,res)=>{
+router.get('/merges',mergeOnly,wrap(async(req,res)=>{
  await recovery.ensureRecoverySchema(pool);
  const page=Math.max(1,parseInt(req.query.page,10)||1);
+ const owner=req.reviewOwner;
+ const actorClause=owner?'':'WHERE actor_user_id=$1';
+ const pageParam=owner?1:2;
+ const offset=(page-1)*25;
+ const params=owner?[offset]:[req.reviewActor.user_id,offset];
  const {rows}=await pool.query(`SELECT id,employee_kind,target_id,source_ids,reason,created_at,restore_until,reverted_at,
  COALESCE(profile_snapshots->0->>'full_name',profile_snapshots->0->>'name','Employee') AS employee_name,
  (recovery_version=1 AND reverted_at IS NULL AND restore_until>clock_timestamp()) AS can_revert
- FROM workforce_merge_audit ORDER BY id DESC LIMIT 25 OFFSET $1`,[(page-1)*25]);
- const count=(await pool.query('SELECT count(*)::int AS total FROM workforce_merge_audit')).rows[0].total;
+ FROM workforce_merge_audit ${actorClause} ORDER BY id DESC LIMIT 25 OFFSET $${pageParam}`,params);
+ const count=(await pool.query(`SELECT count(*)::int AS total FROM workforce_merge_audit ${actorClause}`,owner?[]:[req.reviewActor.user_id])).rows[0].total;
  res.json({data:rows,total:count,pages:Math.max(1,Math.ceil(count/25))});
 }));
-router.post('/merges/:mergeId/revert-preview',ownerOnly,wrap(async(req,res)=>{
+router.post('/merges/:mergeId/revert-preview',mergeOnly,wrap(async(req,res)=>{
  const client=await pool.connect();
  try {
   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
   await client.query("SET LOCAL lock_timeout='2s'");
   await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
   const audit=await recovery.auditForRestore(client,req.params.mergeId);
+   if(!req.reviewOwner && Number(audit.actor_user_id)!==Number(req.reviewActor.user_id)) fail('You can only preview a revert for a merge you performed.',403);
   const preview=await recovery.previewRestore(client,audit);
   await client.query('ROLLBACK');
   res.json({mergeId:audit.id,targetId:audit.target_id,sourceIds:audit.source_ids,restoreUntil:audit.restore_until,...preview});
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }));
-router.post('/merges/:mergeId/revert',ownerOnly,wrap(async(req,res)=>{
+router.post('/merges/:mergeId/revert',mergeOnly,wrap(async(req,res)=>{
  const reason=String(req.body.reason || '').trim();
  if(reason.length<3 || reason.length>1000 || typeof req.body.fingerprint!=='string')fail('Preview the revert and enter a reason between 3 and 1000 characters.');
  const client=await pool.connect();
@@ -223,6 +232,7 @@ router.post('/merges/:mergeId/revert',ownerOnly,wrap(async(req,res)=>{
   await client.query("SET LOCAL lock_timeout='2s'");
   await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
   const audit=await recovery.auditForRestore(client,req.params.mergeId);
+   if(!req.reviewOwner && Number(audit.actor_user_id)!==Number(req.reviewActor.user_id)) fail('You can only revert a merge you performed.',403);
   if(req.body.confirmation!==audit.target_id)fail('Type the main employee ID to confirm reverting this merge.');
   const preview=await recovery.previewRestore(client,audit);
   if(preview.fingerprint!==req.body.fingerprint)fail('Employee data changed. Preview the revert again.',409);

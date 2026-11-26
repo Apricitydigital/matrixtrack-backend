@@ -32,6 +32,7 @@ function fixture(){
   '../controllers/selfAttendancePushController':obj(['registerPushToken','unregisterPushToken']),
   '../controllers/selfAttendanceGeofenceController':obj(['getMyGeofenceStatus','submitSelfAttendanceGeofenceRequest']),
   '../controllers/selfAttendanceReminderSettingsController':obj(['getReminderSettings','saveReminderSettings']),
+  '../controllers/missedPunchOutController':obj(['getWarning','acknowledgeWarning']),
   '../utils/selfAttendancePunchInReminder':{runSelfAttendancePunchInReminder:async()=>{throw Error('Unexpected reminder');}},
  });
  const route=(url,name,method='get')=>{const r=express.Router();r.use(auth);r[method](url,handler(name));return r;};

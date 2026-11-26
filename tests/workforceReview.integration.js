@@ -36,7 +36,7 @@ async function call(verb,route,{user=1,body={},query={},params={}}={}){
 const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-222222222222';
 (async()=>{
  await db.exec(`CREATE TABLE users(user_id INT PRIMARY KEY,name TEXT,email TEXT,role TEXT,permissions JSONB,is_deleted BOOLEAN DEFAULT FALSE);
- INSERT INTO users VALUES(1,'Owner','owner@example.test','super_admin',NULL,false),(2,'Supervisor','s@example.test','supervisor',NULL,false),(3,'Scoped admin','a@example.test','admin','{}',false),(4,'No access','b@example.test','admin','{}',false);
+  INSERT INTO users VALUES(1,'Owner','owner@example.test','super_admin',NULL,false),(2,'Supervisor','s@example.test','supervisor',NULL,false),(3,'Scoped admin','a@example.test','admin','{}',false),(4,'No access','b@example.test','admin','{}',false),(5,'Merge only','hr@apricitydigital.in','admin','{}',false),(6,'Self grant','selfgrant@example.test','admin','{"workforce_review":{"can_merge":true}}',false);
  CREATE TABLE cities(city_id INT PRIMARY KEY,city_name TEXT); INSERT INTO cities VALUES(1,'One'),(2,'Two');
  CREATE TABLE zones(zone_id INT PRIMARY KEY,city_id INT);INSERT INTO zones VALUES(1,1),(2,2);
  CREATE TABLE wards(ward_id INT PRIMARY KEY,zone_id INT,ward_name TEXT);INSERT INTO wards VALUES(10,1,'Site one'),(20,2,'Site two');
@@ -69,10 +69,14 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  assert.equal(duplicatesOnly.data.total,4);assert.ok(duplicatesOnly.data.data.every(row=>row.duplicate_count>0));
  assert.equal((await call('get','/',{user:2})).code,403);assert.equal((await call('get','/',{user:4})).code,403);
  r=await call('get','/',{user:3,query:dates});assert.equal(r.data.total,3);assert.equal(r.data.canHardDelete,false);
+  r=await call('get','/',{user:5,query:dates});assert.equal(r.code,200);assert.equal(r.data.canMerge,true);assert.equal(r.data.canHardDelete,false);assert.equal(r.data.canManageNonDuplicates,false);
+  r=await call('get','/',{user:6,query:dates});assert.equal(r.code,200);assert.equal(r.data.canMerge,false,'an ordinary admin cannot self-grant merge access with permissions JSON');
  assert.equal((await call('post','/:kind/:id/issues',{user:3,params:{kind:'regular',id:'1'},body:{reason:'duplicate'}})).code,403);
  const params={kind:'self_attendance',id:pro};
  assert.equal((await call('get','/:kind/:id/delete-preview',{user:3,params})).code,403);
  assert.equal((await call('delete','/:kind/:id',{user:3,params,body:{confirmation:pro,reason:'Forbidden delete'}})).code,403);
+  assert.equal((await call('get','/:kind/:id/delete-preview',{user:5,params})).code,403);
+  assert.equal((await call('post','/:kind/:id/non-duplicate',{user:5,params,body:{otherKind:'self_attendance',otherId:pro2}})).code,403);
  r=await call('post','/:kind/:id/issues',{params,body:{reason:'Review duplicate employee'}});assert.equal(r.code,201);const issueId=r.data.data.id;
  r=await call('patch','/:kind/:id/issues/:issueId',{params:{...params,issueId},body:{status:'done'}});assert.equal(r.data.data.status,'done');
  r=await call('get','/',{query:{...dates,review:'done'}});assert.equal(r.data.total,1);
@@ -116,12 +120,14 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  const candidates=(await call('get','/:kind/:id/duplicates',{params:mergeParams,query:dates})).data;
  assert.equal(candidates.candidates.length,3);
  assert.equal((await call('post','/:kind/:id/merge-preview',{user:3,params:mergeParams,body:mergeBody})).code,403);
+  assert.equal((await call('post','/:kind/:id/merge-preview',{user:6,params:mergeParams,body:mergeBody})).code,403,'self-granted can_merge must not bypass the email allowlist');
  assert.equal((await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:{sourceIds:['13']}})).code,400);
  assert.equal((await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:{sourceIds:['14']}})).code,409);
  assert.equal((await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:{sourceIds:['10']}})).code,400);
  await db.query("UPDATE employee SET phone='8765432109' WHERE emp_id=11");
  assert.equal((await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:mergeBody})).code,409,'Different Aadhaar plus name alone must not allow a merge');
  await db.query("UPDATE employee SET phone='9998887777' WHERE emp_id=11");
+  assert.equal((await call('post','/:kind/:id/merge-preview',{user:5,params:mergeParams,body:mergeBody})).code,200,'an explicitly merge-authorized admin can preview');
  let mp=await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:mergeBody});
  assert.equal(mp.code,200,JSON.stringify(mp.data));
  assert.equal((await db.query('SELECT emp_id FROM attendance WHERE date=$1',['2026-10-20'])).rows[0].emp_id,11,'preview must not persist changes');
@@ -130,13 +136,15 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  assert.equal((await call('post','/:kind/:id/merge',{params:mergeParams,body:submit})).code,409);
  mp=await call('post','/:kind/:id/merge-preview',{params:mergeParams,body:mergeBody});
  const before=(await db.query('SELECT id,date,punch_in_time,punch_out_time FROM attendance WHERE emp_id IN (10,11) ORDER BY id')).rows;
- r=await call('post','/:kind/:id/merge',{params:mergeParams,body:{...submit,fingerprint:mp.data.fingerprint}});
+  r=await call('post','/:kind/:id/merge',{user:5,params:mergeParams,body:{...submit,fingerprint:mp.data.fingerprint}});
  assert.equal(r.code,200,JSON.stringify(r.data));
  assert.deepEqual((await db.query('SELECT id,date,punch_in_time,punch_out_time FROM attendance WHERE emp_id=10 ORDER BY id')).rows,before);
  assert.equal((await db.query('SELECT emp_id FROM legacy_employee_notes')).rows[0].emp_id,10);
  assert.equal((await db.query('SELECT count(*)::int AS n FROM employee WHERE emp_id=11')).rows[0].n,0);
  assert.equal((await db.query("SELECT target_id FROM workforce_employee_aliases WHERE source_id='11'")).rows[0].target_id,'10');
  assert.equal((await db.query('SELECT profile_snapshots FROM workforce_merge_audit')).rows[0].profile_snapshots.length,2);
+  const ownHistory=await call('get','/merges',{user:5});assert.equal(ownHistory.code,200);assert.equal(ownHistory.data.total,1);
+  assert.equal((await call('post','/merges/:mergeId/revert-preview',{user:5,params:{mergeId:r.data.mergeId}})).code,200,'merge admin can review recovery for their own merge');
  assert.equal((await call('post','/:kind/:id/merge',{params:mergeParams,body:{...submit,fingerprint:mp.data.fingerprint}})).code,404,'repeat merge must not duplicate anything');
  const dp=(await call('get','/:kind/:id/delete-preview',{params:mergeParams})).data;
  assert.equal((await call('delete','/:kind/:id',{params:mergeParams,body:{confirmation:'10',reason:'Prevent data loss',fingerprint:dp.fingerprint}})).code,409);
@@ -153,7 +161,9 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  assert.equal((await call('post','/:kind/:id/merge-preview',{params:nextParams,body:nextBody})).code,409,'Another merge must not invalidate an open recovery window');
  await db.query("UPDATE workforce_merge_audit SET restore_until=NOW()-INTERVAL '1 second'");
  mp=await call('post','/:kind/:id/merge-preview',{params:nextParams,body:nextBody});assert.equal(mp.code,200);
- r=await call('post','/:kind/:id/merge',{params:nextParams,body:{...nextBody,confirmation:'12',reason:'Keep newest profile',fingerprint:mp.data.fingerprint}});assert.equal(r.code,200,JSON.stringify(r.data));
+  r=await call('post','/:kind/:id/merge',{params:nextParams,body:{...nextBody,confirmation:'12',reason:'Keep newest profile',fingerprint:mp.data.fingerprint}});assert.equal(r.code,200,JSON.stringify(r.data));
+  assert.equal((await call('post','/merges/:mergeId/revert-preview',{user:5,params:{mergeId:r.data.mergeId}})).code,403,'merge admin cannot inspect recovery for another admin merge');
+  assert.equal((await call('get','/merges',{user:5})).data.total,1,'merge history is restricted to merges performed by the merge admin');
  assert.equal((await db.query("SELECT target_id FROM workforce_employee_aliases WHERE source_id='11'")).rows[0].target_id,'12');
  // Old IDs continue to work for offline writes, regular logins and active self_attendance tokens.
  await db.query("INSERT INTO attendance(emp_id,date,punch_in_time) VALUES(11,'2026-10-22','2026-10-22 09:00')");

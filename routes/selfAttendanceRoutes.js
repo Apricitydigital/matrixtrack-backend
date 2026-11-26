@@ -28,6 +28,7 @@ const {
 
 const router = express.Router();
 const { getReminderSettings, saveReminderSettings } = require('../controllers/selfAttendanceReminderSettingsController');
+const missedPunchOutController = require('../controllers/missedPunchOutController');
 
 // -----------------------------------------------------
 // PUBLIC ROUTES
@@ -60,6 +61,8 @@ router.get('/leave/team-requests', getTeamRequests);
 router.post('/leave/team-requests/:id/review', reviewTeamLeave);
 router.get("/notifications", getMyNotifications);
 router.post("/notifications/:id/read", markNotificationRead);
+router.get('/punch-out-warning', missedPunchOutController.getWarning);
+router.post('/punch-out-warning/acknowledge', missedPunchOutController.acknowledgeWarning);
 router.post("/push-token/register", registerPushToken);
 router.post("/push-token/unregister", unregisterPushToken);
 router.get('/reminder-settings', getReminderSettings);

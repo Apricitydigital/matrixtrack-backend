@@ -34,6 +34,54 @@ router.get('/sites', wrap(async (req, res) => {
   res.json({ success: true, data: rows });
 }));
 
+router.get('/missed-punch-outs/filters', wrap(async (req, res) => {
+  const actor=req.self_attendance.self_attendance_id;
+  const [zones,sites]=await Promise.all([
+    pool.query(`SELECT DISTINCT z.zone_id AS id,z.zone_name AS name FROM self_attendance_site_access s
+      JOIN wards w ON w.ward_id=s.kothi_id
+      JOIN zones z ON z.zone_id=COALESCE(w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=w.sector_id))
+      WHERE s.self_attendance_id=$1 ORDER BY z.zone_name,z.zone_id`,[actor]),
+    pool.query(`SELECT DISTINCT w.ward_id AS id,w.ward_name AS name,
+      COALESCE(w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=w.sector_id)) AS zone_id
+      FROM self_attendance_site_access s JOIN wards w ON w.ward_id=s.kothi_id
+      WHERE s.self_attendance_id=$1 ORDER BY w.ward_name,w.ward_id`,[actor]),
+  ]);
+  res.json({success:true,data:{zones:zones.rows,sites:sites.rows}});
+}));
+
+router.get('/missed-punch-outs', wrap(async (req, res) => {
+  const actor = req.self_attendance.self_attendance_id;
+  const access = await capabilities(pool, actor);
+  if (!access.can_view) return res.status(403).json({ success: false, message: 'Assigned team designation required.' });
+  const { start_date: startDate, end_date: endDate }=req.query;
+  const today=todayIST();
+  const yesterday=new Date(`${today}T00:00:00Z`);
+  yesterday.setUTCDate(yesterday.getUTCDate()-1);
+  const latestDate=yesterday.toISOString().slice(0,10);
+  const start=String(startDate||latestDate),end=String(endDate||latestDate);
+  const startAt=new Date(`${start}T00:00:00Z`),endAt=new Date(`${end}T00:00:00Z`);
+  const validDate=(value,date)=>/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(date.getTime())&&date.toISOString().slice(0,10)===value;
+  if(!validDate(start,startAt)||!validDate(end,endAt)||start>end||end>latestDate||(endAt-startAt)/86400000>365){
+    return res.status(400).json({success:false,message:'Choose a valid date range within the last 366 days, ending no later than yesterday.'});
+  }
+  const zoneId=String(req.query.zone_id||''),siteId=String(req.query.site_id||''),search=String(req.query.search||'').trim();
+  const validId=value=>!value||(/^\d+$/.test(value)&&Number.isSafeInteger(Number(value))&&Number(value)>0&&Number(value)<=2147483647);
+  if(!validId(zoneId)||!validId(siteId)||search.length>100)return res.status(400).json({success:false,message:'Choose valid zone, ward and search values.'});
+  if(siteId){
+    const allowed=await pool.query(`SELECT 1 FROM self_attendance_site_access s JOIN wards w ON w.ward_id=s.kothi_id
+      WHERE s.self_attendance_id=$1 AND w.ward_id=$2 AND ($3::int IS NULL OR COALESCE(w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=w.sector_id))=$3)`,[actor,siteId,zoneId||null]);
+    if(!allowed.rows.length)return res.status(403).json({success:false,message:'Ward is outside your assigned access.'});
+  }
+  if(zoneId){
+    const allowed=await pool.query(`SELECT 1 FROM self_attendance_site_access s JOIN wards w ON w.ward_id=s.kothi_id
+      WHERE s.self_attendance_id=$1 AND COALESCE(w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=w.sector_id))=$2 LIMIT 1`,[actor,zoneId]);
+    if(!allowed.rows.length)return res.status(403).json({success:false,message:'Zone is outside your assigned access.'});
+  }
+  await require('../utils/missedPunchOutFollowUp').ensureMissedPunchOutSchema();
+  const report=await require('../utils/missedPunchOutFollowUp').getMissedPunchOutReport(pool,actor,start,end,{zoneId:zoneId||null,siteId:siteId||null,search});
+  res.json({success:true,...report});
+}));
+
 router.get('/', wrap(async (req, res) => {
   const employeeType=req.query.employeeType||'all';
   const view=req.query.view||'records';

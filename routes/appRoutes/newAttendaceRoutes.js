@@ -3311,6 +3311,35 @@ router.get("/self/status", authenticate, async (req, res) => {
   }
 });
 
+router.get('/self/punch-out-warning',authenticate,async(req,res)=>{
+  try{
+    await ensureSelfAttendanceSupport();
+    const resolved=await resolveEmployeeForUser(req.user);
+    if(!resolved)return res.status(404).json({success:false,message:'Employee profile not found for this user.'});
+    const warning=await require('../../utils/missedPunchOutFollowUp').getPendingRegularPunchOutWarning(pool,resolved.employee.emp_id);
+    return res.json({success:true,data:warning});
+  }catch(error){
+    console.error('[EmployeePunchOutWarning]',error.message);
+    return res.status(500).json({success:false,message:'Unable to check the punch-out warning.'});
+  }
+});
+
+router.post('/self/punch-out-warning/acknowledge',authenticate,async(req,res)=>{
+  try{
+    await ensureSelfAttendanceSupport();
+    const resolved=await resolveEmployeeForUser(req.user);
+    if(!resolved)return res.status(404).json({success:false,message:'Employee profile not found for this user.'});
+    const startDate=String(req.body?.streak_start_date||'');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(startDate))return res.status(400).json({success:false,message:'A valid warning date is required.'});
+    const result=await require('../../utils/missedPunchOutFollowUp').acknowledgeRegularPunchOutWarning(pool,resolved.employee.emp_id,startDate);
+    return res.json({success:true,data:result});
+  }catch(error){
+    const status=error.status||500;
+    if(status===500)console.error('[EmployeePunchOutWarning acknowledge]',error.message);
+    return res.status(status).json({success:false,message:status===500?'Unable to record your acknowledgment.':error.message});
+  }
+});
+
 router.get("/self/calendar", authenticate, async (req, res) => {
   try {
     await ensureSelfAttendanceSupport();

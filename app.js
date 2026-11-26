@@ -479,6 +479,24 @@ if (AUTO_PUNCHOUT_CRON_ENABLED && isPrimaryCronInstance) {
   console.log("[AutoPunchOut Cron] Disabled or non-primary instance; skipping.");
 }
 
+// Run after the 07:00 auto-close so auto-punched records are included in the
+// Project Head follow-up and the three-day employee warning.
+const MISSED_PUNCHOUT_FOLLOWUP_ENABLED = process.env.MISSED_PUNCHOUT_FOLLOWUP_ENABLED !== "false";
+if (MISSED_PUNCHOUT_FOLLOWUP_ENABLED && isPrimaryCronInstance) {
+  const { runMissedPunchOutFollowUp } = require('./utils/missedPunchOutFollowUp');
+  let missedPunchOutFollowUpRunning = false;
+  cron.schedule('15 7 * * *', async () => {
+    if (missedPunchOutFollowUpRunning) return;
+    missedPunchOutFollowUpRunning = true;
+    try { await runMissedPunchOutFollowUp(); }
+    catch (error) { console.error('[MissedPunchOutFollowUp] Error:',error.message); }
+    finally { missedPunchOutFollowUpRunning = false; }
+  }, { timezone: 'Asia/Kolkata' });
+  console.log('[MissedPunchOutFollowUp] Registered for 07:15 IST daily.');
+} else {
+  console.log('[MissedPunchOutFollowUp] Disabled or non-primary instance; skipping.');
+}
+
 // General API Route
 app.get("/", (req, res) => {
   res.send("Attendance System API is running...");
