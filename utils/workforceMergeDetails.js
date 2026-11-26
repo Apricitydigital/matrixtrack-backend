@@ -1,5 +1,6 @@
 async function mergeDetails(client,profiles){
  const details=new Map();
+ const selfPhotos=new Map();
  for(const kind of ['regular','self_attendance']){
   const ids=profiles.filter(row=>row.kind===kind).map(row=>row.id);
   if(!ids.length)continue;
@@ -11,11 +12,22 @@ async function mergeDetails(client,profiles){
    FROM ${table} WHERE ${key}::text=ANY($1::text[]) GROUP BY ${key}`,[ids]);
   for(const row of rows)details.set(`${kind}:${row.id}`,row);
  }
+ const selfIds=profiles.filter(row=>row.kind==='self_attendance').map(row=>row.id);
+ if(selfIds.length){
+  const {rows}=await client.query('SELECT id::text AS id,selfie_url FROM self_attendance_employees WHERE id::text=ANY($1::text[])',[selfIds]);
+  const {getSignedS3Url}=require('./s3SelfPunch');
+  await Promise.all(rows.map(async row=>{
+   const url=row.selfie_url && /^https?:\/\//i.test(row.selfie_url) ? row.selfie_url : await getSignedS3Url(row.selfie_url,900);
+   if(url)selfPhotos.set(row.id,url);
+  }));
+ }
  const days=new Map();
  if((await client.query("SELECT to_regclass('self_attendance_week_off') IS NOT NULL AS available")).rows[0]?.available){
   const ids=profiles.filter(row=>row.kind==='self_attendance').map(row=>row.id);
   if(ids.length)for(const row of (await client.query('SELECT self_attendance_id::text AS id,week_off_days FROM self_attendance_week_off WHERE self_attendance_id::text=ANY($1::text[])',[ids])).rows)days.set(row.id,row.week_off_days);
  }
- return profiles.map(profile=>({...profile,last_punch_in:details.get(`${profile.kind}:${profile.id}`)?.last_punch_in || null,present_days:details.get(`${profile.kind}:${profile.id}`)?.present_days || 0,...(profile.kind==='self_attendance'?{week_off_days:days.get(profile.id)||[]}: {})}));
+ return profiles.map(profile=>({...profile,last_punch_in:details.get(`${profile.kind}:${profile.id}`)?.last_punch_in || null,present_days:details.get(`${profile.kind}:${profile.id}`)?.present_days || 0,
+  face_image_url:profile.kind==='regular'&&profile.face_registered?`/app/attendance/employee/faceRoutes/image/${encodeURIComponent(profile.id)}?thumb=1`:selfPhotos.get(profile.id)||null,
+  ...(profile.kind==='self_attendance'?{week_off_days:days.get(profile.id)||[]}: {})}));
 }
 module.exports={mergeDetails};
