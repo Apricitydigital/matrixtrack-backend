@@ -31,7 +31,7 @@ router.use(wrap(async (req,res,next) => {
  if(!user || user.is_deleted || !['admin','super_admin','superadmin'].includes(user.role) || p?.is_active===false) return res.status(403).json({message:'Active admin account required.'});
  const owners=[process.env.SUPER_ADMIN_EMAIL || 'mtadmin@apricitydigital.in',process.env.SUPER_ADMIN_DB_EMAIL || 'admin@gmail.com'];
   req.reviewOwner=['super_admin','superadmin'].includes(user.role) || p?.role_type==='super_admin' || owners.some(e=>e.trim().toLowerCase()===String(user.email).trim().toLowerCase());
-  req.reviewCanMerge=req.reviewOwner || String(user.email || '').trim().toLowerCase()===HR_MERGE_ADMIN_EMAIL;
+  req.reviewCanMerge=req.reviewOwner || [HR_MERGE_ADMIN_EMAIL,HR_HARD_DELETE_ADMIN_EMAIL].includes(String(user.email || '').trim().toLowerCase());
  req.reviewCanHardDelete=req.reviewOwner || String(user.email || '').trim().toLowerCase()===HR_HARD_DELETE_ADMIN_EMAIL;
  req.reviewActor=user; req.user={...req.user,user_id:user.user_id,role:'admin',permissions:p};
  next();
