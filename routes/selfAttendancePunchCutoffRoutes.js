@@ -27,7 +27,8 @@ router.get('/employees',wrap(async(req,res)=>{
     FROM self_attendance_employees p LEFT JOIN wards w ON w.ward_id=p.kothi_id LEFT JOIN cities c ON c.city_id=p.city_id
     LEFT JOIN self_attendance_punch_cutoffs t ON t.self_attendance_id=p.id WHERE p.is_active=TRUE
     AND EXISTS(SELECT 1 FROM self_attendance_site_access s WHERE s.self_attendance_id=$1 AND s.kothi_id=p.kothi_id) ORDER BY p.full_name`,[id(req)]);
-  res.json({success:true,data:rows});
+  const data=await require('../utils/selfAttendanceRecordsBlock').withAttendanceBlocks(rows);
+  res.json({success:true,data});
 }));
 router.get('/requests',wrap(async(req,res)=>{
   const bucket=req.query?.bucket || 'all';
