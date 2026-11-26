@@ -3,20 +3,22 @@ const crypto = require('crypto');
 // Raw records deliberately bypass the reporting identity projection. Never merge by name.
 const recordsSql = `WITH records AS (
  SELECT 'regular'::text AS kind,e.emp_id::text AS id,e.name AS name,e.emp_code,e.phone AS mobile,
- c.city_id,c.city_name,w.ward_name AS site_name,e.ward_id AS site_id,
+ c.city_id,c.city_name,z.zone_id,to_jsonb(z)->>'zone_name' AS zone_name,w.ward_id,w.ward_name,w.ward_name AS site_name,e.ward_id AS site_id,
  to_jsonb(e)->>'is_active' AS active,to_jsonb(e)->>'is_deleted' AS deleted,
  (e.face_id IS NOT NULL OR e.face_embedding IS NOT NULL) AS face_registered,
  COALESCE(to_jsonb(e)->>'aadhar_number',to_jsonb(e)->>'aadhaar_number',to_jsonb(e)->>'aadhar_no') AS aadhaar_stored
  FROM employee e LEFT JOIN wards w ON w.ward_id=e.ward_id
  LEFT JOIN zones z ON z.zone_id=w.zone_id LEFT JOIN cities c ON c.city_id=z.city_id
  UNION ALL
- SELECT 'self_attendance',p.id::text,p.full_name,p.emp_code,p.mobile,p.city_id,c.city_name,w.ward_name,p.kothi_id,
+ SELECT 'self_attendance',p.id::text,p.full_name,p.emp_code,p.mobile,p.city_id,c.city_name,z.zone_id,to_jsonb(z)->>'zone_name',w.ward_id,w.ward_name,w.ward_name,p.kothi_id,
  p.is_active::text,to_jsonb(p)->>'is_deleted',p.selfie_url IS NOT NULL,to_jsonb(p)->>'aadhar_number'
  FROM self_attendance_employees p LEFT JOIN cities c ON c.city_id=p.city_id
- LEFT JOIN wards w ON w.ward_id=p.kothi_id
+ LEFT JOIN wards w ON w.ward_id=p.kothi_id LEFT JOIN zones z ON z.zone_id=w.zone_id
 ), scoped AS (
  SELECT * FROM records WHERE ($1::int[] IS NULL OR city_id=ANY($1))
  AND ($2::int[] IS NULL OR site_id=ANY($2))
+ AND ($5::int[] IS NULL OR zone_id=ANY($5))
+ AND ($6::int[] IS NULL OR ward_id=ANY($6))
 )`;
 
 function summarize(rows) {

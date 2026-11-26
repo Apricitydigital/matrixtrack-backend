@@ -20,6 +20,19 @@ function duplicateIndex(rows) {
  return row => [...new Map(candidateKeys(row).flatMap(key=>index.get(key)||[])
   .filter(other=>other.kind===row.kind && other.id!==row.id).map(other=>[`${other.kind}:${other.id}`,other])).values()];
 }
+function reviewDuplicateCandidates(rows) {
+ const sameType=duplicateIndex(rows),byAadhaar=new Map();
+ for(const row of rows){
+  const number=aadhaar(row.aadhaar_number);if(!number)continue;
+  if(!byAadhaar.has(number))byAadhaar.set(number,[]);
+  byAadhaar.get(number).push(row);
+ }
+ return row=>{
+  const number=aadhaar(row.aadhaar_number);
+  const crossType=number?(byAadhaar.get(number)||[]).filter(other=>other.kind!==row.kind):[];
+  return [...new Map([...sameType(row),...crossType].filter(other=>other.id!==row.id).map(other=>[`${other.kind}:${other.id}`,other])).values()];
+ };
+}
 function candidateKeys(row) {
  return [aadhaar(row.aadhaar_number) && `a:${aadhaar(row.aadhaar_number)}`,normalized(row.name) && `n:${normalized(row.name)}`,mobile(row.mobile).length>=10 && `m:${mobile(row.mobile)}`].filter(Boolean);
 }
@@ -115,4 +128,4 @@ async function installAliasTriggers(client,plan) {
   await client.query(`CREATE TRIGGER ${quote(name)} BEFORE INSERT OR UPDATE OF ${quote(link.column)} ON ${quote(link.table)} FOR EACH ROW EXECUTE FUNCTION workforce_redirect_employee_reference('${plan.kind}','${link.column.replace(/'/g,"''")}')`);
  }
 }
-module.exports={matchingSignals,duplicateIndex,mergePlan,moveReferences,validateMove,installAliasTriggers,assertAliasTriggers,references};
+module.exports={matchingSignals,duplicateIndex,reviewDuplicateCandidates,mergePlan,moveReferences,validateMove,installAliasTriggers,assertAliasTriggers,references};

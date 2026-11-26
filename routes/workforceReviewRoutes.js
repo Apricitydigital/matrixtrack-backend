@@ -7,7 +7,7 @@ const { attachCityScope } = require('../middleware/cityScope');
 const { authorize, getPermissionCityFilter } = require('../middleware/permissionMiddleware');
 const { fetchUserKothiAccess } = require('../utils/userKothiAccess');
 const { recordsSql, summarize, deletionPlan, fingerprint, quote } = require('../utils/workforceReview');
-const {duplicateIndex,matchingSignals,mergePlan,moveReferences,validateMove,assertAliasTriggers}=require('../utils/workforceMerge');
+const {reviewDuplicateCandidates,matchingSignals,mergePlan,moveReferences,validateMove,assertAliasTriggers}=require('../utils/workforceMerge');
 const {ensureMergeSchema}=require('../utils/employeeAliases');
 const {retainMergedLogins}=require('../utils/selfAttendanceMergeLogin');
 const recovery=require('../utils/workforceMergeRecovery');
@@ -59,10 +59,27 @@ async function filters(req) {
    if(!Array.isArray(selectedSites) || !selectedSites.every(Number.isInteger)) fail('Invalid site selection.');
    sites=sites===null ? selectedSites : sites.filter(id=>selectedSites.includes(id));
  }
- return [cities,sites];
+ const selectedId=(value,label)=>{
+  if(value===undefined||value===null||value===''||value==='ALL')return null;
+  if(!/^\d+$/.test(String(value)))fail(`Invalid ${label}.`);
+  return [Number(value)];
+ };
+ return [cities,sites,selectedId(req.body?.zone_id ?? req.query.zone_id,'zone'),selectedId(req.body?.ward_id ?? req.query.ward_id,'ward')];
+}
+async function locationFilters(req){
+ const allowed=req.reviewOwner?null:getPermissionCityFilter(req,'dashboard','view');
+ const params=allowed===null?[]:[allowed];
+ const cityWhere=allowed===null?'':'WHERE city_id=ANY($1::int[])';
+ const zoneWhere=allowed===null?'':'WHERE z.city_id=ANY($1::int[])';
+ const [cities,zones,wards]=await Promise.all([
+  pool.query(`SELECT city_id,city_name FROM cities ${cityWhere} ORDER BY city_name`,params),
+  pool.query(`SELECT z.zone_id,to_jsonb(z)->>'zone_name' AS zone_name,z.city_id FROM zones z ${zoneWhere} ORDER BY to_jsonb(z)->>'zone_name'`,params),
+  pool.query(`SELECT w.ward_id,w.ward_name,w.zone_id,z.city_id FROM wards w JOIN zones z ON z.zone_id=w.zone_id ${zoneWhere} ORDER BY w.ward_name`,params)
+ ]);
+ return {cities:cities.rows,zones:zones.rows,wards:wards.rows};
 }
 async function records(req, client=pool) {
- const params=await filters(req);
+ const [cities,sites,zones,wards]=await filters(req);
  const start=req.body?.startDate || req.query.startDate || new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});
  const end=req.body?.endDate || req.query.endDate || start;
  if(!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || start>end) fail('Invalid date range.');
@@ -81,12 +98,12 @@ async function records(req, client=pool) {
  FROM self_attendance_records a WHERE a.self_attendance_id=(CASE WHEN s.kind='self_attendance' THEN s.id END)::uuid AND a.date BETWEEN $3::date AND $4::date) p ON true
  LEFT JOIN LATERAL (SELECT bool_or(status='approved') AS on_leave FROM self_attendance_leave_requests
  WHERE self_attendance_id=(CASE WHEN s.kind='self_attendance' THEN s.id END)::uuid AND requested_date BETWEEN $3::date AND $4::date) l ON true
- ORDER BY s.name,s.kind,s.id`,[...params,start,end])).rows.map(reviewIdentity);
+ ORDER BY s.name,s.kind,s.id`,[cities,sites,start,end,zones,wards])).rows.map(reviewIdentity);
 }
 async function employee(req,client=pool) {
  if(!['regular','self_attendance'].includes(req.params.kind)) fail('Invalid employee type.');
- const params=await filters(req);
- const row=(await client.query(`${recordsSql} SELECT * FROM scoped WHERE kind=$3 AND id=$4`,[...params,req.params.kind,req.params.id])).rows[0];
+ const [cities,sites,zones,wards]=await filters(req);
+ const row=(await client.query(`${recordsSql} SELECT * FROM scoped WHERE kind=$3 AND id=$4`,[cities,sites,req.params.kind,req.params.id,zones,wards])).rows[0];
  if(!row) fail('Employee not found or outside your access.',404);
  return reviewIdentity(row);
 }
@@ -100,21 +117,22 @@ router.get('/',permission('view'),wrap(async(req,res)=>{
  await schema();
  const rows=await records(req);
  const issues=(await pool.query('SELECT * FROM workforce_review_issues ORDER BY updated_at DESC')).rows;
- const excluded=await exclusions(pool),index=duplicateIndex(rows);
+ const candidateRows=(!req.query.kind||req.query.kind==='all')?rows:await records({...req,query:{...req.query,kind:'all'}});
+ const excluded=await exclusions(pool),index=reviewDuplicateCandidates(candidateRows);
  const duplicates=row=>index(row).filter(other=>!excluded.has(pairKey(row,other)));
  const q=String(req.query.search || '').trim().toLowerCase();
  const enriched=rows.map(r=>{
   const candidates=duplicates(r);
-  const signals=[...new Set(candidates.flatMap(other=>matchingSignals(r,other)))];
+  const signals=[...new Set(candidates.flatMap(other=>other.kind!==r.kind?['Same Aadhaar across Regular and Self Attendance']:matchingSignals(r,other)))];
   return {...r,duplicate_count:candidates.length,issues:issues.filter(i=>i.employee_kind===r.kind && i.employee_id===r.id),
    signals:[...signals,!r.site_id && 'No site assignment',r.active==='false' && 'Inactive',r.deleted==='true' && 'Deleted/ghost record'].filter(Boolean)};
  });
  const filtered=enriched.filter(r=>(!q || [r.name,r.emp_code,r.mobile,r.id].some(v=>String(v||'').toLowerCase().includes(q))) &&
- (!req.query.kind || req.query.kind==='all' || r.kind===req.query.kind) &&
+ (!req.query.kind || req.query.kind==='all' || r.kind===req.query.kind || (req.query.kind==='professional' && r.kind==='self_attendance')) &&
  (!req.query.status || req.query.status==='all' || (req.query.status==='faceRegistered' ? r.face_registered : req.query.status==='midShiftPunchIn' ? r.mid_shift : r.status===req.query.status)) &&
  (req.query.review==='duplicates' ? r.duplicate_count>0 : !req.query.review || req.query.review==='all' || (req.query.review==='signals' ? r.signals.length>0 : r.issues.some(i=>i.status===req.query.review))));
  const page=Math.max(1,parseInt(req.query.page,10)||1),limit=25;
- res.json({data:filtered.slice((page-1)*limit,page*limit),total:filtered.length,pages:Math.max(1,Math.ceil(filtered.length/limit)),canHardDelete:req.reviewCanHardDelete,canMerge:req.reviewCanMerge,canManageNonDuplicates:req.reviewOwner,
+ res.json({data:filtered.slice((page-1)*limit,page*limit),total:filtered.length,pages:Math.max(1,Math.ceil(filtered.length/limit)),filters:await locationFilters(req),canHardDelete:req.reviewCanHardDelete,canMerge:req.reviewCanMerge,canManageNonDuplicates:req.reviewOwner,
  canWrite:req.reviewOwner || !req.user.permissions || req.user.permissions.modules?.dashboard==='write'});
 }));
 router.post('/:kind/:id/issues',permission('write'),wrap(async(req,res)=>{
@@ -134,10 +152,11 @@ const ownerOnly=(req,res,next)=>req.reviewOwner ? next() : res.status(403).json(
 const hardDeleteOnly=(req,res,next)=>req.reviewCanHardDelete ? next() : res.status(403).json({message:'Workforce hard delete permission required.'});
 const mergeOnly=(req,res,next)=>req.reviewCanMerge ? next() : res.status(403).json({message:'Workforce merge permission required.'});
 router.get('/:kind/:id/duplicates',permission('view'),wrap(async(req,res)=>{
- const row=await employee(req),rows=await records(req);
+ const row=await employee(req),rows=await records({...req,query:{...req.query,kind:'all'}});
  const excluded=await exclusions(pool);
- const enriched=await require('../utils/workforceMergeDetails').mergeDetails(pool,[row,...duplicateIndex(rows)(row).filter(other=>!excluded.has(pairKey(row,other)))]);
- res.json({employee:enriched[0],candidates:enriched.slice(1).map(other=>({...other,match_signals:matchingSignals(row,other)}))});
+ const candidates=reviewDuplicateCandidates(rows)(row).filter(other=>!excluded.has(pairKey(row,other)));
+ const enriched=await require('../utils/workforceMergeDetails').mergeDetails(pool,[row,...candidates]);
+ res.json({employee:enriched[0],candidates:enriched.slice(1).map(other=>({...other,match_signals:other.kind!==row.kind?['Same Aadhaar across Regular and Self Attendance']:matchingSignals(row,other)}))});
 }));
 router.post('/:kind/:id/non-duplicate',ownerOnly,wrap(async(req,res)=>{
  const target=await employee(req);
