@@ -64,6 +64,8 @@ router.use("/supervisor/self-punch", supervisorSelfPunchRoutes);
 router.use("/self-attendance/weekly-off", require('./selfAttendanceWeeklyOffRoutes').app);
 router.use('/self-attendance/punch-cutoff', require('./selfAttendancePunchCutoffRoutes'));
 router.use('/self-attendance/team-attendance', require('./selfAttendanceTeamAttendanceRoutes'));
+// Keep the professional app path working while both clients use the same scoped team-attendance API.
+router.use('/professional/team-attendance', require('./selfAttendanceTeamAttendanceRoutes'));
 router.use('/self-attendance/register-attendance', require('./registerAttendanceRoutes'));
 router.use('/self-attendance/supervisor-attendance', require('./supervisorAttendanceRoutes'));
 router.use('/attendance-modes', require('./employeeAttendanceModesRoutes'));

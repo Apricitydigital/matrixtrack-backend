@@ -1,8 +1,12 @@
 const {modeFields,modeJoin}=require('./employeeAttendanceMode');
 function regularTeamAttendanceQuery(params){
+ const queryParams=[...params];while(queryParams.length<9)queryParams.push(null);
  const cte=`WITH scoped AS (
   SELECT e.* FROM employee e WHERE EXISTS(SELECT 1 FROM self_attendance_site_access s WHERE s.self_attendance_id=$1 AND s.kothi_id=e.ward_id)
-   AND ($3::int IS NULL OR e.ward_id=$3) AND ($5::text='' OR strpos(lower(COALESCE(e.name,'')||' '||COALESCE(e.emp_code,'')),lower($5))>0)
+   AND ($3::int IS NULL OR e.ward_id=$3)
+   AND ($8::int IS NULL OR EXISTS(SELECT 1 FROM wards area_w JOIN zones area_z ON area_z.zone_id=COALESCE(area_w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=area_w.sector_id)) WHERE area_w.ward_id=e.ward_id AND area_z.city_id=$8))
+   AND ($9::int IS NULL OR EXISTS(SELECT 1 FROM wards area_w JOIN zones area_z ON area_z.zone_id=COALESCE(area_w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=area_w.sector_id)) WHERE area_w.ward_id=e.ward_id AND area_z.zone_id=$9))
+   AND ($5::text='' OR strpos(lower(COALESCE(e.name,'')||' '||COALESCE(e.emp_code,'')),lower($5))>0)
    AND NOT COALESCE(e.self_attendance_enabled,FALSE) AND NOT EXISTS(SELECT 1 FROM self_attendance_employees p WHERE p.emp_code=e.emp_code)
  ), records AS (
   SELECT 'regular'::text AS employee_kind,e.emp_id::text AS employee_id,e.name AS full_name,e.emp_code,w.ward_id AS site_id,w.ward_name AS site_name,d::date::text AS date,
@@ -17,7 +21,7 @@ function regularTeamAttendanceQuery(params){
   CROSS JOIN generate_series($2::date,($2::date+INTERVAL '1 month - 1 day')::date,INTERVAL '1 day') d
   LEFT JOIN attendance a ON a.emp_id=e.emp_id AND a.date=d::date WHERE ($4::date IS NULL OR d::date=$4::date)
  )`;
- return {params,cte,sql:`${cte} SELECT
+ return {params:queryParams,cte,sql:`${cte} SELECT
  (SELECT COALESCE(json_agg(r ORDER BY r.date DESC,r.full_name,r.employee_id),'[]'::json) FROM
   (SELECT * FROM records ORDER BY date DESC,full_name,employee_id LIMIT 50 OFFSET $7) r) AS data,
  (SELECT COUNT(*)::int FROM records) AS total,

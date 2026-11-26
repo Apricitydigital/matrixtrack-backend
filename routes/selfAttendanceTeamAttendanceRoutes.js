@@ -28,9 +28,12 @@ router.use(async (req, res, next) => {
   }
 });
 router.get('/sites', wrap(async (req, res) => {
-  const { rows } = await pool.query(`SELECT DISTINCT w.ward_id AS id,w.ward_name AS name
+  const { rows } = await pool.query(`SELECT DISTINCT w.ward_id AS id,w.ward_name AS name,
+      z.zone_id,z.zone_name,c.city_id,c.city_name
     FROM self_attendance_site_access s JOIN wards w ON w.ward_id=s.kothi_id
-    WHERE s.self_attendance_id=$1 ORDER BY w.ward_name,w.ward_id`, [req.self_attendance.self_attendance_id]);
+    LEFT JOIN zones z ON z.zone_id=COALESCE(w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=w.sector_id))
+    LEFT JOIN cities c ON c.city_id=z.city_id
+    WHERE s.self_attendance_id=$1 ORDER BY c.city_name,z.zone_name,w.ward_name,w.ward_id`, [req.self_attendance.self_attendance_id]);
   res.json({ success: true, data: rows });
 }));
 
@@ -89,24 +92,32 @@ router.get('/', wrap(async (req, res) => {
   if(!['all','regular','self_attendance'].includes(employeeType))return res.status(400).json({success:false,message:'Choose an employee type.'});
   const today = todayIST();
   const month = req.query.month || today.slice(0, 7);
+  const cityId = String(req.query.city_id || '');
+  const zoneId = String(req.query.zone_id || '');
   const site = req.query.site || '';
   const day = req.query.date || '';
   const search = String(req.query.search || '').trim();
   const page = Number(req.query.page || 1);
+  const validAreaId=value=>!value||(/^\d+$/.test(value)&&Number.isSafeInteger(Number(value))&&Number(value)>0&&Number(value)<=2147483647);
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || month < '1900-01' || month > today.slice(0, 7) ||
-      (site && (!/^\d+$/.test(site) || !Number.isSafeInteger(Number(site)) || Number(site) < 1 || Number(site) > 2147483647)) ||
+      !validAreaId(cityId) || !validAreaId(zoneId) || !validAreaId(site) ||
       !Number.isSafeInteger(page) || page < 1 || page > 100000 || search.length > 100 ||
       (day && (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !day.startsWith(month + '-') ||
         !Number.isFinite(Date.parse(day)) || new Date(day).toISOString().slice(0, 10) !== day))) {
     return res.status(400).json({ success: false, message: 'Choose a valid month, date, site and page.' });
   }
-  if (site) {
-    const allowed = await pool.query('SELECT 1 FROM self_attendance_site_access WHERE self_attendance_id=$1 AND kothi_id=$2', [req.self_attendance.self_attendance_id, site]);
-    if (!allowed.rows.length) return res.status(403).json({ success: false, message: 'Site outside your assigned access.' });
+  if (cityId || zoneId || site) {
+    const allowed = await pool.query(`SELECT 1 FROM self_attendance_site_access s JOIN wards w ON w.ward_id=s.kothi_id
+      LEFT JOIN zones z ON z.zone_id=COALESCE(w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=w.sector_id))
+      WHERE s.self_attendance_id=$1 AND ($2::int IS NULL OR z.city_id=$2)
+        AND ($3::int IS NULL OR z.zone_id=$3) AND ($4::int IS NULL OR w.ward_id=$4) LIMIT 1`,
+      [req.self_attendance.self_attendance_id,cityId||null,zoneId||null,site||null]);
+    if (!allowed.rows.length) return res.status(403).json({ success: false, message: 'Selected city, zone or ward is outside your assigned access.' });
   }
   const start = `${month}-01`;
+  const params = [req.self_attendance.self_attendance_id,start,site||null,day||null,search,today,(page-1)*50,cityId||null,zoneId||null];
   if(employeeType==='regular'){
-    const query=require('../utils/regularTeamAttendance').regularTeamAttendanceQuery([req.self_attendance.self_attendance_id,start,site||null,day||null,search,today,(page-1)*50]);
+    const query=require('../utils/regularTeamAttendance').regularTeamAttendanceQuery(params);
     const selected=view==='employees'?require('../utils/teamAttendanceEmployeeSummary').employeeSummaryQuery([query.cte],query.params):query;
     const result=await pool.query(selected.sql,selected.params);
     return res.json({success:true,...result.rows[0],page,page_size:50,month,view});
@@ -117,6 +128,8 @@ router.get('/', wrap(async (req, res) => {
     SELECT p.* FROM self_attendance_employees p
     WHERE EXISTS(SELECT 1 FROM self_attendance_site_access s WHERE s.self_attendance_id=$1 AND s.kothi_id=p.kothi_id)
       AND ($3::int IS NULL OR p.kothi_id=$3)
+      AND ($8::int IS NULL OR EXISTS(SELECT 1 FROM wards area_w JOIN zones area_z ON area_z.zone_id=COALESCE(area_w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=area_w.sector_id)) WHERE area_w.ward_id=p.kothi_id AND area_z.city_id=$8))
+      AND ($9::int IS NULL OR EXISTS(SELECT 1 FROM wards area_w JOIN zones area_z ON area_z.zone_id=COALESCE(area_w.zone_id,(SELECT sec.zone_id FROM sectors sec WHERE sec.sector_id=area_w.sector_id)) WHERE area_w.ward_id=p.kothi_id AND area_z.zone_id=$9))
       AND ($5::text='' OR strpos(lower(COALESCE(p.full_name,'') || ' ' || COALESCE(p.emp_code,'')),lower($5))>0)
       AND (p.is_active=TRUE OR EXISTS(SELECT 1 FROM self_attendance_records a WHERE a.self_attendance_id=p.id
         AND a.date >= $2::date AND a.date < $2::date + INTERVAL '1 month'))
@@ -142,17 +155,16 @@ router.get('/', wrap(async (req, res) => {
     LEFT JOIN self_attendance_records a ON a.self_attendance_id=p.id AND a.date=d::date
     WHERE ($4::date IS NULL OR d::date=$4::date)
   )`;
-  const params = [req.self_attendance.self_attendance_id,start,site || null,day || null,search,today];
   if(view==='employees'){
     const ctes=[cte];
-    if(employeeType==='all')ctes.push(require('../utils/regularTeamAttendance').regularTeamAttendanceQuery([...params,(page-1)*50]).cte);
-    const query=require('../utils/teamAttendanceEmployeeSummary').employeeSummaryQuery(ctes,[...params,(page-1)*50]);
+    if(employeeType==='all')ctes.push(require('../utils/regularTeamAttendance').regularTeamAttendanceQuery(params).cte);
+    const query=require('../utils/teamAttendanceEmployeeSummary').employeeSummaryQuery(ctes,params);
     const result=await pool.query(query.sql,query.params);
     return res.json({success:true,...result.rows[0],page,page_size:50,month,view});
   }
   if(employeeType==='all'){
-    const regular=require('../utils/regularTeamAttendance').regularTeamAttendanceQuery([...params,(page-1)*50]);
-    const query=require('../utils/combinedTeamAttendance').combinedTeamAttendanceQuery(cte,regular.cte,[...params,(page-1)*50]);
+    const regular=require('../utils/regularTeamAttendance').regularTeamAttendanceQuery(params);
+    const query=require('../utils/combinedTeamAttendance').combinedTeamAttendanceQuery(cte,regular.cte,params);
     const result=await pool.query(query.sql,query.params);
     return res.json({success:true,...result.rows[0],page,page_size:50,month});
   }
@@ -161,7 +173,7 @@ router.get('/', wrap(async (req, res) => {
       (SELECT * FROM records ORDER BY is_attendance_blocked,(date>$6::text),date DESC,full_name,employee_id LIMIT 50 OFFSET $7) r) AS data,
     (SELECT COUNT(*)::int FROM records) AS total,
     (SELECT COALESCE(json_object_agg(status,n),'{}'::json) FROM
-      (SELECT status,COUNT(*)::int AS n FROM records GROUP BY status) s) AS summary`, [...params,(page-1)*50]);
+      (SELECT status,COUNT(*)::int AS n FROM records GROUP BY status) s) AS summary`, params);
   res.json({ success: true, ...result.rows[0], page, page_size: 50, month });
 }));
 module.exports = router;
