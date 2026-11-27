@@ -12,6 +12,13 @@ async function refreshMergeTriggers(client) {
   const plan={kind,links:await references(client,kind)};
   await installAliasTriggers(client,plan);
   await assertAliasTriggers(client,plan);
+  if((await client.query("SELECT to_regprocedure('workforce_block_cross_attendance_write()') IS NOT NULL AS ready")).rows[0]?.ready){
+   for(const link of plan.links){
+    const name='cross_'+require('crypto').createHash('sha256').update(`${kind}:${link.table}:${link.column}`).digest('hex').slice(0,24);
+    if(!(await client.query('SELECT 1 FROM pg_trigger WHERE tgname=$1 AND tgrelid=to_regclass($2)',[name,quote(link.table)])).rows.length)
+     await client.query(`CREATE TRIGGER ${quote(name)} BEFORE INSERT OR UPDATE OF ${quote(link.column)} ON ${quote(link.table)} FOR EACH ROW EXECUTE FUNCTION workforce_block_cross_attendance_write('${kind}','${link.column.replace(/'/g,"''")}')`);
+   }
+  }
  }
  for(const table of await recoveryTables(client)){
   const trigger=(await client.query(`SELECT tgenabled,

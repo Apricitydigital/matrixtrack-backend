@@ -13,7 +13,7 @@ function renameIdentifier(value) {
 function renameSql(value) {
   return renameIdentifier(value).replace(/(['"])SelfAttendance(?: Attendance)?\1/g, (_, quote) => quote + 'Self Attendance' + quote);
 }
-const semanticFields = new Set(['employee_kind','employee_type','employeeType','employee_type_filter','kind','actor_type','user_type','userType','attendance_mode',
+const semanticFields = new Set(['employee_kind','employee_type','employeeType','employee_type_filter','kind','otherKind','actor_type','user_type','userType','attendance_mode',
   'type','module','table','table_name','column','column_name','field','key_columns','columns','source_table','reference_column','permission','code','role','audience','source']);
 const reverseNames = Object.fromEntries(Object.entries(legacyNames).map(([oldName,newName]) => [newName,oldName]));
 // These aliases need a unique, stable reverse spelling at the API boundary.

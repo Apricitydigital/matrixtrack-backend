@@ -19,8 +19,12 @@ async function main() {
   };
   try {
     await db.exec(`
-      CREATE TABLE self_attendance_records_blocks(self_attendance_id UUID PRIMARY KEY,is_blocked BOOLEAN);
+      CREATE TABLE self_attendance_records_blocks(self_attendance_id UUID PRIMARY KEY,is_blocked BOOLEAN,updated_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE wards(ward_id INT PRIMARY KEY,ward_name TEXT);
+      CREATE TABLE cities(city_id INT PRIMARY KEY,city_name TEXT);INSERT INTO cities VALUES(1,'Test city');
+      CREATE TABLE zones(zone_id INT PRIMARY KEY,city_id INT,zone_name TEXT);INSERT INTO zones VALUES(1,1,'Test zone');
+      CREATE TABLE sectors(sector_id INT PRIMARY KEY,zone_id INT);INSERT INTO sectors VALUES(100,1);
+      ALTER TABLE wards ADD COLUMN zone_id INT DEFAULT 1,ADD COLUMN sector_id INT DEFAULT 100;
       CREATE TABLE designation(designation_id INT PRIMARY KEY,designation_name TEXT);
       CREATE TABLE self_attendance_designation_assignments(self_attendance_id UUID,designation_id INT);
       CREATE TABLE self_attendance_site_access(self_attendance_id UUID,kothi_id INT);

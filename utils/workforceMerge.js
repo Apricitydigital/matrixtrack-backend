@@ -68,7 +68,9 @@ async function mergePlan(client,kind,targetId,sourceIds,options={}) {
   if(source[site]!==target[site] || (kind==='self_attendance' && source.city_id!==target.city_id)) reject('Employees must belong to the same city and site before merging.');
   // The chosen main profile keeps its credentials and enrolled face. Retired
   // self_attendance credentials are retained separately, with reset invalidation.
-  const fields=kind==='self_attendance'?['is_active']:['face_embedding','self_attendance_enabled'];
+  // Inactive duplicates can donate their history to the active main account.
+  // Keep the main profile's active state, credentials and enrolled face intact.
+  const fields=kind==='self_attendance'?[]:['face_embedding','self_attendance_enabled'];
   for(const field of fields) if(JSON.stringify(source[field]??null)!==JSON.stringify(target[field]??null)) reject(`Different ${field.replace(/_/g,' ')} details: reconcile these before merging so login and punch-in remain available.`);
   if(kind==='regular' && source.face_id && !target.face_id) reject('Choose a main employee with an enrolled face to preserve face punch-in.');
   if(kind==='self_attendance' && source.is_deleted===true) reject('Deleted accounts require a separate identity review before merging.');
@@ -85,11 +87,14 @@ async function mergePlan(client,kind,targetId,sourceIds,options={}) {
  const plans=[];
  for(const id of ids) plans.push(await deletionPlan(client,kind,id));
  const loginAliases=kind==='self_attendance'?(await client.query('SELECT * FROM workforce_self_attendance_login_aliases WHERE target_id::text=ANY($1::text[]) ORDER BY source_id',[ids])).rows:[];
+ const hasCrossAliases=(await client.query("SELECT to_regclass('workforce_cross_attendance_aliases') IS NOT NULL AS ready")).rows[0]?.ready;
+ const crossAliases=hasCrossAliases?(await client.query('SELECT * FROM workforce_cross_attendance_aliases WHERE target_kind=$1 AND target_id=ANY($2::text[]) ORDER BY employee_kind,source_id',[kind,ids])).rows:[];
  const login=kind==='self_attendance'?{mainId:targetId,name:target.full_name,email:target.email || null,mobile:target.mobile || null,retainedAccounts:sourceIds.length,mainCredentialsPreserved:true,existingSessionsPreserved:true,faceReference:'main'}:null;
  const weeklyOff=await require('./selfAttendanceMergeWeeklyOff').weeklyOffPlan(client,kind,ids,options.weeklyOffSourceId);
- return {kind,targetId,sourceIds,profiles,links,affected,attendance,login,weeklyOff,fingerprint:fingerprint({profiles,affected,plans,attendance,loginAliases,weeklyOff})};
+ return {kind,targetId,sourceIds,profiles,links,affected,attendance,login,weeklyOff,crossAliases,fingerprint:fingerprint({profiles,affected,plans,attendance,loginAliases,weeklyOff,crossAliases})};
 }
 async function moveReferences(client,plan) {
+ if(plan.crossAliases?.length)await client.query('UPDATE workforce_cross_attendance_aliases SET target_id=$1 WHERE target_kind=$2 AND target_id=ANY($3::text[])',[plan.targetId,plan.kind,plan.sourceIds]);
  await require('./selfAttendanceMergeWeeklyOff').consolidateWeeklyOff(client,plan.weeklyOff);
  if(plan.kind==='self_attendance'){
   const settings=new Set(['self_attendance_designation_assignments','self_attendance_site_access','self_attendance_geofences','self_attendance_leave_allocations','self_attendance_punch_cutoffs','self_attendance_records_blocks']);

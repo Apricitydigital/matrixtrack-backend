@@ -48,7 +48,12 @@ module.exports=async({db,pool,call})=>{
  const before=(await db.query('SELECT to_jsonb(p) AS profile FROM self_attendance_employees p WHERE id=$1',[ids[0]])).rows[0].profile;
  const oldToken=jwt.sign({self_attendance_id:ids[2],city_id:999},secret,{expiresIn:'1h'});
  const pendingOtp=await otpRequest('9890000002');
- const params={kind:'self_attendance',id:ids[0]},body={sourceIds:ids.slice(1,3)};
+ const disabled='c0000000-0000-4000-8000-000000000005';
+ await db.query(`INSERT INTO self_attendance_employees(id,full_name,emp_code,mobile,email,password_hash,selfie_url,is_active,city_id,zone_id,ward_id,kothi_id)
+ VALUES($1,'Ashu Credential','ASHU-CRED','9890000005','disabled-source@example.test',$2,'old-face',TRUE,1,1,10,10)`,[disabled,await bcrypt.hash('Disabled-old-password',4)]);
+ const disabledOtp=await otpRequest('9890000005'),disabledToken=jwt.sign({self_attendance_id:disabled},secret,{expiresIn:'1h'});
+ await db.query('UPDATE self_attendance_employees SET is_active=FALSE WHERE id=$1',[disabled]);
+ const params={kind:'self_attendance',id:ids[0]},body={sourceIds:[...ids.slice(1,3),disabled]};
  const preview=await call('post','/:kind/:id/merge-preview',{params,body});assert.equal(preview.code,200,JSON.stringify(preview.data));
  const previewText=JSON.stringify(preview.data);
  for(const hash of hashes)assert.ok(!previewText.includes(hash),'Preview must never expose credential hashes');
@@ -60,6 +65,13 @@ module.exports=async({db,pool,call})=>{
  const merged=await call('post','/:kind/:id/merge',{params,body:{...body,identityConfirmed:true,reason:'Same person verified; keep working account',confirmation:ids[0],fingerprint:preview.data.fingerprint}});
  assert.equal(merged.code,200,JSON.stringify(merged.data));
  assert.deepEqual((await db.query('SELECT to_jsonb(p) AS profile FROM self_attendance_employees p WHERE id=$1',[ids[0]])).rows[0].profile,before,'Main profile, password and enrolled face stay byte-for-byte unchanged');
+ assert.equal((await login('disabled-source@example.test','Disabled-old-password')).code,401,'Inactive source password stays revoked');
+ assert.equal((await otpVerify('9890000005',disabledOtp)).code,404,'An OTP for the retired inactive account cannot authenticate main');
+ let disabledContinued=false;const disabledResult=result();
+ await middleware({cookies:{},header:()=>`Bearer ${disabledToken}`},disabledResult,()=>{disabledContinued=true;});
+ assert.equal(disabledContinued,false);assert.equal(disabledResult.code,403,'Old inactive-source JWT cannot authenticate the active main');
+ assert.equal(await aliases.resolveEmployeeAlias('self_attendance',disabled),ids[0],'History still resolves to main');
+ assert.equal(await aliases.resolveEmployeeAlias('self_attendance',disabled,{forAuthentication:true}),disabled,'Authentication cannot follow the inactive alias');
  await assertLogin('ashu-0@example.test',mainPassword,ids[0]);
  await assertLogin('ashu-1@example.test',mainPassword,ids[0]);
  await assertLogin('ashu-2@example.test',sourcePassword,ids[0]);
@@ -85,6 +97,7 @@ module.exports=async({db,pool,call})=>{
  const chained=await call('post','/:kind/:id/merge',{params:nextParams,body:{...nextBody,identityConfirmed:true,reason:'Move to final working main account',confirmation:ids[3],fingerprint:nextPreview.data.fingerprint}});
  assert.equal(chained.code,200,JSON.stringify(chained.data));
  assert.equal(await aliases.resolveEmployeeAlias('self_attendance',ids[2]),ids[3]);
+ assert.equal(await aliases.resolveEmployeeAlias('self_attendance',disabled,{forAuthentication:true}),disabled,'A chained merge cannot revive an inactive alias');
  assert.equal((await login('ashu-1@example.test',mainPassword)).code,401);
  assert.equal((await login('ashu-2@example.test',sourcePassword)).code,401);
  await assertLogin('ashu-0@example.test',resetPassword,ids[3]);

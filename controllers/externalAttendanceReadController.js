@@ -3,6 +3,7 @@ const { getSignedS3Url } = require('../utils/s3SelfPunch');
 const { issueImageAccess } = require('../utils/attendanceImageAccess');
 const { signSupervisorAttendancePhotos } = require('../utils/supervisorAttendancePhotos');
 const { modeJoin, modeFields } = require('../utils/employeeAttendanceMode');
+const {transferredAttendanceEvidence}=require('../utils/transferredAttendanceEvidence');
 
 const fail = (code, message, status = 400) => { throw Object.assign(Error(message), { code, status }); };
 const positive = value => /^[1-9]\d*$/.test(String(value)) && Number.isSafeInteger(Number(value)) && Number(value) <= 2147483647;
@@ -84,10 +85,13 @@ const selfAttendanceSelect = `SELECT pa.id::text AS attendance_id,'self_attendan
   pa.attempted_punch_in,pa.punch_approval_status,COALESCE(pa.auto_punched_out,false) AS is_auto_punch_out,
   pa.punch_in_latitude AS latitude_in,pa.punch_in_longitude AS longitude_in,pa.punch_out_latitude AS latitude_out,pa.punch_out_longitude AS longitude_out,
   to_jsonb(pa)->>'in_address' AS in_address,pa.out_address,pa.punch_in_photo_url AS punch_in_image,pa.punch_out_photo_url AS punch_out_image,
+  to_jsonb(pa)->'transfer_original' AS transfer_original,
   pa.city_id AS original_city_id,pa.zone_id AS original_zone_id,pa.ward_id AS original_sector_id,(to_jsonb(pa)->>'kothi_id')::int AS original_kothi_id,
   CASE WHEN pa.punch_in IS NOT NULL THEN ${actor('pe','self_attendance','pe.full_name','pe.selfie_url')} END AS punched_in_by,
   CASE WHEN pa.punch_out IS NOT NULL THEN ${actor('pe','self_attendance','pe.full_name','pe.selfie_url')} END AS punched_out_by,
-  'punch' AS attendance_source,CASE WHEN pa.punch_approval_status='rejected' THEN 'Punch rejected'
+  CASE WHEN COALESCE(to_jsonb(pa)->'transfer_original'->'record'->>'supervisor_in_by',to_jsonb(pa)->'transfer_original'->'record'->>'supervisor_out_by',
+   to_jsonb(pa)->'transfer_original'->'record'->>'supervisor_in_capture',to_jsonb(pa)->'transfer_original'->'record'->>'supervisor_out_capture') IS NOT NULL THEN 'supervisor' ELSE 'punch' END AS attendance_source,
+  CASE WHEN pa.punch_approval_status='rejected' THEN 'Punch rejected'
    WHEN pa.punch_approval_status LIKE 'pending_%' THEN 'Pending approval'
    WHEN pa.punch_in IS NOT NULL AND pa.punch_out IS NOT NULL THEN 'Completed' WHEN pa.punch_in IS NOT NULL THEN 'In Progress' ELSE 'Absent' END AS status
   FROM self_attendance_records pa JOIN self_attendance_employees pe ON pe.id=pa.self_attendance_id
@@ -112,6 +116,14 @@ async function images(rows) {
   const cache = new Map();
   const photo = ref => { if (!cache.has(ref)) cache.set(ref, signedPhoto(ref)); return cache.get(ref); };
   for (let i = 0; i < rows.length; i += 10) await Promise.all(rows.slice(i, i + 10).map(async row => {
+    if(row.transfer_original?.kind==='regular'){
+      Object.assign(row,transferredAttendanceEvidence(row));
+      row.punch_in_image=row.punch_in_image||row.punch_in_photo_url;
+      row.punch_out_image=row.punch_out_image||row.punch_out_photo_url;
+      delete row.punch_in_photo_url;delete row.punch_out_photo_url;
+      for(const type of ['in','out'])if(row[`supervisor_${type}_by`])row[`punched_${type}_by`]={id:row[`supervisor_${type}_by`],type:'self_attendance',name:row[`supervisor_${type}_name`],_photo:null};
+    }
+    delete row.transfer_original;
     for (const [field, type] of [['punch_in_image','IN'],['punch_out_image','OUT'],['mid_shift_punch_in_image','MID_IN']]) {
       row[`${field}_url`] = null;
       if (row[field]) {

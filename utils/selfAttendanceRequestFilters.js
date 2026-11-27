@@ -56,6 +56,9 @@ async function buildScopedSelfAttendanceRequestFilters(query, params, { client, 
   if (aliases.rows[0]?.available) {
     sql += " AND NOT EXISTS (SELECT 1 FROM workforce_employee_aliases merged WHERE merged.employee_kind = 'self_attendance' AND merged.source_id = spr.id::text)";
   }
+  if ((await client.query("SELECT to_regclass('workforce_cross_attendance_aliases') IS NOT NULL AS available")).rows[0]?.available) {
+    sql += " AND NOT EXISTS (SELECT 1 FROM workforce_cross_attendance_aliases moved WHERE moved.employee_kind = 'self_attendance' AND moved.source_id = spr.id::text)";
+  }
   if (!String(query.aadhar_number || '').trim()) return sql;
   const aadhaar = String(query.aadhar_number).replace(/[\s-]/g, '');
   if (!/^\d{12}$/.test(aadhaar)) return sql + ' AND FALSE';

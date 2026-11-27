@@ -30,6 +30,12 @@ async function retainMergedLogins(client,plan) {
  if(plan.kind!=='self_attendance')return;
  const target=plan.profiles.find(row=>row.id===plan.targetId),mainHash=passwordHash(target);
  for(const source of plan.profiles.filter(row=>row.id!==plan.targetId)) {
+  if(source.is_active===false){
+   // History redirects do not reactivate a disabled password, OTP identity or
+   // credentials inherited by an account which was subsequently deactivated.
+   await client.query('DELETE FROM workforce_self_attendance_login_aliases WHERE target_id=$1',[source.id]);
+   continue;
+  }
   // Flatten previous merges. A password invalidated by a previous reset must
   // stay invalid; merging again cannot revive it under a new main password.
   await client.query(`UPDATE workforce_self_attendance_login_aliases SET target_id=$1,

@@ -91,6 +91,16 @@ test('external API returns complete scoped punch, supervisor, register and emplo
   assert.equal(r.code,200,JSON.stringify(r.body));assert.equal(r.body.data.length,1);assert.equal(r.body.data[0].punch_in,'09:00:00');assert.equal(r.body.data[0].punch_out,'18:00:00');
   assert.equal(r.body.data[0].punch_in_image_url,'https://signed.example.test/pro-in.jpg');assert.equal(r.body.data[0].original_city_id,1);assert.equal(r.body.data[0].city_id,2);
   assert.equal((await call('getFullAttendance',{date:'2026-10-28',employee_type:'self_attendance'},key)).body.data.length,0);
+  await db.exec('ALTER TABLE self_attendance_records ADD COLUMN transfer_original JSONB');
+  await db.query(`UPDATE self_attendance_records SET punch_in_photo_url=NULL,punch_out_photo_url=NULL,transfer_original=$1 WHERE id=$2`,[JSON.stringify({kind:'regular',record:{supervisor_in_by:id(1),supervisor_in_name:'Head at original capture',supervisor_out_by:id(1),supervisor_out_name:'Head at original capture'},evidence:{in:{image_key:'transferred-private-in.jpg'},out:{image_key:'transferred-private-out.jpg'}}}),id(50)]);
+  r=await call('getSelfAttendanceDailyAttendance',{date:'2026-10-28'},{cityId:2,wardId:200});
+  assert.equal(r.code,200);assert.equal(r.body.data[0].attendance_source,'supervisor');
+  assert.equal(r.body.data[0].punch_in_image_url,'https://signed.example.test/transferred-private-in.jpg');
+  assert.equal(r.body.data[0].punch_out_image_url,'https://signed.example.test/transferred-private-out.jpg');
+  assert.equal(r.body.data[0].punched_in_by.name,'Head at original capture');assert.equal(r.body.data[0].punched_in_by.id,id(1));
+  assert.equal(r.body.data[0].transfer_original,undefined);assert.equal(r.body.data[0].punch_in_photo_url,undefined,'Private storage references are not returned in the external contract');
+  r=await call('getSelfAttendanceDailyAttendance',{date:'2026-10-28',source:'supervisor'},{cityId:2,wardId:200});
+  assert.equal(r.body.pagination.total,1,'Supervisor source filters and counts include transferred Self records');
   signed.length=0;
   r=await call('getDailyAttendance',{date:'2026-10-28',city_id:2},key);assert.equal(r.body.data.length,0);assert.equal(signed.length,0,'Out-of-scope rows never receive photo links');
   r=await call('getEmployees',{},key);assert.equal(r.code,200,JSON.stringify(r.body));assert.equal(r.body.data.length,3,'Registered roster includes employees with no attendance');

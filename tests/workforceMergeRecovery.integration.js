@@ -34,8 +34,14 @@ module.exports=async({db,pool,call})=>{
  assert.deepEqual((await db.query('SELECT kothi_id FROM self_attendance_site_access WHERE self_attendance_id=$1',[a])).rows.map(row=>row.kothi_id),[10],'Main must not inherit duplicate site permissions');
  assert.deepEqual((await db.query('SELECT week_off_days FROM self_attendance_week_off WHERE self_attendance_id=$1',[a])).rows[0].week_off_days,[]);
  const rp={mergeId:String(merged.data.mergeId)};
+ // Simulate an open recovery window created before auth_enabled was added.
+ // The migration must not make the existing recovery journal unusable.
+ await db.query("UPDATE workforce_merge_changes SET before_row=before_row-'auth_enabled',after_row=after_row-'auth_enabled' WHERE merge_id=$1 AND table_name='workforce_employee_aliases'",[rp.mergeId]);
  assert.equal((await call('post','/merges/:mergeId/revert-preview',{user:3,params:rp})).code,403);
  assert.equal((await call('post','/merges/:mergeId/revert',{user:3,params:rp})).code,403);
+ await db.query('UPDATE workforce_employee_aliases SET auth_enabled=false WHERE source_id=$1',[b]);
+ assert.equal((await call('post','/merges/:mergeId/revert-preview',{params:rp})).code,409,'Old journals cannot ignore a newer explicit authentication restriction');
+ await db.query('UPDATE workforce_employee_aliases SET auth_enabled=true WHERE source_id=$1',[b]);
  const oldPreview=await call('post','/merges/:mergeId/revert-preview',{params:rp});assert.equal(oldPreview.code,200,JSON.stringify(oldPreview.data));
  await db.query("INSERT INTO self_attendance_records(self_attendance_id,date,punch_in,punch_approval_status,city_id) VALUES($1,'2026-10-03','2026-10-03 09:00','accepted',1)",[a]);
  await db.query("UPDATE self_attendance_records SET punch_out='2026-10-02 18:00' WHERE self_attendance_id=$1 AND date='2026-10-02'",[a]);

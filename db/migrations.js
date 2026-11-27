@@ -293,6 +293,8 @@ async function runMigrations() {
     // after all table additions, inside the same deployment transaction.
     client.setStep('refresh workforce merge dependency triggers');
     await client.query("SELECT pg_advisory_xact_lock(hashtext('matrixtrack-workforce-schema'))");
+    if((await client.query("SELECT to_regclass('workforce_merge_audit') IS NOT NULL AND to_regclass('workforce_employee_aliases') IS NOT NULL AS ready")).rows[0]?.ready)
+      await client.query(fs.readFileSync(path.join(__dirname,'migrations','20261126_cross_attendance_merge.sql'),'utf8'));
     await require('../utils/workforceMergeSchema').refreshMergeTriggers(client);
     await client.query('COMMIT');
     markAttendanceBlockSchemaReady();

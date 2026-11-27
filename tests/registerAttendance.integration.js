@@ -5,6 +5,9 @@ async function fixture(run){
  const db=new PGlite();try{
   await db.exec(`CREATE TABLE wards(ward_id INT PRIMARY KEY,ward_name TEXT);
    INSERT INTO wards VALUES(10,'Site A'),(20,'Site B');
+   CREATE TABLE zones(zone_id INT PRIMARY KEY,city_id INT);INSERT INTO zones VALUES(1,1);
+   CREATE TABLE sectors(sector_id INT PRIMARY KEY,zone_id INT);INSERT INTO sectors VALUES(100,1);
+   ALTER TABLE wards ADD COLUMN zone_id INT DEFAULT 1,ADD COLUMN sector_id INT DEFAULT 100;
    CREATE TABLE employee(emp_id SERIAL PRIMARY KEY,name TEXT,emp_code TEXT,phone TEXT NOT NULL,ward_id INT REFERENCES wards, self_attendance_enabled BOOLEAN DEFAULT FALSE,face_embedding TEXT);
    CREATE TABLE self_attendance_employees(id UUID PRIMARY KEY,full_name TEXT,emp_code TEXT,is_active BOOLEAN DEFAULT TRUE);
    CREATE TABLE designation(designation_id INT PRIMARY KEY,designation_name TEXT);

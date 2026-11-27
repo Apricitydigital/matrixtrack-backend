@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS workforce_employee_aliases (
  CHECK(source_id<>target_id)
 );
 CREATE INDEX IF NOT EXISTS workforce_alias_target ON workforce_employee_aliases(employee_kind,target_id);
+ALTER TABLE workforce_employee_aliases ADD COLUMN IF NOT EXISTS auth_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 -- Kept separate from public employee-ID redirects. Only authentication reads
 -- these hashes; admin previews never return them. Main-password rotation makes
 -- retired passwords invalid without changing the main account's credentials.

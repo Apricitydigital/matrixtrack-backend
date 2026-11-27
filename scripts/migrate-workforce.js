@@ -1,6 +1,6 @@
 // Explicit deployment step only. Never imported by login, punch or startup.
 const fs=require('fs'),path=require('path');
-const files=['20261023_non_duplicate_pairs.sql','20261021_workforce_review.sql','20261021_workforce_merge.sql','20261022_self_attendance_records_site.sql','20261022_workforce_merge_recovery.sql','20261022_merge_weeklyoff_recovery.sql'];
+const files=['20261023_non_duplicate_pairs.sql','20261021_workforce_review.sql','20261021_workforce_merge.sql','20261022_self_attendance_records_site.sql','20261022_workforce_merge_recovery.sql','20261022_merge_weeklyoff_recovery.sql','20261126_cross_attendance_merge.sql'];
 if(!process.argv.includes('--apply')) {
  console.log('No database changes made. Review these migrations, then run with --apply:');
  for(const file of files)console.log(file);
@@ -21,6 +21,7 @@ if(!process.argv.includes('--apply')) {
    }
    client.setStep('48-hour merge recovery journal triggers');
    await require('../utils/workforceMergeRecovery').installRecoveryTriggers(client);
+   await require('../utils/workforceMergeSchema').refreshMergeTriggers(client);
    await client.query('COMMIT');console.log('Workforce schema upgrade committed. No historical attendance sites were guessed or backfilled.');
   }catch(failure){error=failure;if(client && failure.message!=='Query read timeout')try{await client.query('ROLLBACK');}catch(_){}console.error('Workforce upgrade failed:',failure.message);process.exitCode=1;}
   finally{if(client)await client.release(error);await pool.end();}

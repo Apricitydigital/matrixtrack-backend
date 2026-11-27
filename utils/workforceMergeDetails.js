@@ -26,8 +26,8 @@ async function mergeDetails(client,profiles){
   const ids=profiles.filter(row=>row.kind==='self_attendance').map(row=>row.id);
   if(ids.length)for(const row of (await client.query('SELECT self_attendance_id::text AS id,week_off_days FROM self_attendance_week_off WHERE self_attendance_id::text=ANY($1::text[])',[ids])).rows)days.set(row.id,row.week_off_days);
  }
- return profiles.map(profile=>({...profile,last_punch_in:details.get(`${profile.kind}:${profile.id}`)?.last_punch_in || null,present_days:details.get(`${profile.kind}:${profile.id}`)?.present_days || 0,
+ return require('./workforceBlockDetails').workforceBlockDetails(client,profiles.map(profile=>({...profile,last_punch_in:details.get(`${profile.kind}:${profile.id}`)?.last_punch_in || null,present_days:details.get(`${profile.kind}:${profile.id}`)?.present_days || 0,
   face_image_url:profile.kind==='regular'&&profile.face_registered?`/app/attendance/employee/faceRoutes/image/${encodeURIComponent(profile.id)}?thumb=1`:selfPhotos.get(profile.id)||null,
-  ...(profile.kind==='self_attendance'?{week_off_days:days.get(profile.id)||[]}: {})}));
+  ...(profile.kind==='self_attendance'?{week_off_days:days.get(profile.id)||[]}: {})})));
 }
 module.exports={mergeDetails};

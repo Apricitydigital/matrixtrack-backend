@@ -1,6 +1,7 @@
 const {attendanceBlockSql,attendanceReportVisibleSql}=require('./attendanceBlockReporting');
 const {withAttendanceIdentity}=require('./selfAttendanceRecordsIdentity');
 const {buildVisibilityScope}=require('./selfAttendanceAccess');
+const {transferredAttendanceEvidence}=require('./transferredAttendanceEvidence');
 
 function dateRange(input={}) {
  const today=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});
@@ -74,14 +75,14 @@ function normalizeReport(rows) {
   const person={...employee,...(!current_assignment_visible && locations[0]?locations[0]:{}),report_locations:locations,employee_type:self_attendance?'Self Attendance':'Regular'};
   employees.push(person);
   for(const entry of entries) {
-   const a=entry.record || {},date=entry.date.split('-').reverse().join('-');
+   const a=transferredAttendanceEvidence(entry.record || {}),date=entry.date.split('-').reverse().join('-');
    const status=a.punch_approval_status;
    const accepted=!self_attendance || !status || status==='accepted';
    const punchIn=accepted?time(self_attendance?a.punch_in:a.punch_in_time,self_attendance):null;
    const out=accepted?time(self_attendance?a.punch_out:a.punch_out_time,self_attendance):null;
    records.push({...person,...entry.location,report_locations:undefined,historical_site_unknown:self_attendance && Boolean(entry.record) && !entry.location?.ward_id,attendance_id:self_attendance?`self_attendance:${a.id || entry.date}`:a.attendance_id,
     source_attendance_id:self_attendance?a.id:a.attendance_id,date,contact_no:person.phone,
-    punch_in:punchIn,punch_out:out,mid_shift_punch_in:self_attendance?null:time(a.mid_shift_punch_in_time,true),
+    punch_in:punchIn,punch_out:out,mid_shift_punch_in:time(a.mid_shift_punch_in_time,true),
     register_status:a.register_status,register_request_id:a.register_request_id,register_marked_by:a.register_marked_by,
     register_marked_by_name:a.register_marked_by_name,register_marked_at:a.register_marked_at,
     attendance_source:a.register_status?'register':a.supervisor_in_by||a.supervisor_out_by?'supervisor':'punch',
@@ -96,8 +97,8 @@ function normalizeReport(rows) {
     latitude_mid_in:a.latitude_mid_in,longitude_mid_in:a.longitude_mid_in,mid_in_address:a.mid_in_address,
     punch_in_image:self_attendance?a.punch_in_photo_url:a.punch_in_image,punch_out_image:self_attendance?a.punch_out_photo_url:a.punch_out_image,
     mid_shift_punch_in_image:a.mid_shift_punch_in_image,
-    punched_in_by:self_attendance?(punchIn?person.name:null):(a.supervisor_in_name||a.punched_in_by),
-    punched_out_by:self_attendance?(out?person.name:null):(a.supervisor_out_name||a.punched_out_by),mid_shift_punched_in_by:a.mid_shift_punched_in_by,
+    punched_in_by:a.supervisor_in_name||(self_attendance?(punchIn?person.name:null):a.punched_in_by),
+    punched_out_by:a.supervisor_out_name||(self_attendance?(out?person.name:null):a.punched_out_by),mid_shift_punched_in_by:a.mid_shift_punched_in_by,
    });
   }
  }

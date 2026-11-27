@@ -53,6 +53,7 @@ async function report(req,res) {
   for(let i=0;i<photos.length;i+=20)await Promise.all(photos.slice(i,i+20).map(async row=>{
    if(row.punch_in_image)row.punch_in_image_url=await getSignedS3Url(row.punch_in_image,900);
    if(row.punch_out_image)row.punch_out_image_url=await getSignedS3Url(row.punch_out_image,900);
+   if(row.mid_shift_punch_in_image)row.mid_shift_punch_in_image_url=await getSignedS3Url(row.mid_shift_punch_in_image,900);
   }));
   res.json(result);
  }catch(error){

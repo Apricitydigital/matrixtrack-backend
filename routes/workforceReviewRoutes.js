@@ -11,6 +11,8 @@ const {reviewDuplicateCandidates,matchingSignals,mergePlan,moveReferences,valida
 const {ensureMergeSchema}=require('../utils/employeeAliases');
 const {retainMergedLogins}=require('../utils/selfAttendanceMergeLogin');
 const recovery=require('../utils/workforceMergeRecovery');
+const crossAttendance=require('../utils/workforceCrossAttendance');
+const {workforceBlockDetails}=require('../utils/workforceBlockDetails');
 const HR_MERGE_ADMIN_EMAIL='hr@apricitydigital.in';
 const HR_HARD_DELETE_ADMIN_EMAIL='hr@humanmatrix.co.in';
 const fail = (message, status=400) => { throw Object.assign(new Error(message), { status }); };
@@ -33,6 +35,7 @@ router.use(wrap(async (req,res,next) => {
   req.reviewOwner=['super_admin','superadmin'].includes(user.role) || p?.role_type==='super_admin' || owners.some(e=>e.trim().toLowerCase()===String(user.email).trim().toLowerCase());
   req.reviewCanMerge=req.reviewOwner || [HR_MERGE_ADMIN_EMAIL,HR_HARD_DELETE_ADMIN_EMAIL].includes(String(user.email || '').trim().toLowerCase());
  req.reviewCanHardDelete=req.reviewOwner || String(user.email || '').trim().toLowerCase()===HR_HARD_DELETE_ADMIN_EMAIL;
+ req.reviewCanManageNonDuplicates=req.reviewCanHardDelete;
  req.reviewActor=user; req.user={...req.user,user_id:user.user_id,role:'admin',permissions:p};
  next();
 }));
@@ -115,7 +118,7 @@ router.post('/summary',permission('view'),wrap(async(req,res)=>{
 }));
 router.get('/',permission('view'),wrap(async(req,res)=>{
  await schema();
- const rows=await records(req);
+ const rows=await workforceBlockDetails(pool,await records(req));
  const issues=(await pool.query('SELECT * FROM workforce_review_issues ORDER BY updated_at DESC')).rows;
  const candidateRows=(!req.query.kind||req.query.kind==='all')?rows:await records({...req,query:{...req.query,kind:'all'}});
  const excluded=await exclusions(pool),index=reviewDuplicateCandidates(candidateRows);
@@ -125,14 +128,14 @@ router.get('/',permission('view'),wrap(async(req,res)=>{
   const candidates=duplicates(r);
   const signals=[...new Set(candidates.flatMap(other=>other.kind!==r.kind?['Same Aadhaar across Regular and Self Attendance']:matchingSignals(r,other)))];
   return {...r,duplicate_count:candidates.length,issues:issues.filter(i=>i.employee_kind===r.kind && i.employee_id===r.id),
-   signals:[...signals,!r.site_id && 'No site assignment',r.active==='false' && 'Inactive',r.deleted==='true' && 'Deleted/ghost record'].filter(Boolean)};
+   signals:[...signals,!r.site_id && 'No site assignment',r.active==='false' && 'Inactive',r.deleted==='true' && 'Deleted/ghost record',r.is_attendance_blocked && 'Attendance blocked'].filter(Boolean)};
  });
  const filtered=enriched.filter(r=>(!q || [r.name,r.emp_code,r.mobile,r.id].some(v=>String(v||'').toLowerCase().includes(q))) &&
  (!req.query.kind || req.query.kind==='all' || r.kind===req.query.kind || (req.query.kind==='professional' && r.kind==='self_attendance')) &&
  (!req.query.status || req.query.status==='all' || (req.query.status==='faceRegistered' ? r.face_registered : req.query.status==='midShiftPunchIn' ? r.mid_shift : r.status===req.query.status)) &&
  (req.query.review==='duplicates' ? r.duplicate_count>0 : !req.query.review || req.query.review==='all' || (req.query.review==='signals' ? r.signals.length>0 : r.issues.some(i=>i.status===req.query.review))));
  const page=Math.max(1,parseInt(req.query.page,10)||1),limit=25;
- res.json({data:filtered.slice((page-1)*limit,page*limit),total:filtered.length,pages:Math.max(1,Math.ceil(filtered.length/limit)),filters:await locationFilters(req),canHardDelete:req.reviewCanHardDelete,canMerge:req.reviewCanMerge,canManageNonDuplicates:req.reviewOwner,
+ res.json({data:filtered.slice((page-1)*limit,page*limit),total:filtered.length,pages:Math.max(1,Math.ceil(filtered.length/limit)),filters:await locationFilters(req),canHardDelete:req.reviewCanHardDelete,canMerge:req.reviewCanMerge,canManageNonDuplicates:req.reviewCanManageNonDuplicates,
  canWrite:req.reviewOwner || !req.user.permissions || req.user.permissions.modules?.dashboard==='write'});
 }));
 router.post('/:kind/:id/issues',permission('write'),wrap(async(req,res)=>{
@@ -148,7 +151,7 @@ router.patch('/:kind/:id/issues/:issueId',permission('write'),wrap(async(req,res
  const data=(await pool.query(`UPDATE workforce_review_issues SET status=$1,updated_by=$2,updated_at=NOW() WHERE id=$3 AND employee_kind=$4 AND employee_id=$5 RETURNING *`,[req.body.status,req.reviewActor.user_id,req.params.issueId,row.kind,row.id])).rows[0];
  if(!data) fail('Issue not found.',404); res.json({data});
 }));
-const ownerOnly=(req,res,next)=>req.reviewOwner ? next() : res.status(403).json({message:'Only a superadmin can perform this action.'});
+const nonDuplicateOnly=(req,res,next)=>req.reviewCanManageNonDuplicates ? next() : res.status(403).json({message:'Workforce non-duplicate review permission required.'});
 const hardDeleteOnly=(req,res,next)=>req.reviewCanHardDelete ? next() : res.status(403).json({message:'Workforce hard delete permission required.'});
 const mergeOnly=(req,res,next)=>req.reviewCanMerge ? next() : res.status(403).json({message:'Workforce merge permission required.'});
 router.get('/:kind/:id/duplicates',permission('view'),wrap(async(req,res)=>{
@@ -158,7 +161,7 @@ router.get('/:kind/:id/duplicates',permission('view'),wrap(async(req,res)=>{
  const enriched=await require('../utils/workforceMergeDetails').mergeDetails(pool,[row,...candidates]);
  res.json({employee:enriched[0],candidates:enriched.slice(1).map(other=>({...other,match_signals:other.kind!==row.kind?['Same Aadhaar across Regular and Self Attendance']:matchingSignals(row,other)}))});
 }));
-router.post('/:kind/:id/non-duplicate',ownerOnly,wrap(async(req,res)=>{
+router.post('/:kind/:id/non-duplicate',nonDuplicateOnly,wrap(async(req,res)=>{
  const target=await employee(req);
  const other=await employee({...req,params:{kind:req.body.otherKind,id:req.body.otherId}});
  if(target.kind===other.kind && target.id===other.id) fail('Choose a different employee.');
@@ -167,7 +170,73 @@ router.post('/:kind/:id/non-duplicate',ownerOnly,wrap(async(req,res)=>{
  await pool.query('INSERT INTO workforce_non_duplicate_pairs(pair_key,created_by) VALUES($1,$2) ON CONFLICT DO NOTHING',[pairKey(target,other),req.reviewActor.user_id]);
  res.json({message:'Marked as different people. Employee records are unchanged.'});
 }));
+router.post('/:kind/:id/keep-separate',mergeOnly,wrap(async(req,res)=>{
+ const code=String(req.body.employeeCode||'').trim();
+ if(!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,49}$/.test(code))fail('Enter an employee code of 1 to 50 letters, digits, dots, slashes, underscores or hyphens.');
+ const client=await pool.connect();
+ try{
+  const hasRequests=(await client.query("SELECT to_regclass('self_punch_requests') IS NOT NULL AS ready")).rows[0]?.ready;
+  await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+  await client.query("SET LOCAL lock_timeout='2s'");
+  // Acquire every writer lock before the first transaction snapshot, so an
+  // import or registration that committed while waiting cannot be missed.
+  await client.query(`LOCK TABLE employee,self_attendance_employees${hasRequests?',self_punch_requests':''} IN SHARE ROW EXCLUSIVE MODE`);
+  await crossAttendance.ready(client);
+  const target=await employee(req,client),other=await employee({...req,params:{kind:req.body.otherKind,id:req.body.otherId}},client);
+  if(target.kind===other.kind && target.id===other.id)fail('Choose two different accounts.');
+  const changes=[];
+  let requestId=null;
+  if(hasRequests){
+   if(target.kind==='self_attendance')requestId=(await client.query("SELECT COALESCE(to_jsonb(t)->>'request_id',id::text) AS request_id FROM self_attendance_employees t WHERE id::text=$1",[target.id])).rows[0]?.request_id;
+   if((await client.query("SELECT 1 FROM self_punch_requests WHERE lower(trim(emp_code))=lower($1) AND status IN ('pending','approved') AND ($2::text IS NULL OR id::text<>$2) LIMIT 1",[code,requestId])).rows.length)
+    fail('This employee code is already used by a registration request. Enter a different code.',409);
+  }
+  const existing=await client.query(`SELECT kind,id FROM (
+   SELECT 'regular' AS kind,emp_id::text AS id,emp_code FROM employee
+   UNION ALL SELECT 'self_attendance',id::text,emp_code FROM self_attendance_employees
+   UNION ALL SELECT employee_kind,source_id,emp_code FROM workforce_employee_aliases
+   UNION ALL SELECT employee_kind,source_id,emp_code FROM workforce_cross_attendance_aliases
+  ) codes WHERE lower(trim(emp_code))=lower($1) AND NOT(kind=$2 AND id=$3) LIMIT 1`,[code,target.kind,target.id]);
+  if(existing.rows.length)fail('This employee code is already used. Enter a different code.',409);
+  const table=target.kind==='regular'?'employee':'self_attendance_employees',key=target.kind==='regular'?'emp_id':'id';
+  await client.query(`UPDATE ${quote(table)} SET emp_code=$1 WHERE ${quote(key)}::text=$2`,[code,target.id]);
+  if(requestId){
+   const registration=(await client.query('SELECT emp_code FROM self_punch_requests WHERE id::text=$1',[requestId])).rows[0];
+   if(registration){
+    changes.push({kind:'registration',id:requestId,before:{emp_code:registration.emp_code},after:{emp_code:code}});
+    await client.query('UPDATE self_punch_requests SET emp_code=$1 WHERE id::text=$2',[code,requestId]);
+   }
+  }
+  // Approved self registrations can flag the employee-master mirror as self-only.
+  // Once the user explicitly keeps two systems separate, regular must be usable.
+  if(target.kind!==other.kind){
+   const regular=target.kind==='regular'?target:other;
+   const profile=(await client.query('SELECT to_jsonb(t) AS row FROM employee t WHERE emp_id::text=$1 FOR UPDATE',[regular.id])).rows[0]?.row;
+   if(profile?.self_attendance_enabled===true){
+    changes.push({kind:'regular',id:regular.id,before:{self_attendance_enabled:true},after:{self_attendance_enabled:false}});
+    await client.query('UPDATE employee SET self_attendance_enabled=false WHERE emp_id::text=$1',[regular.id]);
+   }
+  }
+  await client.query('INSERT INTO workforce_non_duplicate_pairs(pair_key,created_by) VALUES($1,$2) ON CONFLICT DO NOTHING',[pairKey(target,other),req.reviewActor.user_id]);
+  await client.query(`INSERT INTO workforce_separation_audit(employee_kind,employee_id,other_kind,other_id,previous_code,new_code,actor_user_id,profile_changes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[target.kind,target.id,other.kind,other.id,target.emp_code,code,req.reviewActor.user_id,JSON.stringify(changes)]);
+  await client.query('COMMIT');res.json({message:'Accounts kept separate with a unique employee code. Both attendance histories are unchanged.'});
+ }catch(error){await client.query('ROLLBACK');if(['40001','40P01','23505'].includes(error.code))fail('Employee codes changed. Refresh and try again.',409);throw error;}finally{client.release();}
+}));
 async function prepareMerge(req,client) {
+ if(req.body.sources!==undefined){
+  const sources=req.body.sources;
+  if(!Array.isArray(sources)||!sources.length||sources.length>20||sources.some(s=>!s||!['regular','self_attendance'].includes(s.kind)||typeof s.id!=='string')||new Set(sources.map(s=>s.kind+':'+s.id)).size!==sources.length||req.body.sourceIds!==undefined)fail('Select between 1 and 20 different source accounts.');
+  const target=await employee(req,client),selected=[],excluded=await exclusions(client);
+  for(const source of sources){
+   if(source.kind===target.kind)fail('Use same-type merge for accounts already in the selected system.');
+   const row=await employee({...req,params:source},client);
+   if(!target.aadhaar_number || target.aadhaar_number!==row.aadhaar_number)fail('Transferring systems requires the same verified Aadhaar on both accounts.',409);
+   if(target.city_id==null || target.site_id==null || String(target.city_id)!==String(row.city_id)||String(target.site_id)!==String(row.site_id))fail('Both accounts must have the same city and assigned site before transferring attendance.',409);
+   if(excluded.has(pairKey(target,row)))fail('These accounts were marked as different people.',409);
+   selected.push(row);
+  }
+  return crossAttendance.planTransfer(client,target,selected,req.body.attendanceResolutions);
+ }
  const ids=req.body.sourceIds;
  if(!Array.isArray(ids) || !ids.length || ids.length>20 || !ids.every(id=>typeof id==='string' && id!==req.params.id) || new Set(ids).size!==ids.length) fail('Select between 1 and 20 different duplicate IDs.');
  const target=await employee(req,client);
@@ -187,9 +256,12 @@ router.post('/:kind/:id/merge-preview',mergeOnly,wrap(async(req,res)=>{
  try {
   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
   await client.query("SET LOCAL lock_timeout='2s'");
-  const plan=await prepareMerge(req,client);await assertAliasTriggers(client,plan);await recovery.assertRecoveryReady(client,plan);await validateMove(client,plan);
+  const plan=await prepareMerge(req,client);
+  if(!plan.crossAttendance)await assertAliasTriggers(client,plan);
+  await recovery.assertRecoveryReady(client,plan);
+  await (plan.crossAttendance?crossAttendance.validateTransfer:validateMove)(client,plan);
   await client.query('ROLLBACK');
-  res.json({targetId:plan.targetId,sourceIds:plan.sourceIds,login:plan.login,attendance:plan.attendance?.summary,weeklyOff:plan.weeklyOff?{selectedId:plan.weeklyOff.selectedId,days:plan.weeklyOff.days}:null,restoreWindowHours:48,affected:plan.affected.map(({table,column,count})=>({table,column,count})),fingerprint:plan.fingerprint});
+  res.json({targetId:plan.targetId,sourceIds:plan.sourceIds,crossAttendance:!!plan.crossAttendance,login:plan.login,attendance:plan.attendance?.summary,weeklyOff:plan.weeklyOff?{selectedId:plan.weeklyOff.selectedId,days:plan.weeklyOff.days}:null,restoreWindowHours:48,affected:plan.affected.map(({table,column,count})=>({table,column,count})),fingerprint:plan.fingerprint});
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }));
 router.post('/:kind/:id/merge',mergeOnly,wrap(async(req,res)=>{
@@ -203,15 +275,22 @@ router.post('/:kind/:id/merge',mergeOnly,wrap(async(req,res)=>{
   await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
   const plan=await prepareMerge(req,client);
   if(plan.fingerprint!==req.body.fingerprint) fail('Employee or attendance data changed. Preview this merge again.',409);
-  await assertAliasTriggers(client,plan);await recovery.assertRecoveryReady(client,plan);await validateMove(client,plan);
+  if(!plan.crossAttendance)await assertAliasTriggers(client,plan);
+  await recovery.assertRecoveryReady(client,plan);await (plan.crossAttendance?crossAttendance.validateTransfer:validateMove)(client,plan);
   const audit=await recovery.beginRecovery(client,plan,req.reviewActor.user_id,reason);
+  if(plan.crossAttendance){
+   await crossAttendance.applyTransfer(client,plan,audit);
+   await client.query('COMMIT');
+   return res.json({message:'Accounts merged into the selected attendance system. All original attendance and linked evidence are permanently preserved. Recovery is available for 48 hours.',targetId:plan.targetId,mergeId:audit.id,restoreUntil:audit.restore_until});
+  }
   await moveReferences(client,plan);
   await retainMergedLogins(client,plan);
   const key=plan.kind==='regular'?'emp_id':'id',table=plan.kind==='regular'?'employee':'self_attendance_employees';
   for(const source of plan.profiles.filter(row=>String(row[key])!==plan.targetId)) {
    const id=String(source[key]);
-   await client.query('UPDATE workforce_employee_aliases SET target_id=$1 WHERE employee_kind=$2 AND target_id=$3',[plan.targetId,plan.kind,id]);
-   await client.query('INSERT INTO workforce_employee_aliases(employee_kind,source_id,target_id,emp_code,face_id) VALUES($1,$2,$3,$4,$5)',[plan.kind,id,plan.targetId,source.emp_code || null,source.face_id || null]);
+   const authEnabled=source.is_active!==false;
+   await client.query('UPDATE workforce_employee_aliases SET target_id=$1,auth_enabled=auth_enabled AND $4 WHERE employee_kind=$2 AND target_id=$3',[plan.targetId,plan.kind,id,authEnabled]);
+   await client.query('INSERT INTO workforce_employee_aliases(employee_kind,source_id,target_id,emp_code,face_id,auth_enabled) VALUES($1,$2,$3,$4,$5,$6)',[plan.kind,id,plan.targetId,source.emp_code || null,source.face_id || null,authEnabled]);
   }
   await client.query(`DELETE FROM ${quote(table)} WHERE ${quote(key)}::text=ANY($1::text[])`,[plan.sourceIds]);
   await client.query('COMMIT');res.json({message:'Duplicate IDs merged. You can preview and revert this merge within 48 hours from Merge history.',targetId:plan.targetId,mergeId:audit.id,restoreUntil:audit.restore_until});
@@ -231,6 +310,21 @@ router.get('/merges',mergeOnly,wrap(async(req,res)=>{
  FROM workforce_merge_audit ${actorClause} ORDER BY id DESC LIMIT 25 OFFSET $${pageParam}`,params);
  const count=(await pool.query(`SELECT count(*)::int AS total FROM workforce_merge_audit ${actorClause}`,owner?[]:[req.reviewActor.user_id])).rows[0].total;
  res.json({data:rows,total:count,pages:Math.max(1,Math.ceil(count/25))});
+}));
+router.get('/merges/:mergeId/attendance-originals',mergeOnly,wrap(async(req,res)=>{
+ if(!/^\d+$/.test(String(req.params.mergeId)))fail('Invalid merge reference.');
+ await crossAttendance.ready(pool);
+ const audit=(await pool.query('SELECT * FROM workforce_merge_audit WHERE id=$1',[req.params.mergeId])).rows[0];
+ if(!audit)fail('Merge not found.',404);
+ if(!req.reviewOwner && Number(audit.actor_user_id)!==Number(req.reviewActor.user_id))fail('You can only view original attendance for your own merges.',403);
+ // Current geographic access is required even for an old merge performed by HR.
+ await employee({...req,params:{kind:audit.employee_kind,id:audit.target_id}});
+ const archived=(await pool.query(`SELECT employee_kind,employee_id,source_table,original_rows FROM workforce_transfer_archive
+ WHERE merge_id=$1 AND source_table IN ('attendance','self_attendance_records','self_attendance_leave_requests') ORDER BY id`,[audit.id])).rows;
+ const data=archived.flatMap(item=>item.original_rows.map(row=>({kind:item.employee_kind,employeeId:item.employee_id,date:row.date||row.requested_date,
+  punchIn:row.punch_in||row.punch_in_time||null,punchOut:row.punch_out||row.punch_out_time||null,leaveType:row.leave_type||null,
+  approvalStatus:row.punch_approval_status||row.status||null,midShiftPunchIn:row.mid_shift_punch_in_time||null})));
+ res.json({data});
 }));
 router.post('/merges/:mergeId/revert-preview',mergeOnly,wrap(async(req,res)=>{
  const client=await pool.connect();
@@ -284,6 +378,7 @@ router.delete('/:kind/:id',hardDeleteOnly,wrap(async(req,res)=>{
  await client.query("SELECT pg_advisory_xact_lock(hashtext('approved-self-attendance-list'))");
  const row=await employee(req,client);
  if((await client.query('SELECT 1 FROM workforce_employee_aliases WHERE employee_kind=$1 AND target_id=$2 LIMIT 1',[row.kind,row.id])).rows.length) fail('This main employee has merged IDs. Hard deletion is blocked to preserve their attendance and login links.',409);
+ if((await client.query("SELECT to_regclass('workforce_cross_attendance_aliases') IS NOT NULL AS ready")).rows[0]?.ready && (await client.query('SELECT 1 FROM workforce_cross_attendance_aliases WHERE target_kind=$1 AND target_id=$2 LIMIT 1',[row.kind,row.id])).rows.length)fail('This main account has transferred attendance. Hard deletion is blocked to preserve its history.',409);
  const table=row.kind==='regular'?'employee':'self_attendance_employees',key=row.kind==='regular'?'emp_id':'id';
  await client.query(`SELECT ${quote(key)} FROM ${quote(table)} WHERE ${quote(key)}::text=$1 FOR UPDATE`,[row.id]);
  const plan=await deletionPlan(client,row.kind,row.id);

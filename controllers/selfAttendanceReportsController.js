@@ -3,6 +3,7 @@ const { withAttendanceIdentity, reviewedPaidDaySql, reviewedSearchSql } = requir
 const runQueryWithTimeout = (sql, params = []) => runRawQuery(withAttendanceIdentity(sql, params), params);
 const { buildVisibilityScope } = require('../utils/selfAttendanceAccess');
 const { getSignedS3Url } = require('../utils/s3SelfPunch');
+const {transferredAttendanceEvidence}=require('../utils/transferredAttendanceEvidence');
 const logger = require('../utils/logger');
 const pool = require('../config/db');
 const { ensurePunchCutoffSchema } = require('../utils/selfAttendancePunchCutoff');
@@ -277,6 +278,7 @@ const getAttendanceList = async (req, res) => {
         pa.punch_out_longitude,
         pa.punch_in_photo_url,
         pa.punch_out_photo_url,
+        to_jsonb(pa)->'transfer_original' AS transfer_original,
         leave_row.leave_type,
         leave_row.status AS leave_status,
         leave_row.review_note AS leave_review_note,
@@ -348,7 +350,7 @@ const getAttendanceList = async (req, res) => {
     const total = parseInt(countResult.rows[0].total, 10);
 
     const data = await Promise.all(
-      dataResult.rows.map(async (row) => ({
+      dataResult.rows.map(transferredAttendanceEvidence).map(async (row) => ({
         ...row,
         hours_worked: row.hours_worked == null ? '' : parseFloat(row.hours_worked).toFixed(2),
         punch_in_photo_url: row.punch_in_photo_url ? await getSignedS3Url(row.punch_in_photo_url, 900) : null,
@@ -1041,6 +1043,7 @@ const getDateRangeAttendanceDetails = async (req, res) => {
         pa.punch_out_longitude,
         pa.punch_in_photo_url,
         pa.punch_out_photo_url,
+        to_jsonb(pa)->'transfer_original' AS transfer_original,
         plr.leave_type,
         plr.status AS leave_status,
         plr.review_note AS leave_review_note,
@@ -1087,7 +1090,7 @@ const getDateRangeAttendanceDetails = async (req, res) => {
 
     const shouldSignPhotos = req.query.include_photos === 'true' || detailsResult.rows.length <= 31;
     const mappedRows = await Promise.all(
-      detailsResult.rows.map(async (row) => ({
+      detailsResult.rows.map(transferredAttendanceEvidence).map(async (row) => ({
         ...row,
         hours_worked: row.hours_worked == null ? '' : parseFloat(row.hours_worked).toFixed(2),
         punch_in_photo_url: row.punch_in_photo_url && shouldSignPhotos ? await getSignedS3Url(row.punch_in_photo_url, 900) : (row.punch_in_photo_url || null),

@@ -359,7 +359,7 @@ const verifyOtp = async (req, res) => {
   try {
     // ── SELF_ATTENDANCE login ────────────────────────────────────────────────────
     if (record.userType === 'self_attendance') {
-      record.selfAttendanceId=await resolveEmployeeAlias('self_attendance',record.selfAttendanceId);
+      record.selfAttendanceId=await resolveEmployeeAlias('self_attendance',record.selfAttendanceId,{forAuthentication:true});
       const { rows } = await pool.query(
         `SELECT pe.id, pe.email, pe.face_locked, pe.ward_id, pe.zone_id, pe.city_id,pe.is_active,
                 c.city_name, z.zone_name, w.ward_name

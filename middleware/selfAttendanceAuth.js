@@ -28,7 +28,7 @@ const authenticateSelfAttendance = async (req, res, next) => {
     if (!decoded.self_attendance_id) {
       return res.status(403).json({ success: false, error: "Invalid token type for self_attendance routes" });
     }
-    decoded.self_attendance_id=await resolveEmployeeAlias('self_attendance',decoded.self_attendance_id);
+    decoded.self_attendance_id=await resolveEmployeeAlias('self_attendance',decoded.self_attendance_id,{forAuthentication:true});
 
     // Read current geography after profile edits even for an existing login token.
     const { rows } = await pool.query('SELECT city_id, zone_id, ward_id, kothi_id, is_active FROM self_attendance_employees WHERE id = $1', [decoded.self_attendance_id]);

@@ -20,7 +20,7 @@ const mergeMigration=async()=>{
 };
 const filename=path.join(__dirname,'../routes/workforceReviewRoutes.js');
 const mocks={'../utils/employeeAliases':{ensureMergeSchema:mergeMigration},express:{Router:()=>router},'../config/db':pool,'../middleware/authMiddleware':(req,res,next)=>next(),
- '../middleware/cityScope':{attachCityScope:(req,res,next)=>{req.cityScope={all:req.user.user_id!==3,ids:[1]};next();}},
+ '../middleware/cityScope':{attachCityScope:(req,res,next)=>{req.cityScope={all:![3,7].includes(req.user.user_id),ids:[1]};next();}},
  '../middleware/permissionMiddleware':{authorize:(_module,action)=>(req,res,next)=>req.reviewActor.user_id===4 || (req.reviewActor.user_id===3 && action==='write') ? res.status(403).json({message:'Forbidden'}) : next(),getPermissionCityFilter:req=>req.cityScope.all ? null : req.cityScope.ids},
  '../utils/userKothiAccess':{fetchUserKothiAccess:async()=>({ids:[10]})}};
 vm.runInNewContext('(function(require,module,__dirname){'+fs.readFileSync(filename,'utf8')+'})',{console,process})(name=>mocks[name] || require(require.resolve(name,{paths:[path.dirname(filename)]})),{exports:{}},path.dirname(filename));
@@ -54,6 +54,10 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  CREATE TABLE leave_notes(id SERIAL PRIMARY KEY,request_id INT REFERENCES self_attendance_leave_requests,note TEXT);
  INSERT INTO leave_notes(request_id,note) SELECT id,'keep or delete with parent' FROM self_attendance_leave_requests;`);
  await db.exec(fs.readFileSync(path.join(__dirname,'../db/migrations/20261021_workforce_review.sql'),'utf8'));
+ await db.exec(fs.readFileSync(path.join(__dirname,'../db/migrations/20261023_non_duplicate_pairs.sql'),'utf8'));
+ await db.query("INSERT INTO users(user_id,name,email,role,permissions,is_deleted) VALUES(7,'HumanMatrix HR','hr@humanmatrix.co.in','admin','{}',false)");
+ await db.exec(`CREATE TABLE self_attendance_records_blocks(self_attendance_id UUID PRIMARY KEY REFERENCES self_attendance_employees(id) ON DELETE CASCADE,is_blocked BOOLEAN,reason TEXT,updated_at TIMESTAMPTZ);
+ INSERT INTO self_attendance_records_blocks VALUES('${pro}',true,'Attendance review','2026-11-26T05:00:00Z');`);
  const dates={startDate:'2026-10-21',endDate:'2026-10-21'};
  let r=await call('post','/summary',{body:dates});assert.equal(r.code,200);assert.equal(r.data.data.totalEmployees,5);assert.equal(r.data.data.present,2);assert.equal(r.data.data.onLeave,1);assert.equal(r.data.data.notMarked,2);assert.equal(r.data.data.breakdown.self_attendance.totalEmployees,2);
  r=await call('post','/summary',{body:{...dates,user_id:7}});assert.equal(r.data.data.totalEmployees,3);
@@ -70,6 +74,8 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  assert.equal((await call('get','/',{user:2})).code,403);assert.equal((await call('get','/',{user:4})).code,403);
  r=await call('get','/',{user:3,query:dates});assert.equal(r.data.total,3);assert.equal(r.data.canHardDelete,false);
   r=await call('get','/',{user:5,query:dates});assert.equal(r.code,200);assert.equal(r.data.canMerge,true);assert.equal(r.data.canHardDelete,false);assert.equal(r.data.canManageNonDuplicates,false);
+  r=await call('get','/',{user:7,query:dates});assert.equal(r.code,200);assert.equal(r.data.canHardDelete,true);assert.equal(r.data.canManageNonDuplicates,true);assert.equal(r.data.total,3,'HR retains its city scope');
+  const blockedProfile=r.data.data.find(row=>row.id===pro);assert.equal(blockedProfile.is_attendance_blocked,true);assert.equal(new Date(blockedProfile.attendance_blocked_at).toISOString(),'2026-11-26T05:00:00.000Z');assert.equal(blockedProfile.status,'present','current block must not replace historical attendance');
   r=await call('get','/',{user:6,query:dates});assert.equal(r.code,200);assert.equal(r.data.canMerge,false,'an ordinary admin cannot self-grant merge access with permissions JSON');
  assert.equal((await call('post','/:kind/:id/issues',{user:3,params:{kind:'regular',id:'1'},body:{reason:'duplicate'}})).code,403);
  const params={kind:'self_attendance',id:pro};
@@ -77,6 +83,15 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  assert.equal((await call('delete','/:kind/:id',{user:3,params,body:{confirmation:pro,reason:'Forbidden delete'}})).code,403);
   assert.equal((await call('get','/:kind/:id/delete-preview',{user:5,params})).code,403);
   assert.equal((await call('post','/:kind/:id/non-duplicate',{user:5,params,body:{otherKind:'self_attendance',otherId:pro2}})).code,403);
+  assert.equal((await call('post','/:kind/:id/non-duplicate',{user:6,params,body:{otherKind:'self_attendance',otherId:pro2}})).code,403);
+  assert.equal((await call('get','/:kind/:id/delete-preview',{user:7,params})).code,200);
+  assert.equal((await call('post','/:kind/:id/non-duplicate',{user:7,params,body:{otherKind:'regular',otherId:'3'}})).code,404,'HR cannot mark a pair outside its city access');
+  const details=await call('get','/:kind/:id/duplicates',{user:7,params,query:dates});assert.equal(details.code,200);assert.equal(details.data.employee.is_attendance_blocked,true);assert.equal(details.data.employee.attendance_block_reason,'Attendance review');
+  const attendanceBeforeMark=(await db.query('SELECT * FROM self_attendance_records ORDER BY id')).rows;
+  assert.equal((await call('post','/:kind/:id/non-duplicate',{user:7,params,body:{otherKind:'self_attendance',otherId:pro2}})).code,200);
+  assert.deepEqual((await db.query('SELECT * FROM self_attendance_records ORDER BY id')).rows,attendanceBeforeMark,'mark not matched never changes attendance');
+  assert.equal((await call('get','/:kind/:id/duplicates',{user:7,params,query:dates})).data.candidates.some(row=>row.id===pro2),false);
+  await db.query('DELETE FROM workforce_non_duplicate_pairs');
  r=await call('post','/:kind/:id/issues',{params,body:{reason:'Review duplicate employee'}});assert.equal(r.code,201);const issueId=r.data.data.id;
  r=await call('patch','/:kind/:id/issues/:issueId',{params:{...params,issueId},body:{status:'done'}});assert.equal(r.data.data.status,'done');
  r=await call('get','/',{query:{...dates,review:'done'}});assert.equal(r.data.total,1);
@@ -96,7 +111,7 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  assert.equal((await db.query('SELECT count(*)::int AS n FROM leave_notes')).rows[0].n,0);
  const regularParams={kind:'regular',id:'1'};
  const regularPreview=(await call('get','/:kind/:id/delete-preview',{params:regularParams})).data;
- r=await call('delete','/:kind/:id',{params:regularParams,body:{reason:'Regular employee fixture',confirmation:'1',fingerprint:regularPreview.fingerprint}});assert.equal(r.code,200);
+ r=await call('delete','/:kind/:id',{user:7,params:regularParams,body:{reason:'Regular employee fixture',confirmation:'1',fingerprint:regularPreview.fingerprint}});assert.equal(r.code,200);
  assert.equal((await db.query('SELECT count(*)::int AS n FROM attendance')).rows[0].n,0);
  assert.equal((await db.query('SELECT count(*)::int AS n FROM employee')).rows[0].n,2);
  // Merge fixtures are independent of deletion fixtures above.
@@ -206,15 +221,16 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
  ALTER TABLE self_attendance_records ADD COLUMN punch_approval_status TEXT DEFAULT 'accepted',ADD COLUMN city_id INT DEFAULT 1,ADD COLUMN note TEXT,ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
  CREATE TABLE self_attendance_punch_evidence(id SERIAL PRIMARY KEY,attendance_id INT REFERENCES self_attendance_records(id),label TEXT);`);
  let caseNumber=10;
- async function selfAttendanceCase(label,entries,{blocked=false,expectedDays,afterPreview,beforePreview,expectedMerged,chooseAttendanceFrom,restore=false}={}) {
+ async function selfAttendanceCase(label,entries,{blocked=false,expectedDays,afterPreview,beforePreview,expectedMerged,chooseAttendanceFrom,restore=false,actor=1}={}) {
   const n=caseNumber++,ids=[1,2,3].map(i=>`a0000000-0000-4000-8000-${String(n*10+i).padStart(12,'0')}`);
   for(const id of ids) await db.query(`INSERT INTO self_attendance_employees(id,full_name,emp_code,mobile,city_id,kothi_id,is_active,selfie_url,email,password_hash) VALUES($1,'Ashu','ASHU-SAME','9876543210',1,10,true,'same-face','ashu@example.test','same-hash')`,[id]);
   for(const entry of entries) await db.query(`INSERT INTO self_attendance_records(self_attendance_id,date,punch_in,punch_out,punch_approval_status,city_id,note) VALUES($1,$2,$3,$4,$5,$6,$7)`,[ids[entry.person],entry.date,entry.in || null,entry.out || null,entry.status || 'accepted',entry.city ?? 1,entry.note ?? null]);
   if(beforePreview) await beforePreview(ids);
+  const originalProfiles=(await db.query('SELECT to_jsonb(p) AS row FROM self_attendance_employees p WHERE id=ANY($1::uuid[]) ORDER BY id',[ids])).rows.map(r=>r.row);
   const original=(await db.query('SELECT to_jsonb(a) AS row FROM self_attendance_records a WHERE self_attendance_id=ANY($1::uuid[]) ORDER BY id',[ids])).rows.map(result=>result.row);
   const evidenceBefore=restore ? (await db.query('SELECT * FROM self_attendance_punch_evidence WHERE attendance_id=ANY($1::int[]) ORDER BY id',[original.map(row=>row.id)])).rows : [];
   const cp={kind:'self_attendance',id:ids[0]},cb={sourceIds:ids.slice(1)};
-  let pv=await call('post','/:kind/:id/merge-preview',{params:cp,body:cb});
+  let pv=await call('post','/:kind/:id/merge-preview',{user:actor,params:cp,body:cb});
   if(chooseAttendanceFrom!==undefined) {
    assert.equal(pv.code,409);assert.ok(pv.data.attendanceConflicts.length);
    const hidden=await call('post','/:kind/:id/merge-preview',{user:3,params:cp,body:cb});assert.equal(hidden.code,403);assert.equal(hidden.data.attendanceConflicts,undefined);
@@ -244,10 +260,11 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
    assert.equal((await db.query('SELECT count(*)::int AS n FROM self_attendance_employees WHERE id=ANY($1::uuid[])',[ids])).rows[0].n,3);
    console.log(`PASS: ${label} (stale preview rolled back)`);return;
   }
-  const merged=await call('post','/:kind/:id/merge',{params:cp,body:{...cb,confirmation:ids[0],reason:label,fingerprint:pv.data.fingerprint}});
+  const merged=await call('post','/:kind/:id/merge',{user:actor,params:cp,body:{...cb,confirmation:ids[0],reason:label,fingerprint:pv.data.fingerprint}});
   assert.equal(merged.code,200,`${label}: ${JSON.stringify(merged.data)}`);
   const final=(await db.query('SELECT to_jsonb(a) AS row FROM self_attendance_records a WHERE self_attendance_id=$1 ORDER BY date',[ids[0]])).rows.map(result=>result.row);
   assert.equal(final.length,expectedDays,label);
+  assert.deepEqual((await db.query('SELECT to_jsonb(p) AS row FROM self_attendance_employees p WHERE id=$1',[ids[0]])).rows[0].row,originalProfiles[0],'Main account activation, credentials and face are unchanged');
   assert.equal((await db.query('SELECT count(*)::int AS n FROM self_attendance_employees WHERE id=ANY($1::uuid[])',[ids])).rows[0].n,1);
   for(const id of ids.slice(1)) assert.equal(await aliases.resolveEmployeeAlias('self_attendance',id),ids[0]);
   const audit=(await db.query('SELECT * FROM workforce_merge_audit WHERE target_id=$1',[ids[0]])).rows[0];
@@ -259,16 +276,29 @@ const pro='11111111-1111-4111-8111-111111111111',pro2='22222222-2222-4222-8222-2
   if(expectedMerged) await expectedMerged(final,ids,original);
   if(restore) {
    const rp={mergeId:String(merged.data.mergeId)};
-   const preview=await call('post','/merges/:mergeId/revert-preview',{params:rp});assert.equal(preview.code,200,JSON.stringify(preview.data));
-   const reverted=await call('post','/merges/:mergeId/revert',{params:rp,body:{confirmation:ids[0],reason:'Restore conflicting attendance originals',fingerprint:preview.data.fingerprint}});
+   const preview=await call('post','/merges/:mergeId/revert-preview',{user:actor,params:rp});assert.equal(preview.code,200,JSON.stringify(preview.data));
+   const reverted=await call('post','/merges/:mergeId/revert',{user:actor,params:rp,body:{confirmation:ids[0],reason:'Restore conflicting attendance originals',fingerprint:preview.data.fingerprint}});
    assert.equal(reverted.code,200,JSON.stringify(reverted.data));
    assert.deepEqual((await db.query('SELECT to_jsonb(a) AS row FROM self_attendance_records a WHERE self_attendance_id=ANY($1::uuid[]) ORDER BY id',[ids])).rows.map(result=>result.row),original,'Recovery restores all conflicting original attendance facts');
    assert.equal((await db.query('SELECT count(*)::int AS n FROM self_attendance_employees WHERE id=ANY($1::uuid[])',[ids])).rows[0].n,3);
+   assert.deepEqual((await db.query('SELECT to_jsonb(p) AS row FROM self_attendance_employees p WHERE id=ANY($1::uuid[]) ORDER BY id',[ids])).rows.map(r=>r.row),originalProfiles,'Revert restores the original active and inactive states');
    assert.deepEqual((await db.query('SELECT * FROM self_attendance_punch_evidence WHERE attendance_id=ANY($1::int[]) ORDER BY id',[original.map(row=>row.id)])).rows,evidenceBefore,'Recovery restores original evidence links');
   }
   console.log(`PASS: ${label} (${original.length} rows -> ${final.length} unique attendance days)`);
  }
  const day=(person,date,inTime='09:00',outTime='18:00',extra={})=>({person,date,in:inTime && `${date} ${inTime}`,out:outTime && `${date} ${outTime}`,...extra});
+ for(const actor of [1,7]){
+  const access=await call('get','/',{user:actor,query:dates});assert.equal(access.code,200);assert.equal(access.data.canMerge,true);
+  await selfAttendanceCase(`Inactive duplicates merge into active main for ${actor===1?'admin':'HumanMatrix HR'}`, [day(0,'2026-10-01'),day(1,'2026-10-02'),day(2,'2026-10-03')],{
+   actor,expectedDays:3,restore:true,beforePreview:ids=>db.query('UPDATE self_attendance_employees SET is_active=false WHERE id=ANY($1::uuid[])',[ids.slice(1)])
+  });
+ }
+ await selfAttendanceCase('Inactive duplicate common date preserves all originals',[day(0,'2026-10-01'),day(1,'2026-10-01'),day(1,'2026-10-02')],{
+  actor:7,expectedDays:2,restore:true,beforePreview:ids=>db.query('UPDATE self_attendance_employees SET is_active=false WHERE id=$1',[ids[1]])
+ });
+ await selfAttendanceCase('Inactive main is still blocked',[day(0,'2026-10-01'),day(1,'2026-10-02')],{
+  blocked:true,beforePreview:ids=>db.query('UPDATE self_attendance_employees SET is_active=false WHERE id=$1',[ids[0]])
+ });
  await selfAttendanceCase('Requested example: 12,13 plus 11,14 plus 11,20 counts five present dates',[
   day(0,'2026-10-12'),day(0,'2026-10-13'),day(1,'2026-10-11'),day(1,'2026-10-14'),day(2,'2026-10-11'),day(2,'2026-10-20'),
  ],{expectedDays:5,expectedMerged:async final=>assert.deepEqual(final.map(row=>row.date).sort(),['2026-10-11','2026-10-12','2026-10-13','2026-10-14','2026-10-20'])});

@@ -1,6 +1,6 @@
 const {quote,fingerprint}=require('./workforceReview');
 const fail=(message,status=409)=>{throw Object.assign(new Error(message),{status});};
-const same=(a,b)=>fingerprint(a ?? null)===fingerprint(b ?? null);
+const same=(a,b)=>require('node:util').isDeepStrictEqual(a ?? null,b ?? null);
 const triggerName='workforce_capture_merge_change';
 
 async function ensureRecoverySchema(client) {
@@ -15,7 +15,7 @@ async function ensureRecoverySchema(client) {
 // Include descendants because consolidating attendance may move their FKs.
 async function recoveryTables(client) {
  const {references}=require('./workforceMerge');
- const roots=new Set(['employee','self_attendance_employees','workforce_employee_aliases','workforce_self_attendance_login_aliases','workforce_review_issues']);
+ const roots=new Set(['employee','self_attendance_employees','workforce_employee_aliases','workforce_self_attendance_login_aliases','workforce_review_issues','workforce_transfer_archive','workforce_cross_attendance_aliases']);
  for(const kind of ['regular','self_attendance'])for(const link of await references(client,kind))roots.add(link.table);
  const {rows}=await client.query(`WITH RECURSIVE dependencies AS (
  SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -42,6 +42,7 @@ async function assertRecoveryReady(client,plan) {
  'workforce_employee_aliases','workforce_self_attendance_login_aliases','workforce_review_issues',
  ...plan.links.map(link=>link.table),...(plan.attendance?.links || []).map(link=>link.table)]);
  const missing=[];
+ if(plan.crossAliases?.length)tables.add('workforce_cross_attendance_aliases');
  for(const table of tables)if(!(await client.query(`SELECT 1 FROM pg_trigger WHERE tgname=$1 AND tgrelid=to_regclass($2)
  AND tgenabled IN ('O','A') AND tgfoid=to_regprocedure('workforce_capture_merge_change()')`,[triggerName,quote(table)])).rows.length)missing.push(table);
  if(missing.length)fail(`48-hour merge recovery is not ready for: ${missing.join(', ')}. Run the workforce schema upgrade. No records were changed.`,503);
@@ -85,7 +86,11 @@ async function replayUndo(client,audit) {
  const metadataCache=new Map();
  for(const change of changes) {
   const table=`${quote(change.table_schema)}.${quote(change.table_name)}`;
-  const before=change.before_row,after=change.after_row;
+  // Old recovery journals predate this additive authentication flag. Its old
+  // semantics were TRUE; normalize only that known default, without rewriting
+  // audit rows or ignoring newer changes to an explicitly disabled alias.
+  const authDefault=row=>row && change.table_name==='workforce_employee_aliases' && !Object.hasOwn(row,'auth_enabled')?{...row,auth_enabled:true}:row;
+  const before=authDefault(change.before_row),after=authDefault(change.after_row);
   const reference=after || before;
   const key=change.key_columns.length ? Object.fromEntries(change.key_columns.map(column=>[column,reference[column]])) : reference;
   const predicate=parameter=>change.key_columns.length
